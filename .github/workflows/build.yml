@@ -1,4 +1,4 @@
-name: Build EXE
+name: RotaControl
 
 on:
   push:
