@@ -452,6 +452,90 @@ def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
+# ===================== CAPTURA DE TELA CONTÍNUA (todas as telas) =====================
+# Thread que mantém sempre o último frame pronto. A rota só devolve o que já existe.
+CAPTURA = {
+    "running": False,
+    "thread": None,
+    "jpeg": None,
+    "lock": threading.Lock(),
+    "ultimo_pedido": 0.0,
+    "erro": None,
+}
+
+# Config
+CAP_Q = 28       # qualidade JPEG (menor = mais rápido)
+CAP_W = 1100     # largura máxima (um pouco maior pra ver as 2 telas com detalhe)
+CAP_FPS = 15     # frames por segundo máximos
+CAP_IDLE = 6     # segundos sem pedidos pra parar a thread
+
+
+def _loop_captura():
+    try:
+        with _mss.mss() as sct:
+            intervalo = 1.0 / CAP_FPS
+            while CAPTURA["running"]:
+                if time.time() - CAPTURA["ultimo_pedido"] > CAP_IDLE:
+                    CAPTURA["running"] = False
+                    break
+                t0 = time.time()
+                try:
+                    # monitors[0] = tela virtual COMPLETA (todas as telas juntas)
+                    shot = sct.grab(sct.monitors[0])
+                    pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                    if pil.width > CAP_W:
+                        pil = pil.resize((CAP_W, round(pil.height * CAP_W / pil.width)))
+                    buf = io.BytesIO()
+                    pil.save(buf, "JPEG", quality=CAP_Q, optimize=False)
+                    with CAPTURA["lock"]:
+                        CAPTURA["jpeg"] = buf.getvalue()
+                        CAPTURA["erro"] = None
+                except Exception as e:
+                    with CAPTURA["lock"]:
+                        CAPTURA["erro"] = str(e)
+                    time.sleep(0.1)
+                dt = time.time() - t0
+                time.sleep(max(0, intervalo - dt))
+    finally:
+        CAPTURA["running"] = False
+        with CAPTURA["lock"]:
+            CAPTURA["jpeg"] = None
+
+
+def _garantir_captura():
+    if CAPTURA["running"] and CAPTURA["thread"] and CAPTURA["thread"].is_alive():
+        return
+    CAPTURA["running"] = True
+    CAPTURA["thread"] = threading.Thread(target=_loop_captura, daemon=True)
+    CAPTURA["thread"].start()
+    time.sleep(0.15)
+
+
+def _capturar_pil(q=CAP_Q, w=CAP_W):
+    img = ImageGrab.grab()
+    if img.width > w: img = img.resize((w, round(img.height * w / img.width)))
+    buf = io.BytesIO(); img.convert("RGB").save(buf, "JPEG", quality=q); return buf.getvalue()
+
+
+def _capturar_ps():
+    ps = """
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+$bmp.Save('__OUT__', [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
+"""
+    out = os.path.join(tempfile.gettempdir(), "rotacontrol_screen.png")
+    out_ps = out.replace("\\", "/")
+    script = ps.replace("__OUT__", out_ps)
+    cod = base64.b64encode(script.encode("utf-16-le")).decode()
+    executar(["powershell", "-NoProfile", "-EncodedCommand", cod], capture_output=True, timeout=20)
+    with open(out, "rb") as f: return f.read()
+
+
 # ============================================================
 # PAGINA
 # ============================================================
@@ -647,7 +731,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 
   <section id="p-tela" class="page hid">
     <div class="panel">
-      <h2>Tela do PC</h2>
+      <h2>Tela do PC <span class="hint" style="font-weight:400;text-transform:none">• todas as telas</span></h2>
       <div class="row" style="justify-content:space-between;margin-bottom:10px">
         <button class="btn ghost" onclick="atualizarTela()">Atualizar agora</button>
         <button class="btn acc" id="btnAuto" onclick="toggleAuto()">Ver ao vivo</button>
@@ -984,15 +1068,20 @@ function segurarBotao(el,fn,delay=250){
 }
 
 let telaAtiva=false,telaTimer=null,telaEmVoo=false;
-const TELA_INTERVALO=280;
+const TELA_INTERVALO=160;
+
 async function atualizarTela(){
   if(!telaAtiva||telaEmVoo)return;
   if(document.hidden){telaTimer=setTimeout(atualizarTela,900);return}
-  telaEmVoo=true;const t0=performance.now();
+  telaEmVoo=true;
+  const t0=performance.now();
   try{
-    const r=await fetch("/api/tela.jpg?t="+Date.now(),{cache:"no-store"});
+    const ctrl=new AbortController();
+    const to=setTimeout(()=>ctrl.abort(),4000);
+    const r=await fetch("/api/tela.jpg?t="+Date.now(),{cache:"no-store",signal:ctrl.signal});
+    clearTimeout(to);
     if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}
-    if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,600);return}
+    if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,400);return}
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
     const img=$("#tela");const velho=img.src;
@@ -1005,8 +1094,9 @@ async function atualizarTela(){
     pre.src=url;
     $("#telaHora").textContent="Ao vivo • "+new Date().toLocaleTimeString();
   }catch(e){}
-  const dt=performance.now()-t0;telaEmVoo=false;
-  telaTimer=setTimeout(atualizarTela,Math.max(80,TELA_INTERVALO-dt));
+  const dt=performance.now()-t0;
+  telaEmVoo=false;
+  telaTimer=setTimeout(atualizarTela,Math.max(30,TELA_INTERVALO-dt));
 }
 function toggleAuto(){
   telaAtiva=!telaAtiva;const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
@@ -1605,69 +1695,44 @@ def api_midia():
     return jsonify(ok=True)
 
 
-CAPTURE_LOCK = threading.Lock()
-CAPTURE_PS = """
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
-$bmp.Save('__OUT__', [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $bmp.Dispose()
-"""
-
-_MSS_INST = {"v": None, "lock": threading.Lock()}
-
-
-def _capturar_mss(q=32, w=1024):
-    with _MSS_INST["lock"]:
-        if _MSS_INST["v"] is None:
-            try: _MSS_INST["v"] = _mss.mss()
-            except Exception: return None
-        sct = _MSS_INST["v"]
-        try:
-            shot = sct.grab(sct.monitors[0])
-        except Exception:
-            try: _MSS_INST["v"].close()
-            except Exception: pass
-            _MSS_INST["v"] = None
-            return None
-    pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    if pil.width > w: pil = pil.resize((w, round(pil.height * w / pil.width)))
-    buf = io.BytesIO()
-    pil.save(buf, "JPEG", quality=q, optimize=False)
-    return buf.getvalue()
-
-
-def _capturar_pil(q=32, w=1024):
-    img = ImageGrab.grab()
-    if img.width > w: img = img.resize((w, round(img.height * w / img.width)))
-    buf = io.BytesIO(); img.convert("RGB").save(buf, "JPEG", quality=q); return buf.getvalue()
-
-
-def _capturar_ps():
-    with CAPTURE_LOCK:
-        out = os.path.join(tempfile.gettempdir(), "rotacontrol_screen.png")
-        out_ps = out.replace("\\", "/")
-        script = CAPTURE_PS.replace("__OUT__", out_ps)
-        cod = base64.b64encode(script.encode("utf-16-le")).decode()
-        executar(["powershell", "-NoProfile", "-EncodedCommand", cod], capture_output=True, timeout=20)
-        with open(out, "rb") as f: return f.read()
-
-
 @app.route("/api/tela.jpg")
 def api_tela():
     b = exigir_auth()
     if b: return b
-    try:
-        jpeg = None
-        if TEM_MSS: jpeg = _capturar_mss()
-        if jpeg is None and ImageGrab is not None: jpeg = _capturar_pil()
-        if jpeg is None: jpeg = _capturar_ps()
-    except Exception as e:
-        return jsonify(erro=f"erro captura: {e}"), 500
-    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    if not TEM_MSS:
+        try:
+            jpeg = None
+            if ImageGrab is not None:
+                try: jpeg = _capturar_pil()
+                except Exception: pass
+            if jpeg is None: jpeg = _capturar_ps()
+        except Exception as e:
+            return jsonify(erro=f"erro captura: {e}"), 500
+        return Response(jpeg, mimetype="image/jpeg",
+                        headers={"Cache-Control": "no-store, max-age=0"})
+
+    CAPTURA["ultimo_pedido"] = time.time()
+    _garantir_captura()
+
+    for _ in range(40):
+        with CAPTURA["lock"]:
+            jpeg = CAPTURA["jpeg"]
+            err = CAPTURA["erro"]
+        if jpeg: break
+        if err and not CAPTURA["running"]: break
+        time.sleep(0.05)
+
+    if not jpeg:
+        try:
+            if ImageGrab is not None:
+                jpeg = _capturar_pil()
+        except Exception: pass
+    if not jpeg:
+        return jsonify(erro=err or "sem captura"), 503
+
+    return Response(jpeg, mimetype="image/jpeg",
+                    headers={"Cache-Control": "no-store, max-age=0"})
 
 
 def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
