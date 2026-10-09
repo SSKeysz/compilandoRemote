@@ -438,63 +438,7 @@ def iniciar_loop_clipboard():
     threading.Thread(target=_loop_clipboard, daemon=True).start()
 
 
-# ===================== AUDIO =====================
-_audio_iface = {"v": None, "tentou": False}
-_audio_lock = threading.Lock()
-VOL_LOCK = threading.Lock()
-VOL_ATUAL = {"pct": 50}
-
-
-def _audio():
-    """Retorna a interface pycaw (cacheada). None se falhar."""
-    if not PYCAW_OK: return None
-    with _audio_lock:
-        if _audio_iface["v"] is not None:
-            return _audio_iface["v"]
-        if _audio_iface["tentou"]:
-            return None
-        _audio_iface["tentou"] = True
-        try:
-            d = AudioUtilities.GetSpeakers()
-            i = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            _audio_iface["v"] = i.QueryInterface(IAudioEndpointVolume)
-        except Exception:
-            _audio_iface["v"] = None
-        return _audio_iface["v"]
-
-
-def _vol_ler_pycaw():
-    vol = _audio()
-    if not vol: return None
-    try: return int(round(vol.GetMasterVolumeLevelScalar() * 100))
-    except Exception: return None
-
-
-def _vol_ler_winmm():
-    try:
-        v = ctypes.c_uint(0)
-        ctypes.windll.winmm.waveOutGetVolume(0, ctypes.byref(v))
-        left = v.value & 0xFFFF; right = (v.value >> 16) & 0xFFFF
-        return int(round(((left + right) / 2) / 65535 * 100))
-    except Exception: return None
-
-
-def _vol_ler_real():
-    r = _vol_ler_pycaw()
-    if r is not None: return r
-    r = _vol_ler_winmm()
-    if r is not None: return r
-    return None
-
-
-def _vol_mute_estado():
-    vol = _audio()
-    if not vol: return None
-    try: return bool(vol.GetMute())
-    except Exception: return None
-
-
-# teclas do Windows (cada press = 2%)
+# ===================== TECLAS DE VOLUME (usadas pela aba Midia) =====================
 VK_VOL_UP = 0xAF
 VK_VOL_DOWN = 0xAE
 VK_VOL_MUTE = 0xAD
@@ -503,44 +447,6 @@ VK_VOL_MUTE = 0xAD
 def _vtecla_up(): _teclar_vk(VK_VOL_UP)
 def _vtecla_down(): _teclar_vk(VK_VOL_DOWN)
 def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
-
-
-def _vol_definir(alvo):
-    """
-    Usa APENAS as teclas do Windows pra mudar o volume.
-    Sempre le o valor real do PC antes, calcula o delta, e envia as teclas.
-    Retorna o valor esperado depois.
-    """
-    alvo = max(0, min(100, int(alvo)))
-    with VOL_LOCK:
-        real = _vol_ler_real()
-        atual = real if real is not None else VOL_ATUAL["pct"]
-        delta = alvo - atual
-        passos = abs(delta) // 2
-        if passos > 0:
-            fn = _vtecla_up if delta > 0 else _vtecla_down
-            for _ in range(passos):
-                fn()
-                time.sleep(0.012)
-        # Le de novo pra confirmar
-        time.sleep(0.08)
-        novo = _vol_ler_real()
-        if novo is None: novo = alvo
-        VOL_ATUAL["pct"] = novo
-        return novo
-
-
-def _vol_step(direcao):
-    with VOL_LOCK:
-        if direcao == "up": _vtecla_up()
-        else: _vtecla_down()
-        time.sleep(0.05)
-        novo = _vol_ler_real()
-        if novo is None:
-            novo = VOL_ATUAL["pct"] + (2 if direcao == "up" else -2)
-            novo = max(0, min(100, novo))
-        VOL_ATUAL["pct"] = novo
-        return novo
 
 
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
@@ -614,11 +520,6 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .arq .tam{color:var(--mut);font-size:11px;flex:none}
 .arq button{padding:6px 10px;font-size:12px;background:var(--acc);flex:none}
 .arq button.del{background:#3a1020}
-input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;outline:none;padding:0;width:100%;height:36px}
-input[type=range]::-webkit-slider-runnable-track{height:8px;background:#242430;border-radius:4px}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;border-radius:50%;background:var(--acc);margin-top:-10px;box-shadow:0 0 0 4px rgba(124,0,240,.25)}
-input[type=range]::-moz-range-track{height:8px;background:#242430;border-radius:4px;border:none}
-input[type=range]::-moz-range-thumb{width:28px;height:28px;border-radius:50%;background:var(--acc);border:none}
 .avisoLive{background:#1a0a26;border:1px solid #3d1a5c;color:#d4a0ff;padding:8px 12px;border-radius:8px;font-size:12px;display:flex;align-items:center;gap:8px;margin-top:8px}
 .avisoLive .luz{width:8px;height:8px;border-radius:50%;background:var(--acc2);box-shadow:0 0 8px var(--acc2);animation:pu 1.2s infinite;flex:none}
 pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
@@ -731,39 +632,13 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       </div>
     </div>
     <div class="panel">
-      <h2>Volume rápido <span class="hint" style="font-weight:400;text-transform:none">(segure pra repetir)</span></h2>
+      <h2>Volume <span class="hint" style="font-weight:400;text-transform:none">(segure pra repetir)</span></h2>
       <div class="grid g3">
         <button class="btn icon" id="btnVolDown">&#128265;</button>
         <button class="btn icon" onclick="midia('mute')">&#128263;</button>
         <button class="btn icon" id="btnVolUp">&#128266;</button>
       </div>
       <div class="hint">Cada toque muda 2%. Segura pra ir rápido.</div>
-    </div>
-  </section>
-
-  <section id="p-volume" class="page hid">
-    <div class="panel">
-      <h2>Volume do PC</h2>
-      <div style="display:flex;align-items:center;gap:14px;margin:14px 0">
-        <span id="volIcon" style="font-size:30px">&#128266;</span>
-        <span id="volNum" style="font-size:34px;font-weight:800;min-width:90px;text-align:right">--</span>
-        <span style="color:var(--mut);font-size:20px">%</span>
-      </div>
-      <input type="range" id="volSlider" min="0" max="100" step="2" value="50"
-        oninput="onVolSlide(this.value)">
-      <div class="grid g4" style="margin-top:10px">
-        <button class="btn ghost" onclick="setVol(0)">0</button>
-        <button class="btn ghost" onclick="setVol(25)">25</button>
-        <button class="btn ghost" onclick="setVol(50)">50</button>
-        <button class="btn ghost" onclick="setVol(100)">100</button>
-      </div>
-      <button class="btn acc block" style="margin-top:12px" onclick="toggleMute()">Mudo (liga/desliga)</button>
-      <div class="hint" id="volHint">—</div>
-      <div class="grid g2" style="margin-top:10px">
-        <button class="btn" id="btnVolDown2">&#128265; Abaixar</button>
-        <button class="btn" id="btnVolUp2">&#128266; Aumentar</button>
-      </div>
-      <div class="hint">Segure pra repetir rápido.</div>
     </div>
   </section>
 
@@ -929,7 +804,6 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
   <button data-t="acoes" class="on"><span class="ico">&#9889;</span>Ações</button>
   <button data-t="texto"><span class="ico">&#9000;</span>Texto</button>
   <button data-t="midia"><span class="ico">&#127925;</span>Mídia</button>
-  <button data-t="volume"><span class="ico">&#128266;</span>Volume</button>
   <button data-t="tela"><span class="ico">&#128421;</span>Tela</button>
   <button data-t="arquivos"><span class="ico">&#128193;</span>Arquivos</button>
   <button data-t="pc"><span class="ico">&#128295;</span>PC</button>
@@ -959,7 +833,6 @@ function show(nome){
   if(nome==="arquivos")listarArquivos();
   if(nome==="tela"&&telaAtiva)atualizarTela();
   if(nome==="sistema")carregarSistema();
-  if(nome==="volume"){carregarVolume(); iniciarPollVol();} else { pararPollVol(); }
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
   if(nome==="pc"){carregarProcessos();carregarComandos()}
@@ -1079,71 +952,8 @@ async function carregarClipHist(){
 async function usarClip(t){await post("/api/texto",{texto:t,modo:"clipboard"});toast("Copiado de novo pro PC")}
 async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await post("/api/clip_hist_limpar",{});carregarClipHist()}
 
-async function midia(a){await post("/api/midia",{acao:a})}
+async function midia(a){await post("/api/midia",{acao:a});if(navigator.vibrate)navigator.vibrate(10)}
 
-// ==== VOLUME ====
-let volPollTimer=null;
-function iniciarPollVol(){
-  pararPollVol();
-  volPollTimer=setInterval(()=>{ if(!document.hidden) carregarVolume(true); },2000);
-}
-function pararPollVol(){ if(volPollTimer){clearInterval(volPollTimer);volPollTimer=null} }
-
-let volRequestEmVoo=false;
-async function carregarVolume(silent){
-  if(volRequestEmVoo) return;
-  volRequestEmVoo=true;
-  try{
-    const j=await get("/api/volume");
-    if(typeof j.volume==="number"&&j.volume>=0){
-      // So atualiza o slider se o usuario nao estiver arrastando
-      if(!sliderArrastando){
-        $("#volSlider").value=j.volume;
-        $("#volNum").textContent=j.volume;
-      }
-      $("#volIcon").textContent=(j.mute===true)?"\uD83D\uDD07":(j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A"));
-      if(!silent) $("#volHint").textContent="Valor real: "+j.volume+"% • "+(j.fonte||"?");
-    }
-  }catch(e){}
-  volRequestEmVoo=false;
-}
-
-let sliderArrastando=false;
-let volTimer=null;
-let volAlvo=null;
-
-function onVolSlide(v){
-  sliderArrastando=true;
-  $("#volNum").textContent=v;
-  $("#volIcon").textContent=v==0?"\uD83D\uDD08":(v<50?"\uD83D\uDD09":"\uD83D\uDD0A");
-  volAlvo=parseInt(v);
-  clearTimeout(volTimer);
-  volTimer=setTimeout(aplicarVolumeAlvo,350);
-}
-
-async function aplicarVolumeAlvo(){
-  if(volAlvo===null) return;
-  const alvo=volAlvo; volAlvo=null;
-  const r=await post("/api/volume",{volume:alvo});
-  if(typeof r.volume==="number"&&r.volume>=0){
-    // Volta o slider pro valor que o PC realmente esta
-    $("#volSlider").value=r.volume;
-    $("#volNum").textContent=r.volume;
-  }
-  sliderArrastando=false;
-}
-
-async function setVol(v){v=Math.round(v/2)*2;await post("/api/volume",{volume:v});setTimeout(carregarVolume,150)}
-async function toggleMute(){await post("/api/volume",{toggle_mute:true});setTimeout(carregarVolume,150)}
-
-async function enviarStep(dir){
-  const j=await post("/api/volume_step",{dir});
-  if(typeof j.volume==="number"&&j.volume>=0){
-    $("#volSlider").value=j.volume;
-    $("#volNum").textContent=j.volume;
-    $("#volIcon").textContent=j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A");
-  }
-}
 function segurarBotao(el,fn,delay=250){
   if(!el)return;
   let timer=null;
@@ -1391,13 +1201,12 @@ async function iniciar(){
   $("#ipTop").textContent="http://"+j.ip+":"+j.porta;
   if(j.pin_set&&!j.autenticado){mostrarLock();return}
   $("#lockScreen").classList.add("hid");
-  carregarAcoes();carregarAtalhos();carregarSistema();carregarVolume();carregarModo();carregarAutostart();
+  carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarWol();carregarComandos();carregarClipHist();
   setInterval(atualizarTunel,4000);
-  segurarBotao($("#btnVolUp"),()=>enviarStep("up"),250);
-  segurarBotao($("#btnVolDown"),()=>enviarStep("down"),250);
-  segurarBotao($("#btnVolUp2"),()=>enviarStep("up"),250);
-  segurarBotao($("#btnVolDown2"),()=>enviarStep("down"),250);
+  // Botoes de volume na aba Midia (segurar pra repetir)
+  segurarBotao($("#btnVolUp"),()=>midia('vol_up'),250);
+  segurarBotao($("#btnVolDown"),()=>midia('vol_down'),250);
 }
 iniciar();
 </script>
@@ -1750,67 +1559,15 @@ def api_midia():
     acao = (request.get_json(force=True) or {}).get("acao", "")
     if acao == "mute":
         _vtecla_mute(); return jsonify(ok=True)
+    if acao == "vol_up":
+        _vtecla_up(); return jsonify(ok=True)
+    if acao == "vol_down":
+        _vtecla_down(); return jsonify(ok=True)
     if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
     vk = VK_MEDIA[acao]
     u = ctypes.windll.user32
     u.keybd_event(vk, 0, 0, 0); time.sleep(0.05); u.keybd_event(vk, 0, 2, 0)
     return jsonify(ok=True)
-
-
-@app.route("/api/volume")
-def api_volume_get():
-    b = exigir_auth()
-    if b: return b
-    pct = _vol_ler_real()
-    if pct is None:
-        pct = VOL_ATUAL["pct"]
-        fonte = "teclas"
-    else:
-        VOL_ATUAL["pct"] = pct
-        fonte = "pycaw" if _vol_ler_pycaw() is not None else "winmm"
-    mudo = _vol_mute_estado()
-    return jsonify(ok=True, suportado=True, fonte=fonte, volume=pct, mute=mudo)
-
-
-@app.route("/api/volume", methods=["POST"])
-def api_volume_set():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True)
-
-    if "toggle_mute" in d or "mute" in d:
-        vol = _audio()
-        if vol:
-            try:
-                if "toggle_mute" in d:
-                    novo = not bool(vol.GetMute())
-                else:
-                    novo = bool(d["mute"])
-                vol.SetMute(novo, None)
-                return jsonify(ok=True, mute=novo,
-                               volume=int(round(vol.GetMasterVolumeLevelScalar()*100)))
-            except Exception: pass
-        _vtecla_mute()
-        return jsonify(ok=True, volume=VOL_ATUAL["pct"], mute=None)
-
-    if "volume" in d:
-        try: alvo = max(0, min(100, int(d["volume"])))
-        except Exception: alvo = 50
-        novo = _vol_definir(alvo)
-        return jsonify(ok=True, volume=novo, fonte="teclas")
-
-    return jsonify(erro="nada a fazer")
-
-
-@app.route("/api/volume_step", methods=["POST"])
-def api_volume_step():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True)
-    direcao = d.get("dir") or d.get("step") or "up"
-    if direcao not in ("up", "down"): return jsonify(erro="dir invalido")
-    novo = _vol_step(direcao)
-    return jsonify(ok=True, volume=novo)
 
 
 CAPTURE_LOCK = threading.Lock()
