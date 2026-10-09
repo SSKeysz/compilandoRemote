@@ -438,7 +438,7 @@ def iniciar_loop_clipboard():
     threading.Thread(target=_loop_clipboard, daemon=True).start()
 
 
-# ===================== TECLAS DE VOLUME (usadas pela aba Midia) =====================
+# ===================== VOLUME (teclas) =====================
 VK_VOL_UP = 0xAF
 VK_VOL_DOWN = 0xAE
 VK_VOL_MUTE = 0xAD
@@ -530,6 +530,10 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
   .grid.g3,.grid.g4{grid-template-columns:1fr 1fr}
   nav button{min-width:52px;font-size:9px;padding:6px 2px}
   h1,h2{font-size:12px}
+  .arq{flex-wrap:wrap;row-gap:6px}
+  .arq .nome{flex:1 0 100%;font-size:12px;white-space:normal;word-break:break-all;overflow:visible;text-overflow:clip}
+  .arq .tam{flex:0 0 auto;margin-right:auto}
+  .arq button{flex:0 0 auto;padding:6px 12px}
 }
 </style>
 </head>
@@ -614,10 +618,9 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
 
     <div class="panel">
-      <h2>Histórico de clipboard (PC)</h2>
-      <div class="hint" style="margin-bottom:8px">Copie qualquer coisa no PC com Ctrl+C que aparece aqui.</div>
-      <button class="btn acc block" onclick="carregarClipHist()">Atualizar histórico</button>
-      <div id="listaClip" style="margin-top:10px"></div>
+      <h2>Histórico de clipboard (PC) <span class="hint" style="font-weight:400;text-transform:none">• auto</span></h2>
+      <div class="hint" style="margin-bottom:8px">Copie qualquer coisa no PC com Ctrl+C que aparece aqui (atualiza sozinho).</div>
+      <div id="listaClip"></div>
       <button class="btn ghost block" style="margin-top:8px" onclick="limparClipHist()">Limpar histórico</button>
     </div>
   </section>
@@ -827,6 +830,13 @@ const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("on"),1400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
+let clipHistPoll=null;
+function iniciarPollClipHist(){
+  pararPollClipHist();
+  clipHistPoll=setInterval(()=>{if(!document.hidden)carregarClipHist()},2500);
+}
+function pararPollClipHist(){if(clipHistPoll){clearInterval(clipHistPoll);clipHistPoll=null}}
+
 function show(nome){
   $$(".page").forEach(p=>p.classList.toggle("hid",p.id!=="p-"+nome));
   $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===nome));
@@ -836,7 +846,7 @@ function show(nome){
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
   if(nome==="pc"){carregarProcessos();carregarComandos()}
-  if(nome==="texto"){carregarClipHist()}
+  if(nome==="texto"){carregarClipHist();iniciarPollClipHist()}else{pararPollClipHist()}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
 
@@ -974,7 +984,7 @@ function segurarBotao(el,fn,delay=250){
 }
 
 let telaAtiva=false,telaTimer=null,telaEmVoo=false;
-const TELA_INTERVALO=180;
+const TELA_INTERVALO=280;
 async function atualizarTela(){
   if(!telaAtiva||telaEmVoo)return;
   if(document.hidden){telaTimer=setTimeout(atualizarTela,900);return}
@@ -983,13 +993,20 @@ async function atualizarTela(){
     const r=await fetch("/api/tela.jpg?t="+Date.now(),{cache:"no-store"});
     if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}
     if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,600);return}
-    const blob=await r.blob();const url=URL.createObjectURL(blob);
-    const img=$("#tela");const velho=img.src;img.src=url;
-    if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const img=$("#tela");const velho=img.src;
+    const pre=new Image();
+    pre.onload=()=>{
+      img.src=url;
+      if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}}
+    };
+    pre.onerror=()=>{try{URL.revokeObjectURL(url)}catch(e){}};
+    pre.src=url;
     $("#telaHora").textContent="Ao vivo • "+new Date().toLocaleTimeString();
   }catch(e){}
   const dt=performance.now()-t0;telaEmVoo=false;
-  telaTimer=setTimeout(atualizarTela,Math.max(60,TELA_INTERVALO-dt));
+  telaTimer=setTimeout(atualizarTela,Math.max(80,TELA_INTERVALO-dt));
 }
 function toggleAuto(){
   telaAtiva=!telaAtiva;const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
@@ -1129,7 +1146,12 @@ function copiarTunel(){
   copiar(ultimoTunel,"WAN");
 }
 
-function escolherPasta(v){if(v)$("#pastaIn").value=v}
+async function escolherPasta(v){
+  if(!v)return;
+  $("#pastaIn").value=v;
+  const j=await post("/api/resolver_pasta",{pasta:v});
+  if(j.pasta) $("#pastaIn").value=j.pasta;
+}
 async function salvarPasta(){
   const v=$("#pastaIn").value.trim();if(!v){toast("Escolha ou digite uma pasta");return}
   const j=await post("/api/pasta",{pasta:v});toast("Pasta salva");if(j.pasta)$("#pastaIn").value=j.pasta;
@@ -1202,9 +1224,8 @@ async function iniciar(){
   if(j.pin_set&&!j.autenticado){mostrarLock();return}
   $("#lockScreen").classList.add("hid");
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
-  carregarWol();carregarComandos();carregarClipHist();
+  carregarWol();carregarComandos();
   setInterval(atualizarTunel,4000);
-  // Botoes de volume na aba Midia (segurar pra repetir)
   segurarBotao($("#btnVolUp"),()=>midia('vol_up'),250);
   segurarBotao($("#btnVolDown"),()=>midia('vol_down'),250);
 }
@@ -1280,6 +1301,20 @@ def api_pasta():
     p = (request.get_json(force=True).get("pasta") or "").strip()
     ESTADO["pasta_arquivos"] = p; salvar_config()
     return jsonify(ok=True, pasta=pasta_arquivos())
+
+
+@app.route("/api/resolver_pasta", methods=["POST"])
+def api_resolver_pasta():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    p = (d.get("pasta") or "").strip()
+    if not p:
+        return jsonify(pasta="", existe=False)
+    p = os.path.expandvars(p)
+    p = os.path.expanduser(p)
+    p = os.path.abspath(p)
+    return jsonify(pasta=p, existe=os.path.isdir(p))
 
 
 @app.route("/api/autostart", methods=["GET"])
@@ -1582,16 +1617,30 @@ $bmp.Save('__OUT__', [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
 """
 
-
-def _capturar_mss(q=45, w=1280):
-    with _mss.mss() as sct:
-        shot = sct.grab(sct.monitors[0])
-        pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        if pil.width > w: pil = pil.resize((w, round(pil.height * w / pil.width)))
-        buf = io.BytesIO(); pil.save(buf, "JPEG", quality=q); return buf.getvalue()
+_MSS_INST = {"v": None, "lock": threading.Lock()}
 
 
-def _capturar_pil(q=45, w=1280):
+def _capturar_mss(q=32, w=1024):
+    with _MSS_INST["lock"]:
+        if _MSS_INST["v"] is None:
+            try: _MSS_INST["v"] = _mss.mss()
+            except Exception: return None
+        sct = _MSS_INST["v"]
+        try:
+            shot = sct.grab(sct.monitors[0])
+        except Exception:
+            try: _MSS_INST["v"].close()
+            except Exception: pass
+            _MSS_INST["v"] = None
+            return None
+    pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    if pil.width > w: pil = pil.resize((w, round(pil.height * w / pil.width)))
+    buf = io.BytesIO()
+    pil.save(buf, "JPEG", quality=q, optimize=False)
+    return buf.getvalue()
+
+
+def _capturar_pil(q=32, w=1024):
     img = ImageGrab.grab()
     if img.width > w: img = img.resize((w, round(img.height * w / img.width)))
     buf = io.BytesIO(); img.convert("RGB").save(buf, "JPEG", quality=q); return buf.getvalue()
@@ -1612,9 +1661,10 @@ def api_tela():
     b = exigir_auth()
     if b: return b
     try:
+        jpeg = None
         if TEM_MSS: jpeg = _capturar_mss()
-        elif ImageGrab is not None: jpeg = _capturar_pil()
-        else: jpeg = _capturar_ps()
+        if jpeg is None and ImageGrab is not None: jpeg = _capturar_pil()
+        if jpeg is None: jpeg = _capturar_ps()
     except Exception as e:
         return jsonify(erro=f"erro captura: {e}"), 500
     return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
