@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  NOME_EXE: Piloto
+  NOME_EXE: RotaControl
 
 jobs:
   build:
