@@ -15,6 +15,9 @@ jobs:
       - name: Baixar o codigo
         uses: actions/checkout@v4
 
+      - name: Listar arquivos do repo
+        run: dir
+
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
@@ -28,22 +31,11 @@ jobs:
       - name: Checar se o codigo compila
         run: python -m py_compile piloto.py
 
-      - name: Compilar exe (sem janela de CMD)
-        run: |
-          pyinstaller --onefile --noconsole --clean ^
-            --name $env:NOME_EXE ^
-            --hidden-import=pycaw ^
-            --hidden-import=pycaw.pycaw ^
-            --hidden-import=pycaw.api ^
-            --hidden-import=pycaw.utils ^
-            --hidden-import=pycaw.constants ^
-            --hidden-import=pycaw.callbacks ^
-            --hidden-import=comtypes ^
-            --hidden-import=comtypes.client ^
-            --hidden-import=comtypes.stream ^
-            --hidden-import=comtypes.automation ^
-            --hidden-import=comtypes.typeinfo ^
-            piloto.py
+      - name: Compilar exe
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --collect-all pycaw --collect-all comtypes piloto.py
+
+      - name: Listar arquivos gerados
+        run: dir dist
 
       - name: Enviar exe como artefato
         uses: actions/upload-artifact@v4
