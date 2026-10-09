@@ -1,6 +1,8 @@
 """
-PILOTO - controle do PC pelo celular.
+RotaControl - controle do PC pelo celular.
 pip install flask pillow mss pycaw comtypes
+Compilar:
+    pyinstaller --onefile --noconsole --icon=NONE --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss painel.py
 """
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv
 import logging, tempfile, threading, subprocess, webbrowser, urllib.request
@@ -76,7 +78,7 @@ def pasta_base():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-ARQ_CONFIG = os.path.join(pasta_base(), "piloto_config.json")
+ARQ_CONFIG = os.path.join(pasta_base(), "rotacontrol_config.json")
 
 ACOES_PADRAO = [
     {"nome": "Explorer", "tipo": "abrir", "valor": "explorer.exe"},
@@ -161,7 +163,7 @@ def log_seguro(*a):
 
 
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
-REG_NOME = "Piloto"
+REG_NOME = "RotaControl"
 
 
 def autostart_ativo():
@@ -256,8 +258,8 @@ def iniciar_tunel_async():
 def agendar_autodelete():
     if not getattr(sys, "frozen", False): return False
     exe = sys.executable; cf = caminho_cloudflared()
-    bat = os.path.join(tempfile.gettempdir(), "piloto_cleanup.bat")
-    vbs = os.path.join(tempfile.gettempdir(), "piloto_cleanup.vbs")
+    bat = os.path.join(tempfile.gettempdir(), "rotacontrol_cleanup.bat")
+    vbs = os.path.join(tempfile.gettempdir(), "rotacontrol_cleanup.vbs")
     linhas = ["@echo off", ":loop", "timeout /t 1 /nobreak >nul 2>&1",
               f'del /f /q "{exe}" >nul 2>&1', f'if exist "{exe}" goto loop',
               f'del /f /q "{cf}" >nul 2>&1', f'del /f /q "{ARQ_CONFIG}" >nul 2>&1',
@@ -370,7 +372,7 @@ def monitor_ligar():
     except Exception: pass
 
 
-# ===================== CLIPBOARD (com argtypes corretos) =====================
+# ===================== CLIPBOARD =====================
 CLIP_HIST = deque(maxlen=10)
 CLIP_ULTIMO = {"txt": ""}
 
@@ -436,53 +438,109 @@ def iniciar_loop_clipboard():
     threading.Thread(target=_loop_clipboard, daemon=True).start()
 
 
-# ===================== VOLUME (por teclas — Windows padrão = 2%) =====================
+# ===================== AUDIO =====================
+_audio_iface = {"v": None, "tentou": False}
+_audio_lock = threading.Lock()
+VOL_LOCK = threading.Lock()
 VOL_ATUAL = {"pct": 50}
 
+
+def _audio():
+    """Retorna a interface pycaw (cacheada). None se falhar."""
+    if not PYCAW_OK: return None
+    with _audio_lock:
+        if _audio_iface["v"] is not None:
+            return _audio_iface["v"]
+        if _audio_iface["tentou"]:
+            return None
+        _audio_iface["tentou"] = True
+        try:
+            d = AudioUtilities.GetSpeakers()
+            i = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            _audio_iface["v"] = i.QueryInterface(IAudioEndpointVolume)
+        except Exception:
+            _audio_iface["v"] = None
+        return _audio_iface["v"]
+
+
+def _vol_ler_pycaw():
+    vol = _audio()
+    if not vol: return None
+    try: return int(round(vol.GetMasterVolumeLevelScalar() * 100))
+    except Exception: return None
+
+
+def _vol_ler_winmm():
+    try:
+        v = ctypes.c_uint(0)
+        ctypes.windll.winmm.waveOutGetVolume(0, ctypes.byref(v))
+        left = v.value & 0xFFFF; right = (v.value >> 16) & 0xFFFF
+        return int(round(((left + right) / 2) / 65535 * 100))
+    except Exception: return None
+
+
+def _vol_ler_real():
+    r = _vol_ler_pycaw()
+    if r is not None: return r
+    r = _vol_ler_winmm()
+    if r is not None: return r
+    return None
+
+
+def _vol_mute_estado():
+    vol = _audio()
+    if not vol: return None
+    try: return bool(vol.GetMute())
+    except Exception: return None
+
+
+# teclas do Windows (cada press = 2%)
 VK_VOL_UP = 0xAF
 VK_VOL_DOWN = 0xAE
 VK_VOL_MUTE = 0xAD
 
 
-def _vol_tecla_up():
-    _teclar_vk(VK_VOL_UP)
+def _vtecla_up(): _teclar_vk(VK_VOL_UP)
+def _vtecla_down(): _teclar_vk(VK_VOL_DOWN)
+def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 
 
-def _vol_tecla_down():
-    _teclar_vk(VK_VOL_DOWN)
-
-
-def _vol_tecla_mute():
-    _teclar_vk(VK_VOL_MUTE)
-
-
-def _vol_set_pct(alvo):
-    """Envia N teclas de volume pra chegar no alvo. 2% por tecla."""
+def _vol_definir(alvo):
+    """
+    Usa APENAS as teclas do Windows pra mudar o volume.
+    Sempre le o valor real do PC antes, calcula o delta, e envia as teclas.
+    Retorna o valor esperado depois.
+    """
     alvo = max(0, min(100, int(alvo)))
-    atual = VOL_ATUAL["pct"]
-    delta = alvo - atual
-    passos = abs(delta) // 2
-    if passos == 0: return atual
-    if delta > 0:
-        for _ in range(passos):
-            _vol_tecla_up(); time.sleep(0.012)
-        VOL_ATUAL["pct"] = min(100, atual + passos * 2)
-    else:
-        for _ in range(passos):
-            _vol_tecla_down(); time.sleep(0.012)
-        VOL_ATUAL["pct"] = max(0, atual - passos * 2)
-    return VOL_ATUAL["pct"]
+    with VOL_LOCK:
+        real = _vol_ler_real()
+        atual = real if real is not None else VOL_ATUAL["pct"]
+        delta = alvo - atual
+        passos = abs(delta) // 2
+        if passos > 0:
+            fn = _vtecla_up if delta > 0 else _vtecla_down
+            for _ in range(passos):
+                fn()
+                time.sleep(0.012)
+        # Le de novo pra confirmar
+        time.sleep(0.08)
+        novo = _vol_ler_real()
+        if novo is None: novo = alvo
+        VOL_ATUAL["pct"] = novo
+        return novo
 
 
 def _vol_step(direcao):
-    """Um passo só (2%)."""
-    if direcao == "up":
-        _vol_tecla_up()
-        VOL_ATUAL["pct"] = min(100, VOL_ATUAL["pct"] + 2)
-    else:
-        _vol_tecla_down()
-        VOL_ATUAL["pct"] = max(0, VOL_ATUAL["pct"] - 2)
-    return VOL_ATUAL["pct"]
+    with VOL_LOCK:
+        if direcao == "up": _vtecla_up()
+        else: _vtecla_down()
+        time.sleep(0.05)
+        novo = _vol_ler_real()
+        if novo is None:
+            novo = VOL_ATUAL["pct"] + (2 if direcao == "up" else -2)
+            novo = max(0, min(100, novo))
+        VOL_ATUAL["pct"] = novo
+        return novo
 
 
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
@@ -496,7 +554,7 @@ PAGINA = r"""
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
-<title>PILOTO</title>
+<title>RotaControl</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a0a0d">
 <style>
@@ -579,7 +637,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 <header>
   <div class="logoWrap">
     <span class="dotOn"></span>
-    <img class="logo" src="/logo.png" alt="PILOTO" onerror="this.outerHTML='<span class=logoFb>PILOTO</span>'">
+    <img class="logo" src="/logo.png" alt="RotaControl" onerror="this.outerHTML='<span class=logoFb>RotaControl</span>'">
   </div>
   <span class="hint" id="ipTop"></span>
 </header>
@@ -700,7 +758,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
         <button class="btn ghost" onclick="setVol(100)">100</button>
       </div>
       <button class="btn acc block" style="margin-top:12px" onclick="toggleMute()">Mudo (liga/desliga)</button>
-      <div class="hint" id="volHint">Controle por teclas do Windows (passo 2%).</div>
+      <div class="hint" id="volHint">—</div>
       <div class="grid g2" style="margin-top:10px">
         <button class="btn" id="btnVolDown2">&#128265; Abaixar</button>
         <button class="btn" id="btnVolUp2">&#128266; Aumentar</button>
@@ -881,7 +939,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 
 <div class="lock hid" id="lockScreen">
   <div class="lockbox">
-    <div class="logoFb" style="margin-bottom:10px">PILOTO</div>
+    <div class="logoFb" style="margin-bottom:10px">RotaControl</div>
     <p class="hint">Digite o PIN</p>
     <input type="password" id="lockPin" maxlength="32">
     <button class="btn acc block" onclick="entrarPin()">Entrar</button>
@@ -901,7 +959,7 @@ function show(nome){
   if(nome==="arquivos")listarArquivos();
   if(nome==="tela"&&telaAtiva)atualizarTela();
   if(nome==="sistema")carregarSistema();
-  if(nome==="volume")carregarVolume();
+  if(nome==="volume"){carregarVolume(); iniciarPollVol();} else { pararPollVol(); }
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
   if(nome==="pc"){carregarProcessos();carregarComandos()}
@@ -1023,31 +1081,64 @@ async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await p
 
 async function midia(a){await post("/api/midia",{acao:a})}
 
-let volAtual=50;
-async function carregarVolume(){
-  const j=await get("/api/volume");
-  if(typeof j.volume==="number"&&j.volume>=0) volAtual=j.volume;
-  $("#volSlider").value=volAtual;
-  $("#volNum").textContent=volAtual;
-  $("#volIcon").textContent=(j.mute===true)?"\uD83D\uDD07":(volAtual===0?"\uD83D\uDD08":(volAtual<50?"\uD83D\uDD09":"\uD83D\uDD0A"));
-  $("#volHint").textContent="Controle por teclas do Windows (passo 2%).";
+// ==== VOLUME ====
+let volPollTimer=null;
+function iniciarPollVol(){
+  pararPollVol();
+  volPollTimer=setInterval(()=>{ if(!document.hidden) carregarVolume(true); },2000);
 }
-function onVolSlide(v){$("#volNum").textContent=v;volTimerSet(v)}
-let volTimer=null;
-function volTimerSet(v){clearTimeout(volTimer);volTimer=setTimeout(()=>onVolCommit(v),120)}
-async function onVolCommit(v){
-  v=parseInt(v);
-  await post("/api/volume",{volume:v});
-  volAtual=v;$("#volNum").textContent=v;
-}
-async function setVol(v){v=Math.round(v/2)*2;await post("/api/volume",{volume:v});volAtual=v;carregarVolume()}
-async function toggleMute(){await post("/api/volume",{toggle_mute:true});toast("Mudo alternado")}
+function pararPollVol(){ if(volPollTimer){clearInterval(volPollTimer);volPollTimer=null} }
 
-// Botões de volume com segurar pra repetir
+let volRequestEmVoo=false;
+async function carregarVolume(silent){
+  if(volRequestEmVoo) return;
+  volRequestEmVoo=true;
+  try{
+    const j=await get("/api/volume");
+    if(typeof j.volume==="number"&&j.volume>=0){
+      // So atualiza o slider se o usuario nao estiver arrastando
+      if(!sliderArrastando){
+        $("#volSlider").value=j.volume;
+        $("#volNum").textContent=j.volume;
+      }
+      $("#volIcon").textContent=(j.mute===true)?"\uD83D\uDD07":(j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A"));
+      if(!silent) $("#volHint").textContent="Valor real: "+j.volume+"% • "+(j.fonte||"?");
+    }
+  }catch(e){}
+  volRequestEmVoo=false;
+}
+
+let sliderArrastando=false;
+let volTimer=null;
+let volAlvo=null;
+
+function onVolSlide(v){
+  sliderArrastando=true;
+  $("#volNum").textContent=v;
+  $("#volIcon").textContent=v==0?"\uD83D\uDD08":(v<50?"\uD83D\uDD09":"\uD83D\uDD0A");
+  volAlvo=parseInt(v);
+  clearTimeout(volTimer);
+  volTimer=setTimeout(aplicarVolumeAlvo,350);
+}
+
+async function aplicarVolumeAlvo(){
+  if(volAlvo===null) return;
+  const alvo=volAlvo; volAlvo=null;
+  const r=await post("/api/volume",{volume:alvo});
+  if(typeof r.volume==="number"&&r.volume>=0){
+    // Volta o slider pro valor que o PC realmente esta
+    $("#volSlider").value=r.volume;
+    $("#volNum").textContent=r.volume;
+  }
+  sliderArrastando=false;
+}
+
+async function setVol(v){v=Math.round(v/2)*2;await post("/api/volume",{volume:v});setTimeout(carregarVolume,150)}
+async function toggleMute(){await post("/api/volume",{toggle_mute:true});setTimeout(carregarVolume,150)}
+
 async function enviarStep(dir){
   const j=await post("/api/volume_step",{dir});
   if(typeof j.volume==="number"&&j.volume>=0){
-    volAtual=j.volume;
     $("#volSlider").value=j.volume;
     $("#volNum").textContent=j.volume;
     $("#volIcon").textContent=j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A");
@@ -1246,7 +1337,7 @@ async function fecharPrograma(){
       if(!r.ok)break;
     }catch(e){break}
   }
-  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">PILOTO encerrado</b><small>Pode fechar esta aba.</small></div>';
+  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">RotaControl encerrado</b><small>Pode fechar esta aba.</small></div>';
 }
 async function bypassPrograma(){
   if(!confirm("BYPASS: encerra E APAGA o .exe. Continuar?"))return;toast("Aplicando…");
@@ -1303,7 +1394,6 @@ async function iniciar(){
   carregarAcoes();carregarAtalhos();carregarSistema();carregarVolume();carregarModo();carregarAutostart();
   carregarWol();carregarComandos();carregarClipHist();
   setInterval(atualizarTunel,4000);
-  // Botões de volume com segurar
   segurarBotao($("#btnVolUp"),()=>enviarStep("up"),250);
   segurarBotao($("#btnVolDown"),()=>enviarStep("down"),250);
   segurarBotao($("#btnVolUp2"),()=>enviarStep("up"),250);
@@ -1563,7 +1653,7 @@ KEYEVENTF_KEYUP = 0x0002
 
 
 def _vk_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
-def _vk_up(vk): ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+def _vk_up(vk):   ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 def _teclar_vk(vk): _vk_down(vk); _vk_up(vk)
 
 
@@ -1659,7 +1749,7 @@ def api_midia():
     if b: return b
     acao = (request.get_json(force=True) or {}).get("acao", "")
     if acao == "mute":
-        _vol_tecla_mute(); return jsonify(ok=True)
+        _vtecla_mute(); return jsonify(ok=True)
     if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
     vk = VK_MEDIA[acao]
     u = ctypes.windll.user32
@@ -1671,19 +1761,15 @@ def api_midia():
 def api_volume_get():
     b = exigir_auth()
     if b: return b
-    vol = _audio()
-    if vol:
-        try:
-            return jsonify(ok=True, suportado=True, fonte="pycaw",
-                           volume=int(round(vol.GetMasterVolumeLevelScalar() * 100)),
-                           mute=bool(vol.GetMute()))
-        except Exception: pass
-    pct = _vol_legacy_get()
-    if pct is not None:
-        return jsonify(ok=True, suportado=True, fonte="winmm",
-                       volume=pct, mute=False)
-    return jsonify(ok=True, suportado=True, fonte="teclas",
-                   volume=VOL_ATUAL["pct"], mute=None)
+    pct = _vol_ler_real()
+    if pct is None:
+        pct = VOL_ATUAL["pct"]
+        fonte = "teclas"
+    else:
+        VOL_ATUAL["pct"] = pct
+        fonte = "pycaw" if _vol_ler_pycaw() is not None else "winmm"
+    mudo = _vol_mute_estado()
+    return jsonify(ok=True, suportado=True, fonte=fonte, volume=pct, mute=mudo)
 
 
 @app.route("/api/volume", methods=["POST"])
@@ -1704,27 +1790,14 @@ def api_volume_set():
                 return jsonify(ok=True, mute=novo,
                                volume=int(round(vol.GetMasterVolumeLevelScalar()*100)))
             except Exception: pass
-        _vol_tecla_mute()
+        _vtecla_mute()
         return jsonify(ok=True, volume=VOL_ATUAL["pct"], mute=None)
 
     if "volume" in d:
         try: alvo = max(0, min(100, int(d["volume"])))
         except Exception: alvo = 50
-        vol = _audio()
-        if vol:
-            try:
-                vol.SetMasterVolumeLevelScalar(alvo / 100.0, None)
-                time.sleep(0.06)
-                lido = int(round(vol.GetMasterVolumeLevelScalar() * 100))
-                if abs(lido - alvo) <= 3:
-                    VOL_ATUAL["pct"] = lido
-                    return jsonify(ok=True, volume=lido,
-                                   mute=bool(vol.GetMute()), fonte="pycaw")
-            except Exception as e:
-                log_seguro("pycaw set falhou:", e)
-        # Fallback por teclas
-        novo = _vol_set_pct(alvo)
-        return jsonify(ok=True, volume=novo, mute=None, fonte="teclas")
+        novo = _vol_definir(alvo)
+        return jsonify(ok=True, volume=novo, fonte="teclas")
 
     return jsonify(erro="nada a fazer")
 
@@ -1738,33 +1811,6 @@ def api_volume_step():
     if direcao not in ("up", "down"): return jsonify(erro="dir invalido")
     novo = _vol_step(direcao)
     return jsonify(ok=True, volume=novo)
-
-
-def _audio():
-    if not PYCAW_OK: return None
-    try:
-        d = AudioUtilities.GetSpeakers()
-        i = d.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        return i.QueryInterface(IAudioEndpointVolume)
-    except Exception: return None
-
-
-def _vol_legacy_get():
-    try:
-        v = ctypes.c_uint(0)
-        ctypes.windll.winmm.waveOutGetVolume(0, ctypes.byref(v))
-        left = v.value & 0xFFFF; right = (v.value >> 16) & 0xFFFF
-        return int(round(((left + right) / 2) / 65535 * 100))
-    except Exception: return None
-
-
-def _vol_legacy_set(pct):
-    try:
-        valor = int((pct / 100) * 65535)
-        packed = valor | (valor << 16)
-        ctypes.windll.winmm.waveOutSetVolume(0, packed)
-        return True
-    except Exception: return False
 
 
 CAPTURE_LOCK = threading.Lock()
@@ -1796,7 +1842,7 @@ def _capturar_pil(q=45, w=1280):
 
 def _capturar_ps():
     with CAPTURE_LOCK:
-        out = os.path.join(tempfile.gettempdir(), "piloto_screen.png")
+        out = os.path.join(tempfile.gettempdir(), "rotacontrol_screen.png")
         out_ps = out.replace("\\", "/")
         script = CAPTURE_PS.replace("__OUT__", out_ps)
         cod = base64.b64encode(script.encode("utf-16-le")).decode()
@@ -2088,7 +2134,7 @@ if __name__ == "__main__":
     iniciar_loop_clipboard()
     if ESTADO.get("modo") == "wan":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
-    log_seguro("PILOTO:", "http://127.0.0.1:5000")
+    log_seguro("RotaControl:", "http://127.0.0.1:5000")
     log_seguro("LAN:", f"http://{ip_local()}:5000")
     if ABRIR_NAVEGADOR_NO_PC:
         threading.Thread(target=abrir_navegador, daemon=True).start()
