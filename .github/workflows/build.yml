@@ -1,4 +1,4 @@
-name: RotaControl
+name: Build EXE
 
 on:
   push:
@@ -15,6 +15,9 @@ jobs:
       - name: Baixar o codigo
         uses: actions/checkout@v4
 
+      - name: Listar arquivos
+        run: dir
+
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
@@ -23,13 +26,16 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller flask pillow mss pycaw comtypes
+          pip install flask pillow mss pycaw comtypes pyinstaller
 
-      - name: Checar se o codigo compila
+      - name: Checar se compila
         run: python -m py_compile painel.py
 
-      - name: Compilar exe (sem janela de CMD, sem icone)
-        run: pyinstaller --onefile --noconsole --clean --icon=NONE --name $env:NOME_EXE --collect-all pycaw --collect-all comtypes painel.py
+      - name: Compilar exe
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss painel.py
+
+      - name: Listar arquivos gerados
+        run: dir dist
 
       - name: Enviar exe como artefato
         uses: actions/upload-artifact@v4
