@@ -60,6 +60,24 @@ def rodar_oculto(args, **kw):
     return subprocess.Popen(args, **kw)
 
 
+def run_escondido(cmd):
+    """Roda comando CMD escondido, sem piscar janela preta."""
+    si = None
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+    return subprocess.run(
+        cmd, shell=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="cp850", errors="replace",
+        creationflags=CREATE_NO_WINDOW,
+        startupinfo=si,
+        timeout=30,
+    )
+
+
 def pasta_base():
     if getattr(sys, "frozen", False): return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -79,13 +97,12 @@ ACOES_PADRAO = [
 ]
 
 COMANDOS_PADRAO = [
-    {"nome": "IP local",     "cmd": "ipconfig"},
-    {"nome": "IP detalhado", "cmd": "ipconfig /all"},
-    {"nome": "Ping Google",  "cmd": "ping google.com -n 4"},
-    {"nome": "Wi-Fi",        "cmd": "netsh wlan show interfaces"},
-    {"nome": "Processos",    "cmd": "tasklist | findstr /i svchost"},
-    {"nome": "Info sistema", "cmd": "systeminfo"},
-    {"nome": "Disco",        "cmd": "wmic logicaldisk get name,size,freespace"},
+    {"nome": "IP local",     "cmd": "ipconfig",                   "escondido": True},
+    {"nome": "IP detalhado", "cmd": "ipconfig /all",              "escondido": True},
+    {"nome": "Ping Google",  "cmd": "ping google.com -n 4",       "escondido": True},
+    {"nome": "Wi-Fi",        "cmd": "netsh wlan show interfaces", "escondido": True},
+    {"nome": "Info sistema", "cmd": "systeminfo",                 "escondido": True},
+    {"nome": "Disco",        "cmd": "wmic logicaldisk get name,size,freespace", "escondido": True},
 ]
 
 CONFIG_PADRAO = {
@@ -273,14 +290,18 @@ def wake_on_lan(mac):
     finally: s.close()
 
 
-# ===================== NOTIFICACAO =====================
+# ===================== NOTIFICACAO (AppID do PowerShell — funciona sempre) =====================
+APPID_PS = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
+
+
 def notificar_pc(titulo, texto):
-    titulo = (titulo or "PILOTO").replace('"', "'")[:80]
-    texto = (texto or "").replace('"', "'")[:200]
+    titulo = (titulo or "PILOTO").replace('"', "'").replace("&", "e")[:80]
+    texto = (texto or "").replace('"', "'").replace("&", "e")[:200]
     script = f'''
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+$ErrorActionPreference = 'SilentlyContinue'
+$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]
 $xml = @"
-<toast>
+<toast duration="long">
   <visual><binding template="ToastGeneric">
     <text>{titulo}</text><text>{texto}</text>
   </binding></visual>
@@ -289,10 +310,18 @@ $xml = @"
 $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
 $doc.LoadXml($xml)
 $t = [Windows.UI.Notifications.ToastNotification]::new($doc)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PILOTO').Show($t)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{APPID_PS}').Show($t)
 '''
     cod = base64.b64encode(script.encode("utf-16-le")).decode()
-    try: executar(["powershell", "-NoProfile", "-EncodedCommand", cod], capture_output=True)
+    try: executar(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                   "-EncodedCommand", cod], capture_output=True, timeout=15)
+    except Exception: pass
+
+
+def notificar_balão(titulo, texto):
+    """Fallback: MessageBox se o toast falhar."""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, texto, titulo, 0x40)
     except Exception: pass
 
 
@@ -347,37 +376,62 @@ def enviar_combo(teclas):
     return True
 
 
-# ===================== HISTORICO DE CLIPBOARD =====================
+# ===================== VOLTAR/AVANCAR (mouse/browser) =====================
+VK_BROWSER_BACK    = 0xA6
+VK_BROWSER_FORWARD = 0xA7
+VK_BROWSER_REFRESH = 0xA8
+
+
+def enviar_tecla_browser(vk):
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 0, 0); time.sleep(0.03)
+    u.keybd_event(vk, 0, 2, 0)
+
+
+# ===================== HISTORICO DE CLIPBOARD (via SequenceNumber — confiável) =====================
 CLIP_HIST = deque(maxlen=10)
 CLIP_ULTIMO = {"txt": ""}
+CLIP_SEQ = {"n": 0}
 
 
 def _clip_get():
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    for _ in range(3):
+        if u.OpenClipboard(None): break
+        time.sleep(0.05)
+    else:
+        return None
     try:
-        u = ctypes.windll.user32
-        k = ctypes.windll.kernel32
-        if not u.OpenClipboard(0): return None
-        try:
-            h = u.GetClipboardData(13)
-            if not h: return None
-            p = k.GlobalLock(h)
-            if not p: return None
-            try: return ctypes.wstring_at(p)
-            finally: k.GlobalUnlock(h)
-        finally: u.CloseClipboard()
-    except Exception: return None
+        if not u.IsClipboardFormatAvailable(13): return None
+        h = u.GetClipboardData(13)
+        if not h: return None
+        p = k.GlobalLock(h)
+        if not p: return None
+        try: return ctypes.wstring_at(p)
+        finally: k.GlobalUnlock(h)
+    except Exception:
+        return None
+    finally:
+        try: u.CloseClipboard()
+        except Exception: pass
 
 
 def _loop_clipboard():
+    u = ctypes.windll.user32
     while True:
         try:
-            t = _clip_get()
-            if t and t != CLIP_ULTIMO["txt"]:
-                CLIP_ULTIMO["txt"] = t
-                if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
-                    CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
-        except Exception: pass
-        time.sleep(1.5)
+            seq = u.GetClipboardSequenceNumber()
+            if seq and seq != CLIP_SEQ["n"]:
+                CLIP_SEQ["n"] = seq
+                t = _clip_get()
+                if t and t != CLIP_ULTIMO["txt"]:
+                    CLIP_ULTIMO["txt"] = t
+                    if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
+                        CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
+        except Exception:
+            pass
+        time.sleep(1.0)
 
 
 def iniciar_loop_clipboard():
@@ -460,6 +514,8 @@ input[type=range]::-moz-range-thumb{width:28px;height:28px;border-radius:50%;bac
 .avisoLive{background:#1a0a26;border:1px solid #3d1a5c;color:#d4a0ff;padding:8px 12px;border-radius:8px;font-size:12px;display:flex;align-items:center;gap:8px;margin-top:8px}
 .avisoLive .luz{width:8px;height:8px;border-radius:50%;background:var(--acc2);box-shadow:0 0 8px var(--acc2);animation:pu 1.2s infinite;flex:none}
 pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.chk{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}
+.chk input{width:auto}
 </style>
 </head>
 <body>
@@ -480,6 +536,15 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <div class="grid g2" id="gridAcoes"></div>
       <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovaAcao()">+ Adicionar ação</button>
       <div class="hint">Toque para executar. Segure para remover.</div>
+    </div>
+    <div class="panel">
+      <h2>Navegação</h2>
+      <div class="grid g3">
+        <button class="btn" onclick="navBack()">&#11013; Voltar</button>
+        <button class="btn" onclick="navRefresh()">&#8635; Atualizar</button>
+        <button class="btn" onclick="navForward()">Avançar &#10145;</button>
+      </div>
+      <div class="hint">Voltar/avançar guias no navegador (funciona onde tem histórico).</div>
     </div>
     <div class="panel">
       <h2>Atalhos configurados</h2>
@@ -540,7 +605,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <button class="btn ghost block" onclick="carregarClipHist()">Atualizar histórico</button>
       <div id="listaClip" style="margin-top:10px"></div>
       <button class="btn ghost block" style="margin-top:8px" onclick="limparClipHist()">Limpar histórico</button>
-      <div class="hint">Últimos 10 textos copiados no PC (atualiza automático).</div>
+      <div class="hint">Últimos 10 textos copiados no PC.</div>
     </div>
   </section>
 
@@ -552,7 +617,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
         <button class="btn icon acc" onclick="midia('play')">&#9199;</button>
         <button class="btn icon" onclick="midia('next')">&#9197;</button>
       </div>
-      <div class="hint">Funciona em Spotify, VLC, Windows Media e YouTube (com janela aberta).</div>
+      <div class="hint">Funciona em Spotify, VLC, Windows Media e YouTube.</div>
     </div>
     <div class="panel">
       <h2>Volume rápido</h2>
@@ -625,7 +690,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <h2>Comandos rápidos</h2>
       <div class="grid g2" id="gridComandos"></div>
       <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovoComando()">+ Adicionar comando</button>
-      <div class="hint">Segure num botão para remover. Toque para executar.</div>
+      <div class="hint">Segure num botão para remover. Toque para executar (sempre escondido).</div>
     </div>
 
     <div class="panel" id="saidaComandoWrap" style="display:none">
@@ -815,6 +880,11 @@ function abrirNovaAcao(){
   post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes);
 }
 
+// NAVEGAÇÃO
+async function navBack(){const j=await post("/api/nav",{acao:"back"});toast(j.saida||"Voltar")}
+async function navForward(){const j=await post("/api/nav",{acao:"forward"});toast(j.saida||"Avançar")}
+async function navRefresh(){const j=await post("/api/nav",{acao:"refresh"});toast(j.saida||"Atualizar")}
+
 // ATALHOS
 async function carregarAtalhos(){
   const j=await get("/api/atalhos");const g=$("#gridAtalhos");g.innerHTML="";
@@ -862,7 +932,7 @@ $("#txtEnv").addEventListener("keydown",e=>{
 async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";toast("Lido")}
 function copiarTexto(){const t=$("#txtRec");t.select();document.execCommand("copy");toast("Copiado")}
 
-// HISTÓRICO DE CLIPBOARD
+// HISTÓRICO
 async function carregarClipHist(){
   const j=await get("/api/clip_hist");
   const box=$("#listaClip");box.innerHTML="";
@@ -870,20 +940,17 @@ async function carregarClipHist(){
     const hora=new Date(it.hora*1000).toLocaleTimeString();
     const d=document.createElement("div");d.className="arq";d.style.alignItems="flex-start";
     d.innerHTML=`<span class="nome" style="white-space:pre-wrap;word-break:break-all;font-size:12px">${esc(it.texto)}</span>
-      <span class="tam" style="flex:none">${hora}</span>
-      <button onclick="usarClip(${JSON.stringify(it.texto).replace(/"/g,'&quot;')})">Usar</button>`;
+      <span class="tam" style="flex:none">${hora}</span>`;
+    const b=document.createElement("button");
+    b.textContent="Usar";
+    b.onclick=()=>usarClip(it.texto);
+    d.appendChild(b);
     box.appendChild(d);
   });
   if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio — copie algo no PC)</div>';
 }
-async function usarClip(t){
-  await post("/api/texto",{texto:t,modo:"clipboard"});
-  toast("Copiado de novo pro PC");
-}
-async function limparClipHist(){
-  if(!confirm("Limpar histórico?"))return;
-  await post("/api/clip_hist_limpar",{});carregarClipHist();
-}
+async function usarClip(t){await post("/api/texto",{texto:t,modo:"clipboard"});toast("Copiado de novo pro PC")}
+async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await post("/api/clip_hist_limpar",{});carregarClipHist()}
 
 // MIDIA
 async function midia(a){await post("/api/midia",{acao:a})}
@@ -892,11 +959,20 @@ async function midia(a){await post("/api/midia",{acao:a})}
 let volTimer=null;
 async function carregarVolume(){
   const j=await get("/api/volume");
-  if(!j.suportado){$("#volHint").textContent="Volume indisponível — usando teclas do Windows."}
-  if(j.volume>=0){$("#volSlider").value=j.volume;$("#volNum").textContent=j.volume;
-    $("#volIcon").textContent=j.mute?"\uD83D\uDD07":(j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A"))}
+  if(!j.suportado){
+    $("#volHint").textContent="pycaw nao instalado — slider desabilitado. Use os botoes +/- da aba Midia.";
+    $("#volSlider").disabled=true;
+    return;
+  }
+  $("#volSlider").disabled=false;
+  if(j.volume>=0){
+    $("#volSlider").value=j.volume;
+    $("#volNum").textContent=j.volume;
+    $("#volIcon").textContent=j.mute?"\uD83D\uDD07":(j.volume===0?"\uD83D\uDD08":(j.volume<50?"\uD83D\uDD09":"\uD83D\uDD0A"));
+    $("#volHint").textContent=j.mute?"Mudo":"Volume normal";
+  }
 }
-function onVolSlide(v){$("#volNum").textContent=v;clearTimeout(volTimer);volTimer=setTimeout(()=>onVolCommit(v),100)}
+function onVolSlide(v){$("#volNum").textContent=v;clearTimeout(volTimer);volTimer=setTimeout(()=>onVolCommit(v),120)}
 async function onVolCommit(v){const r=await post("/api/volume",{volume:parseInt(v)});if(r.volume>=0)$("#volNum").textContent=r.volume}
 async function setVol(v){await post("/api/volume",{volume:v});carregarVolume()}
 async function toggleMute(){await post("/api/volume",{toggle_mute:true});carregarVolume()}
@@ -996,10 +1072,10 @@ async function removerComando(i){await post("/api/comando_remover",{idx:i});carr
 function abrirNovoComando(){
   const nome=prompt("Nome do botão:");if(!nome)return;
   const cmd=prompt("Comando CMD (ex: ipconfig):");if(!cmd)return;
-  post("/api/comando_add",{nome,cmd}).then(carregarComandos);
+  post("/api/comando_add",{nome,cmd,escondido:true}).then(carregarComandos);
 }
 
-// CHAT / EXTRA
+// CHAT
 async function enviarChat(){
   const t=$("#chatTitulo").value.trim()||"PILOTO";
   const x=$("#chatTexto").value.trim();
@@ -1018,10 +1094,7 @@ async function carregarTimers(){
   const j=await get("/api/timers");
   const t=j.timers||[];
   if(!t.length){$("#timerInfo").textContent="Nenhum timer ativo."}
-  else{
-    const agora=Date.now()/1000;
-    $("#timerInfo").textContent=t.map(x=>`${x.acao} em ${Math.max(0,Math.round(x.quando-agora))}s`).join(" • ");
-  }
+  else{const agora=Date.now()/1000;$("#timerInfo").textContent=t.map(x=>`${x.acao} em ${Math.max(0,Math.round(x.quando-agora))}s`).join(" • ")}
 }
 async function cancelarTimers(){await post("/api/timers_cancelar",{});carregarTimers();toast("Timers cancelados")}
 
@@ -1267,6 +1340,22 @@ def executar_acao(a):
     else: raise Exception("Tipo desconhecido: " + tipo)
 
 
+# ---------- NAVEGACAO ----------
+@app.route("/api/nav", methods=["POST"])
+def api_nav():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    mapa = {"back": VK_BROWSER_BACK, "forward": VK_BROWSER_FORWARD, "refresh": VK_BROWSER_REFRESH}
+    vk = mapa.get(acao)
+    if vk is None: return jsonify(erro="acao desconhecida")
+    try:
+        enviar_tecla_browser(vk)
+        return jsonify(ok=True, saida=acao)
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
 # ---------- ATALHOS ----------
 @app.route("/api/atalhos")
 def api_atalhos():
@@ -1436,17 +1525,6 @@ def api_clip_hist_limpar():
 
 # ---------- MIDIA ----------
 VK_MEDIA = {"play":0xB3,"next":0xB0,"prev":0xB1,"vol_up":0xAF,"vol_down":0xAE,"mute":0xAD}
-WM_APPCOMMAND = 0x0319
-APPCOMMAND = {"play":14,"next":11,"prev":12,"vol_up":10,"vol_down":9,"mute":8}
-
-
-def _enviar_appcommand(cmd):
-    try:
-        u = ctypes.windll.user32
-        h = u.GetForegroundWindow()
-        if not h: return False
-        u.SendMessageW(h, WM_APPCOMMAND, h, cmd << 16); return True
-    except Exception: return False
 
 
 @app.route("/api/midia", methods=["POST"])
@@ -1455,10 +1533,12 @@ def api_midia():
     if b: return b
     acao = (request.get_json(force=True) or {}).get("acao", "")
     if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
-    u = ctypes.windll.user32; vk = VK_MEDIA[acao]
-    u.keybd_event(vk, 0, 0, 0); time.sleep(0.02); u.keybd_event(vk, 0, 2, 0)
-    try: _enviar_appcommand(APPCOMMAND.get(acao, 0))
-    except Exception: pass
+    vk = VK_MEDIA[acao]
+    u = ctypes.windll.user32
+    # envia apenas UMA vez — keybd_event só
+    u.keybd_event(vk, 0, 0, 0)
+    time.sleep(0.04)
+    u.keybd_event(vk, 0, 2, 0)
     return jsonify(ok=True)
 
 
@@ -1472,6 +1552,30 @@ def _audio():
     except Exception: return None
 
 
+def _vol_legacy_get():
+    """Fallback para ler volume sem pycaw."""
+    try:
+        winmm = ctypes.windll.winmm
+        v = ctypes.c_uint(0)
+        winmm.waveOutGetVolume(0, ctypes.byref(v))
+        left = v.value & 0xFFFF
+        right = (v.value >> 16) & 0xFFFF
+        return int(round(((left + right) / 2) / 65535 * 100))
+    except Exception:
+        return None
+
+
+def _vol_legacy_set(pct):
+    try:
+        winmm = ctypes.windll.winmm
+        valor = int((pct / 100) * 65535)
+        packed = valor | (valor << 16)
+        winmm.waveOutSetVolume(0, packed)
+        return True
+    except Exception:
+        return False
+
+
 @app.route("/api/volume")
 def api_volume_get():
     b = exigir_auth()
@@ -1479,10 +1583,13 @@ def api_volume_get():
     vol = _audio()
     if vol:
         try:
-            return jsonify(ok=True, suportado=True,
+            return jsonify(ok=True, suportado=True, fonte="pycaw",
                            volume=int(round(vol.GetMasterVolumeLevelScalar() * 100)),
                            mute=bool(vol.GetMute()))
-        except Exception as e: return jsonify(ok=False, suportado=True, erro=str(e))
+        except Exception: pass
+    pct = _vol_legacy_get()
+    if pct is not None:
+        return jsonify(ok=True, suportado=True, fonte="winmm", volume=pct, mute=False)
     return jsonify(ok=False, suportado=False, volume=-1, mute=None)
 
 
@@ -1502,14 +1609,14 @@ def api_volume_set():
             return jsonify(ok=True,
                            volume=int(round(vol.GetMasterVolumeLevelScalar() * 100)),
                            mute=bool(vol.GetMute()))
-        except Exception as e: return jsonify(erro=str(e))
+        except Exception: pass
     if "toggle_mute" in d or "mute" in d:
         _teclar_vk(0xAD); return jsonify(ok=True, volume=-1, mute=None)
     if "volume" in d:
         pct = max(0, min(100, int(d["volume"])))
-        for _ in range(50): _teclar_vk(0xAE); time.sleep(0.006)
-        for _ in range(int(pct / 2)): _teclar_vk(0xAF); time.sleep(0.006)
-        return jsonify(ok=True, volume=pct, mute=False)
+        if _vol_legacy_set(pct):
+            return jsonify(ok=True, volume=pct, mute=False)
+        return jsonify(erro="nao consegui mudar o volume"), 500
     return jsonify(erro="nada a fazer")
 
 
@@ -1672,7 +1779,10 @@ def api_comando_add():
     nome = (d.get("nome") or "?")[:40]
     cmd = (d.get("cmd") or "").strip()
     if not cmd: return jsonify(erro="comando vazio")
-    ESTADO.setdefault("comandos", []).append({"nome": nome, "cmd": cmd})
+    ESTADO.setdefault("comandos", []).append({
+        "nome": nome, "cmd": cmd,
+        "escondido": bool(d.get("escondido", True)),
+    })
     salvar_config(); return jsonify(ok=True)
 
 
@@ -1695,8 +1805,7 @@ def api_comando_exec():
     if idx < 0 or idx >= len(cmds): return jsonify(erro="comando invalido")
     c = cmds[idx]
     try:
-        r = executar(c["cmd"], shell=True, capture_output=True, text=True,
-                     encoding="cp850", errors="replace", timeout=30)
+        r = run_escondido(c["cmd"])
         saida = (r.stdout or "") + (r.stderr or "")
         return jsonify(saida=saida.strip() or "(sem saida)")
     except subprocess.TimeoutExpired:
