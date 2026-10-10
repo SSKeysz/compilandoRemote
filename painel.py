@@ -73,6 +73,10 @@ def run_cmd_escondido(cmd):
     except Exception as e: return f"(erro: {e})"
 
 
+class PONTO(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 def pasta_base():
     if getattr(sys, "frozen", False): return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -452,8 +456,7 @@ def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
-# ===================== CAPTURA DE TELA CONTÍNUA (todas as telas) =====================
-# Thread que mantém sempre o último frame pronto. A rota só devolve o que já existe.
+# ===================== CAPTURA DE TELA CONTÍNUA =====================
 CAPTURA = {
     "running": False,
     "thread": None,
@@ -463,11 +466,10 @@ CAPTURA = {
     "erro": None,
 }
 
-# Config
-CAP_Q = 28       # qualidade JPEG (menor = mais rápido)
-CAP_W = 1100     # largura máxima (um pouco maior pra ver as 2 telas com detalhe)
-CAP_FPS = 15     # frames por segundo máximos
-CAP_IDLE = 6     # segundos sem pedidos pra parar a thread
+CAP_Q = 28
+CAP_W = 1100
+CAP_FPS = 15
+CAP_IDLE = 6
 
 
 def _loop_captura():
@@ -480,7 +482,6 @@ def _loop_captura():
                     break
                 t0 = time.time()
                 try:
-                    # monitors[0] = tela virtual COMPLETA (todas as telas juntas)
                     shot = sct.grab(sct.monitors[0])
                     pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
                     if pil.width > CAP_W:
@@ -568,8 +569,8 @@ h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;color:var(--mut);lett
 .g4{grid-template-columns:1fr 1fr 1fr 1fr}
 button,.btn{border:0;background:#1f1f2a;color:var(--fg);padding:12px;border-radius:10px;font:inherit;font-weight:600;cursor:pointer;text-align:center;transition:.15s;user-select:none;white-space:normal;-webkit-user-select:none;touch-action:manipulation}
 button:active,.btn:active{transform:scale(.96)}
-.btn.acc{background:var(--acc);color:#fff}
-.btn.acc:hover{background:var(--acc2)}
+.btn.acc:not(.on){background:var(--acc);color:#fff}
+.btn.acc:not(.on):hover{background:var(--acc2)}
 .btn.red{background:var(--red);color:#fff}
 .btn.ghost{background:transparent;border:1px solid var(--line)}
 .btn.block{width:100%}
@@ -606,6 +607,10 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .arq button.del{background:#3a1020}
 .avisoLive{background:#1a0a26;border:1px solid #3d1a5c;color:#d4a0ff;padding:8px 12px;border-radius:8px;font-size:12px;display:flex;align-items:center;gap:8px;margin-top:8px}
 .avisoLive .luz{width:8px;height:8px;border-radius:50%;background:var(--acc2);box-shadow:0 0 8px var(--acc2);animation:pu 1.2s infinite;flex:none}
+.touchpad{position:relative;width:100%;aspect-ratio:1/1;background:#0d0d14;border:1px solid var(--line);border-radius:14px;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
+.touchpad.two{background:#141420}
+.touchpad::after{content:'arraste o dedo pra mover o cursor';position:absolute;bottom:8px;left:0;right:0;text-align:center;font-size:11px;color:#4a4a5a;pointer-events:none}
+.touchpad.two::after{content:'2 dedos = scroll'}
 pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 @media(max-width:500px){
   main{padding:0 8px 12px}
@@ -729,6 +734,23 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
   </section>
 
+  <section id="p-mouse" class="page hid">
+    <div class="panel">
+      <h2>Touchpad</h2>
+      <div id="touchpad" class="touchpad"></div>
+      <div class="grid g3" style="margin-top:10px">
+        <button class="btn" onclick="mouseClick('left')">Esquerdo</button>
+        <button class="btn" onclick="mouseClick('right')">Direito</button>
+        <button class="btn" onclick="mouseClick('middle')">Meio</button>
+      </div>
+      <div class="grid g2" style="margin-top:8px">
+        <button class="btn ghost" onclick="mouseClick('double')">Duplo clique</button>
+        <button class="btn ghost" id="btnDragToggle" onclick="toggleDrag()">Arrastar (manter)</button>
+      </div>
+      <div class="hint">1 dedo = move • 2 dedos = scroll • 3 dedos = clique direito • toque = clique esquerdo • 2 toques = duplo</div>
+    </div>
+  </section>
+
   <section id="p-tela" class="page hid">
     <div class="panel">
       <h2>Tela do PC <span class="hint" style="font-weight:400;text-transform:none">• todas as telas</span></h2>
@@ -739,6 +761,12 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <div class="telaWrap">
         <img id="tela" alt="">
         <div id="telaOff" class="telaOff">Tela desligada — clique em "Ver ao vivo"</div>
+      </div>
+      <video id="pipVideo" muted playsinline style="display:none"></video>
+      <canvas id="pipCanvas" style="display:none"></canvas>
+      <div class="grid g2" style="margin-top:10px">
+        <button class="btn" id="btnPip" onclick="togglePip()">Picture-in-Picture</button>
+        <span class="hint" style="align-self:center">Abre a tela numa janelinha flutuante do sistema</span>
       </div>
       <div class="hint" id="telaHora">—</div>
     </div>
@@ -800,7 +828,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
     <div class="panel">
       <h2>Wake-on-LAN</h2>
-      <div class="warn">Isso liga <b>outros PCs</b> da sua rede. O PC-alvo precisa ter WOL na BIOS e cabo de rede.</div>
+      <div class="warn">Isso liga <b>outros PCs</b> da sua rede. O PC-alvo precisa ter WOL na BIOS e cabo de rede. O RotaControl precisa estar ligado pra mandar o pacote.</div>
       <input id="wolNome" type="text" placeholder="Nome do PC" style="margin-top:8px">
       <input id="wolMac" type="text" placeholder="MAC (AA:BB:CC:11:22:33)" style="margin-top:8px">
       <button class="btn acc block" style="margin-top:8px" onclick="addWol()">Adicionar dispositivo</button>
@@ -891,6 +919,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
   <button data-t="acoes" class="on"><span class="ico">&#9889;</span>Ações</button>
   <button data-t="texto"><span class="ico">&#9000;</span>Texto</button>
   <button data-t="midia"><span class="ico">&#127925;</span>Mídia</button>
+  <button data-t="mouse"><span class="ico">&#128433;</span>Mouse</button>
   <button data-t="tela"><span class="ico">&#128421;</span>Tela</button>
   <button data-t="arquivos"><span class="ico">&#128193;</span>Arquivos</button>
   <button data-t="pc"><span class="ico">&#128295;</span>PC</button>
@@ -930,6 +959,7 @@ function show(nome){
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
   if(nome==="pc"){carregarProcessos();carregarComandos()}
+  if(nome==="mouse"){initTouchpad()}
   if(nome==="texto"){carregarClipHist();iniciarPollClipHist()}else{pararPollClipHist()}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
@@ -1048,6 +1078,243 @@ async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await p
 
 async function midia(a){await post("/api/midia",{acao:a});if(navigator.vibrate)navigator.vibrate(10)}
 
+// ==================== TOUCHPAD ====================
+const TP = {
+  el: null,
+  lastX: 0, lastY: 0,
+  startX: 0, startY: 0,
+  startT: 0,
+  moved: false,
+  fingers: 0,
+  lastTap: 0,
+  drag: false,
+  pending: {dx: 0, dy: 0},
+  sendTimer: null,
+  inited: false,
+};
+
+function initTouchpad(){
+  const el = document.getElementById('touchpad');
+  if(!el) return;
+  if(TP.inited) return;
+  TP.inited = true;
+  TP.el = el;
+
+  el.addEventListener('touchstart', tpStart, {passive: false});
+  el.addEventListener('touchmove', tpMove, {passive: false});
+  el.addEventListener('touchend', tpEnd, {passive: false});
+  el.addEventListener('touchcancel', tpEnd, {passive: false});
+
+  el.addEventListener('mousedown', ev => {
+    ev.preventDefault();
+    TP.fingers = 1;
+    TP.moved = false;
+    TP.startX = ev.clientX; TP.startY = ev.clientY;
+    TP.lastX = ev.clientX; TP.lastY = ev.clientY;
+    TP.startT = Date.now();
+  });
+  el.addEventListener('mousemove', ev => {
+    if(ev.buttons !== 1) return;
+    ev.preventDefault();
+    tpProcessMove(ev.clientX, ev.clientY);
+  });
+  el.addEventListener('mouseup', ev => {
+    ev.preventDefault();
+    tpProcessEnd();
+  });
+}
+
+function tpStart(ev){
+  ev.preventDefault();
+  const n = ev.touches.length;
+  TP.fingers = n;
+  TP.moved = false;
+  const t = ev.touches[0];
+  TP.lastX = t.clientX; TP.lastY = t.clientY;
+  TP.startX = t.clientX; TP.startY = t.clientY;
+  TP.startT = Date.now();
+  TP.el.classList.toggle('two', n >= 2);
+}
+
+function tpMove(ev){
+  ev.preventDefault();
+  const n = ev.touches.length;
+  if(n === 1){
+    const t = ev.touches[0];
+    tpProcessMove(t.clientX, t.clientY);
+  } else if(n >= 2){
+    const t0 = ev.touches[0], t1 = ev.touches[1];
+    const my = (t0.clientY + t1.clientY) / 2;
+    const dy = TP.lastY - my;
+    if(Math.abs(dy) > 2){
+      TP.moved = true;
+      mouseScroll(Math.round(dy * 4));
+    }
+    TP.lastX = (t0.clientX + t1.clientX) / 2;
+    TP.lastY = my;
+  }
+}
+
+function tpProcessMove(x, y){
+  const rect = TP.el.getBoundingClientRect();
+  const dx = x - TP.lastX;
+  const dy = y - TP.lastY;
+  if(Math.abs(dx) + Math.abs(dy) > 3) TP.moved = true;
+  if(!TP.moved) return;
+
+  const sw = window.screen ? window.screen.width : 1920;
+  const sh = window.screen ? window.screen.height : 1080;
+  const fx = (sw * 1.8) / rect.width;
+  const fy = (sh * 1.8) / rect.height;
+  const vel = Math.hypot(dx, dy);
+  const multi = 1 + Math.min(vel / 8, 1.8);
+
+  TP.pending.dx += dx * fx * multi;
+  TP.pending.dy += dy * fy * multi;
+  if(!TP.sendTimer) TP.sendTimer = setTimeout(tpFlush, 25);
+  TP.lastX = x; TP.lastY = y;
+}
+
+async function tpFlush(){
+  TP.sendTimer = null;
+  const dx = Math.round(TP.pending.dx);
+  const dy = Math.round(TP.pending.dy);
+  TP.pending.dx = 0; TP.pending.dy = 0;
+  if(dx === 0 && dy === 0) return;
+  try{
+    await fetch('/api/mouse_move', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dx, dy})
+    });
+  }catch(e){}
+}
+
+function tpProcessEnd(){
+  const dur = Date.now() - TP.startT;
+  const d = Math.hypot(TP.lastX - TP.startX, TP.lastY - TP.startY);
+  TP.el.classList.remove('two');
+  if(TP.fingers >= 3 && !TP.moved && dur < 350){
+    mouseClick('right');
+    TP.fingers = 0;
+    return;
+  }
+  if(TP.fingers === 1 && !TP.moved && dur < 300){
+    const now = Date.now();
+    if(now - TP.lastTap < 300){
+      mouseClick('double');
+      TP.lastTap = 0;
+    } else {
+      TP.lastTap = now;
+      setTimeout(()=>{
+        if(TP.lastTap === now){ mouseClick('left'); TP.lastTap = 0; }
+      }, 260);
+    }
+  }
+  TP.fingers = 0;
+}
+
+function tpEnd(ev){
+  ev.preventDefault();
+  tpProcessEnd();
+}
+
+async function mouseClick(tipo){
+  try{
+    await fetch('/api/mouse_click', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tipo})
+    });
+    if(navigator.vibrate) navigator.vibrate(8);
+  }catch(e){}
+}
+
+async function mouseScroll(dy){
+  try{
+    await fetch('/api/mouse_scroll', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({dy})
+    });
+  }catch(e){}
+}
+
+async function toggleDrag(){
+  TP.drag = !TP.drag;
+  const b = document.getElementById('btnDragToggle');
+  b.classList.toggle('on', TP.drag);
+  b.textContent = TP.drag ? '✓ Soltar' : 'Arrastar (manter)';
+  try{
+    await fetch('/api/mouse_drag', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tipo: TP.drag ? 'drag_down' : 'drag_up'})
+    });
+  }catch(e){}
+}
+
+// ==================== PIP ====================
+let pipActive = false;
+let pipStream = null;
+
+async function togglePip(){
+  const vid = document.getElementById('pipVideo');
+  const cvs = document.getElementById('pipCanvas');
+  if(!vid || !cvs) return;
+
+  if(pipActive){
+    try{ await document.exitPictureInPicture(); }catch(e){}
+    if(pipStream){ pipStream.getTracks().forEach(t=>t.stop()); pipStream = null; }
+    vid.srcObject = null;
+    pipActive = false;
+    document.getElementById('btnPip').textContent = 'Picture-in-Picture';
+    document.getElementById('btnPip').classList.remove('on');
+    return;
+  }
+
+  if(!document.pictureInPictureEnabled){
+    toast('PiP não suportado neste navegador');
+    return;
+  }
+
+  try{
+    if(!telaAtiva) toggleAuto();
+    cvs.width = 640; cvs.height = 360;
+    const ctx = cvs.getContext('2d');
+    pipStream = cvs.captureStream(12);
+    vid.srcObject = pipStream;
+    vid.muted = true;
+    await vid.play();
+    await vid.requestPictureInPicture();
+    pipActive = true;
+    document.getElementById('btnPip').textContent = 'Sair do PiP';
+    document.getElementById('btnPip').classList.add('on');
+
+    vid.addEventListener('leavepictureinpicture', ()=>{
+      pipActive = false;
+      document.getElementById('btnPip').textContent = 'Picture-in-Picture';
+      document.getElementById('btnPip').classList.remove('on');
+      if(pipStream){ pipStream.getTracks().forEach(t=>t.stop()); pipStream = null; }
+      vid.srcObject = null;
+    }, {once:true});
+
+    pipLoop(ctx);
+  }catch(e){
+    toast('Erro PiP: ' + (e.message || e));
+  }
+}
+
+function pipLoop(ctx){
+  if(!pipActive) return;
+  const img = document.getElementById('tela');
+  if(img && img.src && img.complete && img.naturalWidth > 0){
+    try{ ctx.drawImage(img, 0, 0, ctx.canvas.width, ctx.canvas.height); }catch(e){}
+  }
+  setTimeout(()=>pipLoop(ctx), 100);
+}
+
+// ==================== SCROLL HOLD ====================
 function segurarBotao(el,fn,delay=250){
   if(!el)return;
   let timer=null;
@@ -1098,10 +1365,28 @@ async function atualizarTela(){
   telaEmVoo=false;
   telaTimer=setTimeout(atualizarTela,Math.max(30,TELA_INTERVALO-dt));
 }
+
 function toggleAuto(){
-  telaAtiva=!telaAtiva;const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
-  if(telaAtiva){btn.textContent="Parar";btn.classList.add("on");img.style.display="block";off.classList.add("hid");atualizarTela()}
-  else{btn.textContent="Ver ao vivo";btn.classList.remove("on");clearTimeout(telaTimer);telaTimer=null;img.style.display="none";img.src="";off.classList.remove("hid");$("#telaHora").textContent="—"}
+  telaAtiva=!telaAtiva;
+  const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
+  if(telaAtiva){
+    btn.textContent="Parar";
+    btn.classList.remove("acc");
+    btn.classList.add("on");
+    img.style.display="block";
+    off.classList.add("hid");
+    atualizarTela();
+  }else{
+    btn.textContent="Ver ao vivo";
+    btn.classList.remove("on");
+    btn.classList.add("acc");
+    clearTimeout(telaTimer);
+    telaTimer=null;
+    img.style.display="none";
+    img.src="";
+    off.classList.remove("hid");
+    $("#telaHora").textContent="—";
+  }
 }
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&telaAtiva&&!telaEmVoo){clearTimeout(telaTimer);atualizarTela()}});
 
@@ -1313,6 +1598,7 @@ async function iniciar(){
   $("#ipTop").textContent="http://"+j.ip+":"+j.porta;
   if(j.pin_set&&!j.autenticado){mostrarLock();return}
   $("#lockScreen").classList.add("hid");
+  initTouchpad();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarWol();carregarComandos();
   setInterval(atualizarTunel,4000);
@@ -1401,9 +1687,7 @@ def api_resolver_pasta():
     p = (d.get("pasta") or "").strip()
     if not p:
         return jsonify(pasta="", existe=False)
-    p = os.path.expandvars(p)
-    p = os.path.expanduser(p)
-    p = os.path.abspath(p)
+    p = os.path.expandvars(p); p = os.path.expanduser(p); p = os.path.abspath(p)
     return jsonify(pasta=p, existe=os.path.isdir(p))
 
 
@@ -1485,6 +1769,83 @@ def api_nav():
         enviar_tecla_browser(vk)
         return jsonify(ok=True, saida=acao)
     except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_move", methods=["POST"])
+def api_mouse_move():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    try:
+        dx = int(d.get("dx", 0)); dy = int(d.get("dy", 0))
+    except Exception:
+        return jsonify(erro="dx/dy invalidos")
+    try:
+        u = ctypes.windll.user32
+        pt = PONTO(); u.GetCursorPos(ctypes.byref(pt))
+        nx = pt.x + dx; ny = pt.y + dy
+        sw = u.GetSystemMetrics(78); sh = u.GetSystemMetrics(79)
+        sx = u.GetSystemMetrics(76); sy = u.GetSystemMetrics(77)
+        if sw > 0 and sh > 0:
+            if nx < sx: nx = sx
+            if ny < sy: ny = sy
+            if nx > sx + sw - 1: nx = sx + sw - 1
+            if ny > sy + sh - 1: ny = sy + sh - 1
+        u.SetCursorPos(nx, ny)
+        return jsonify(ok=True, x=nx, y=ny)
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_click", methods=["POST"])
+def api_mouse_click():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    tipo = d.get("tipo", "left")
+    u = ctypes.windll.user32
+    LD = 0x0002; LU = 0x0004
+    RD = 0x0008; RU = 0x0010
+    MD = 0x0020; MU = 0x0040
+    try:
+        if tipo == "left":
+            u.mouse_event(LD, 0, 0, 0, 0); u.mouse_event(LU, 0, 0, 0, 0)
+        elif tipo == "right":
+            u.mouse_event(RD, 0, 0, 0, 0); u.mouse_event(RU, 0, 0, 0, 0)
+        elif tipo == "middle":
+            u.mouse_event(MD, 0, 0, 0, 0); u.mouse_event(MU, 0, 0, 0, 0)
+        elif tipo == "double":
+            for _ in range(2):
+                u.mouse_event(LD, 0, 0, 0, 0); u.mouse_event(LU, 0, 0, 0, 0)
+                time.sleep(0.05)
+        else:
+            return jsonify(erro="tipo invalido")
+        return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_scroll", methods=["POST"])
+def api_mouse_scroll():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    try: dy = int(d.get("dy", 0))
+    except Exception: return jsonify(erro="dy invalido")
+    try:
+        ctypes.windll.user32.mouse_event(0x0800, 0, 0, dy, 0)
+        return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_drag", methods=["POST"])
+def api_mouse_drag():
+    b = exigir_auth()
+    if b: return b
+    tipo = (request.get_json(force=True) or {}).get("tipo", "drag_down")
+    u = ctypes.windll.user32
+    if tipo == "drag_down": u.mouse_event(0x0002, 0, 0, 0, 0)
+    elif tipo == "drag_up": u.mouse_event(0x0004, 0, 0, 0, 0)
+    return jsonify(ok=True)
 
 
 @app.route("/api/monitor", methods=["POST"])
@@ -1682,12 +2043,9 @@ def api_midia():
     b = exigir_auth()
     if b: return b
     acao = (request.get_json(force=True) or {}).get("acao", "")
-    if acao == "mute":
-        _vtecla_mute(); return jsonify(ok=True)
-    if acao == "vol_up":
-        _vtecla_up(); return jsonify(ok=True)
-    if acao == "vol_down":
-        _vtecla_down(); return jsonify(ok=True)
+    if acao == "mute": _vtecla_mute(); return jsonify(ok=True)
+    if acao == "vol_up": _vtecla_up(); return jsonify(ok=True)
+    if acao == "vol_down": _vtecla_down(); return jsonify(ok=True)
     if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
     vk = VK_MEDIA[acao]
     u = ctypes.windll.user32
@@ -1699,7 +2057,6 @@ def api_midia():
 def api_tela():
     b = exigir_auth()
     if b: return b
-
     if not TEM_MSS:
         try:
             jpeg = None
@@ -1711,26 +2068,20 @@ def api_tela():
             return jsonify(erro=f"erro captura: {e}"), 500
         return Response(jpeg, mimetype="image/jpeg",
                         headers={"Cache-Control": "no-store, max-age=0"})
-
     CAPTURA["ultimo_pedido"] = time.time()
     _garantir_captura()
-
     for _ in range(40):
         with CAPTURA["lock"]:
-            jpeg = CAPTURA["jpeg"]
-            err = CAPTURA["erro"]
+            jpeg = CAPTURA["jpeg"]; err = CAPTURA["erro"]
         if jpeg: break
         if err and not CAPTURA["running"]: break
         time.sleep(0.05)
-
     if not jpeg:
         try:
-            if ImageGrab is not None:
-                jpeg = _capturar_pil()
+            if ImageGrab is not None: jpeg = _capturar_pil()
         except Exception: pass
     if not jpeg:
         return jsonify(erro=err or "sem captura"), 503
-
     return Response(jpeg, mimetype="image/jpeg",
                     headers={"Cache-Control": "no-store, max-age=0"})
 
