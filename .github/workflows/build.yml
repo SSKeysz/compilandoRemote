@@ -30,6 +30,7 @@ jobs:
 
       - name: Checar se compila
         run: python -m py_compile painel.py
+        
 
       - name: Compilar exe
         run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss painel.py
