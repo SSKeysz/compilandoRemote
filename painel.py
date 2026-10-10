@@ -1257,149 +1257,185 @@ async function toggleDrag(){
 // ==================== PIP ====================
 let pipActive = false;
 let pipStream = null;
+let pipVideoReady = false;
+let pipStopDraw = false;
 let docPipWin = null;
 let docPipStop = false;
 
-async function togglePip(){
-  // ---------- Fechar se já estiver aberto ----------
-  if(docPipWin && !docPipWin.closed){
-    try{ docPipWin.close(); }catch(e){}
-    return;
-  }
-  if(pipActive){
-    try{ await document.exitPictureInPicture(); }catch(e){}
-    return;
-  }
+// Decide o método UMA VEZ no boot (não gasta user-activation testando)
+const PIP_METHOD = ('documentPictureInPicture' in window)
+  ? 'doc'
+  : (document.pictureInPictureEnabled ? 'video' : 'none');
 
-  if(!telaAtiva) toggleAuto();
-
-  // ---------- MÉTODO 1: Document PiP (Chrome 116+) ----------
-  if('documentPictureInPicture' in window){
-    try{
-      const w = await documentPictureInPicture.requestWindow({ width: 640, height: 360 });
-      docPipWin = w;
-      docPipStop = false;
-
-      const st = w.document.createElement('style');
-      st.textContent = `
-        html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
-        canvas{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
-      `;
-      w.document.head.appendChild(st);
-
-      const cv = w.document.createElement('canvas');
-      cv.width = 960; cv.height = 540;
-      w.document.body.appendChild(cv);
-      const cx = cv.getContext('2d');
-
-      const loop = () => {
-        if(docPipStop || w.closed) return;
-        const src = document.getElementById('tela');
-        if(src && src.complete && src.naturalWidth > 0){
-          try{ cx.drawImage(src, 0, 0, cv.width, cv.height); }catch(e){}
-        }
-        requestAnimationFrame(loop);
-      };
-      loop();
-
-      const btn = document.getElementById('btnPip');
-      btn.textContent = 'Sair do PiP';
-      btn.classList.add('on');
-
-      w.addEventListener('pagehide', () => {
-        docPipStop = true;
-        docPipWin = null;
-        btn.textContent = 'Picture-in-Picture';
-        btn.classList.remove('on');
-      }, {once: true});
-
-      return;
-    }catch(e){
-      console.warn('Document PiP falhou, tentando <video>:', e);
-      docPipWin = null;
-    }
-  }
-
-  // ---------- MÉTODO 2: PiP via <video> (fallback) ----------
-  if(!document.pictureInPictureEnabled){
-    toast('PiP não suportado neste navegador');
-    return;
-  }
-
+// ---------- Prepara o <video> em background (SEM user activation) ----------
+async function prepararVideoPip(){
+  if(pipVideoReady) return;
   const vid = document.getElementById('pipVideo');
   const cvs = document.getElementById('pipCanvas');
   if(!vid || !cvs) return;
 
+  const img = document.getElementById('tela');
+  for(let i=0; i<50 && (!img.src || !img.complete || img.naturalWidth === 0); i++){
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if(!img.src || !img.complete || img.naturalWidth === 0) return;
+
+  cvs.width = 640; cvs.height = 360;
+  const ctx = cvs.getContext('2d');
+
+  pipStopDraw = false;
+  const draw = () => {
+    if(pipStopDraw) return;
+    const im = document.getElementById('tela');
+    if(im && im.complete && im.naturalWidth > 0){
+      try{ ctx.drawImage(im, 0, 0, 640, 360); }catch(e){}
+    }
+    setTimeout(draw, 60);
+  };
+  draw();
+
+  await new Promise(r => setTimeout(r, 200));
+
   try{
-    const img = document.getElementById('tela');
-    for(let i=0; i<50 && (!img.src || !img.complete || img.naturalWidth === 0); i++){
-      await new Promise(r => setTimeout(r, 100));
-    }
-    if(!img.src || !img.complete || img.naturalWidth === 0){
-      throw new Error('sem imagem da tela ainda');
-    }
-
-    cvs.width = 640; cvs.height = 360;
-    const ctx = cvs.getContext('2d');
-
-    let stopDraw = false;
-    const draw = () => {
-      if(stopDraw) return;
-      const im = document.getElementById('tela');
-      if(im && im.complete && im.naturalWidth > 0){
-        try{ ctx.drawImage(im, 0, 0, 640, 360); }catch(e){}
-      }
-      setTimeout(draw, 60);
-    };
-    draw();
-    await new Promise(r => setTimeout(r, 300));
-
     pipStream = cvs.captureStream(20);
-
-    // precisa estar "presente no layout" — display:none NÃO funciona
     vid.style.cssText = "position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";
     vid.muted = true;
     vid.playsInline = true;
     vid.srcObject = pipStream;
-
-    try{ await vid.play(); }catch(e){ console.warn('play:', e); }
-
-    // espera readyState >= 2 (HAVE_CURRENT_DATA)
-    await new Promise(resolve => {
-      const t0 = Date.now();
-      const tick = () => {
-        if(vid.readyState >= 2 && vid.videoWidth > 0) return resolve();
-        if(Date.now() - t0 > 4000) return resolve();
-        setTimeout(tick, 60);
-      };
-      tick();
-    });
-
-    await new Promise(r => setTimeout(r, 200));
-
-    await vid.requestPictureInPicture();
-
-    pipActive = true;
-    document.getElementById('btnPip').textContent = 'Sair do PiP';
-    document.getElementById('btnPip').classList.add('on');
-
-    vid.addEventListener('leavepictureinpicture', () => {
-      stopDraw = true;
-      pipActive = false;
-      document.getElementById('btnPip').textContent = 'Picture-in-Picture';
-      document.getElementById('btnPip').classList.remove('on');
-      if(pipStream){ pipStream.getTracks().forEach(t=>t.stop()); pipStream = null; }
-      vid.srcObject = null;
-      vid.style.cssText = "display:none";
-    }, {once: true});
-
+    await vid.play();
+    for(let i=0; i<40; i++){
+      if(vid.readyState >= 2 && vid.videoWidth > 0) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if(vid.readyState >= 2 && vid.videoWidth > 0) pipVideoReady = true;
   }catch(e){
-    console.error('PiP erro:', e);
-    toast('Erro PiP: ' + (e.name ? e.name + ' — ' : '') + (e.message || e));
-    if(pipStream){ pipStream.getTracks().forEach(t=>t.stop()); pipStream = null; }
-    vid.srcObject = null;
-    vid.style.cssText = "display:none";
+    console.warn('prepararVideoPip:', e);
   }
+}
+
+function pararVideoPip(){
+  pipStopDraw = true;
+  if(pipStream){ pipStream.getTracks().forEach(t => t.stop()); pipStream = null; }
+  const vid = document.getElementById('pipVideo');
+  if(vid){ vid.srcObject = null; vid.style.cssText = "display:none"; }
+  pipVideoReady = false;
+  pipActive = false;
+}
+
+// ---------- Setup do Document PiP (roda após o requestWindow resolver) ----------
+function setupDocPip(w){
+  docPipWin = w;
+  docPipStop = false;
+
+  const st = w.document.createElement('style');
+  st.textContent = `
+    html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
+    canvas{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
+  `;
+  w.document.head.appendChild(st);
+
+  const cv = w.document.createElement('canvas');
+  cv.width = 960; cv.height = 540;
+  w.document.body.appendChild(cv);
+  const cx = cv.getContext('2d');
+
+  const loop = () => {
+    if(docPipStop || w.closed) return;
+    const src = document.getElementById('tela');
+    if(src && src.complete && src.naturalWidth > 0){
+      try{ cx.drawImage(src, 0, 0, cv.width, cv.height); }catch(e){}
+    }
+    requestAnimationFrame(loop);
+  };
+  loop();
+
+  const btn = document.getElementById('btnPip');
+  btn.textContent = 'Sair do PiP';
+  btn.classList.add('on');
+
+  w.addEventListener('pagehide', () => {
+    docPipStop = true;
+    docPipWin = null;
+    btn.textContent = 'Picture-in-Picture';
+    btn.classList.remove('on');
+  }, {once: true});
+}
+
+// ---------- Clique no botão: SEM await antes de disparar o request ----------
+function togglePip(){
+  const btn = document.getElementById('btnPip');
+
+  // ---- Document PiP (Chrome 116+) ----
+  if(PIP_METHOD === 'doc'){
+    if(docPipWin && !docPipWin.closed){
+      try{ docPipWin.close(); }catch(e){}
+      return;
+    }
+    if(!telaAtiva) toggleAuto();
+    // dispara SÍNCRONO, dentro do handler do clique (preserva user-activation)
+    documentPictureInPicture.requestWindow({ width: 640, height: 360 })
+      .then(w => setupDocPip(w))
+      .catch(e => {
+        console.error('Document PiP:', e);
+        toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e));
+      });
+    return;
+  }
+
+  // ---- PiP via <video> (fallback) ----
+  if(PIP_METHOD === 'video'){
+    const vid = document.getElementById('pipVideo');
+
+    if(pipActive){
+      document.exitPictureInPicture().catch(()=>{});
+      return;
+    }
+
+    if(!telaAtiva){
+      toggleAuto();
+      toast('Ativei "Ver ao vivo". Clique em PiP de novo em 1s.');
+      if(!pipVideoReady) prepararVideoPip();
+      return;
+    }
+    if(!pipVideoReady){
+      prepararVideoPip();
+      toast('Preparando… clique de novo em 1s');
+      return;
+    }
+    if(vid.readyState < 2 || vid.videoWidth === 0){
+      toast('Aguarde um instante e clique de novo');
+      return;
+    }
+
+    // CHAMADA SÍNCRONA — sem await antes, mantém o user-activation
+    const p = vid.requestPictureInPicture();
+    if(p && p.then){
+      p.then(() => {
+        pipActive = true;
+        btn.textContent = 'Sair do PiP';
+        btn.classList.add('on');
+      }).catch(e => {
+        console.error('PiP erro:', e);
+        toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e));
+      });
+    } else {
+      pipActive = true;
+      btn.textContent = 'Sair do PiP';
+      btn.classList.add('on');
+    }
+
+    if(!vid._pipLeaveBound){
+      vid._pipLeaveBound = true;
+      vid.addEventListener('leavepictureinpicture', () => {
+        pararVideoPip();
+        btn.textContent = 'Picture-in-Picture';
+        btn.classList.remove('on');
+      });
+    }
+    return;
+  }
+
+  toast('PiP não suportado neste navegador');
 }
 
 // ==================== SCROLL HOLD ====================
@@ -1464,6 +1500,7 @@ function toggleAuto(){
     img.style.display="block";
     off.classList.add("hid");
     atualizarTela();
+    if(PIP_METHOD === 'video') prepararVideoPip();
   }else{
     btn.textContent="Ver ao vivo";
     btn.classList.remove("on");
@@ -1474,6 +1511,7 @@ function toggleAuto(){
     img.src="";
     off.classList.remove("hid");
     $("#telaHora").textContent="—";
+    if(PIP_METHOD === 'video') pararVideoPip();
   }
 }
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&telaAtiva&&!telaEmVoo){clearTimeout(telaTimer);atualizarTela()}});
