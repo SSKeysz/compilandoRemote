@@ -609,8 +609,9 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .avisoLive .luz{width:8px;height:8px;border-radius:50%;background:var(--acc2);box-shadow:0 0 8px var(--acc2);animation:pu 1.2s infinite;flex:none}
 .touchpad{position:relative;width:100%;aspect-ratio:1/1;background:#0d0d14;border:1px solid var(--line);border-radius:14px;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
 .touchpad.two{background:#141420}
-.touchpad::after{content:'arraste o dedo pra mover o cursor';position:absolute;bottom:8px;left:0;right:0;text-align:center;font-size:11px;color:#4a4a5a;pointer-events:none}
+.touchpad::after{content:'arraste o dedo pra mover o cursor';position:absolute;bottom:8px;left:0;right:0;text-align:center;font-size:11px;color:#4a4a5a;pointer-events:none;z-index:2}
 .touchpad.two::after{content:'2 dedos = scroll'}
+.touchpad canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
 pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 @media(max-width:500px){
   main{padding:0 8px 12px}
@@ -719,7 +720,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <h2>Mídia</h2>
       <div class="grid g3">
         <button class="btn icon" onclick="midia('prev')">&#9198;</button>
-        <button class="btn icon acc" onclick="midia('play')">&#9199;</button>
+        <button class="btn icon" onclick="midia('play')">&#9199;</button>
         <button class="btn icon" onclick="midia('next')">&#9197;</button>
       </div>
     </div>
@@ -737,7 +738,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
   <section id="p-mouse" class="page hid">
     <div class="panel">
       <h2>Touchpad</h2>
-      <div id="touchpad" class="touchpad"></div>
+      <div id="touchpad" class="touchpad"><canvas id="tpCanvas"></canvas></div>
       <div class="grid g3" style="margin-top:10px">
         <button class="btn" onclick="mouseClick('left')">Esquerdo</button>
         <button class="btn" onclick="mouseClick('right')">Direito</button>
@@ -1091,6 +1092,8 @@ const TP = {
   pending: {dx: 0, dy: 0},
   sendTimer: null,
   inited: false,
+  // rastro
+  canvas: null, ctx: null, points: [], trailRaf: null,
 };
 
 function initTouchpad(){
@@ -1099,6 +1102,24 @@ function initTouchpad(){
   if(TP.inited) return;
   TP.inited = true;
   TP.el = el;
+
+  // --- canvas do rastro ---
+  const cv = document.getElementById('tpCanvas');
+  if(cv){
+    TP.canvas = cv;
+    TP.ctx = cv.getContext('2d');
+    const resize = () => {
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      cv.width = Math.max(1, Math.round(r.width * dpr));
+      cv.height = Math.max(1, Math.round(r.height * dpr));
+      TP.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    if(window.ResizeObserver) new ResizeObserver(resize).observe(el);
+    trailLoop();
+  }
 
   el.addEventListener('touchstart', tpStart, {passive: false});
   el.addEventListener('touchmove', tpMove, {passive: false});
@@ -1112,16 +1133,78 @@ function initTouchpad(){
     TP.startX = ev.clientX; TP.startY = ev.clientY;
     TP.lastX = ev.clientX; TP.lastY = ev.clientY;
     TP.startT = Date.now();
+    addTrailPoint(ev.clientX, ev.clientY);
   });
   el.addEventListener('mousemove', ev => {
     if(ev.buttons !== 1) return;
     ev.preventDefault();
     tpProcessMove(ev.clientX, ev.clientY);
+    addTrailPoint(ev.clientX, ev.clientY);
   });
   el.addEventListener('mouseup', ev => {
     ev.preventDefault();
     tpProcessEnd();
   });
+}
+
+// ---------- rastro roxo ----------
+const TRAIL_MS = 650;   // tempo de vida de cada ponto
+const TRAIL_MAX = 80;   // limite de pontos guardados
+
+function addTrailPoint(clientX, clientY){
+  if(!TP.canvas || !TP.el) return;
+  const r = TP.el.getBoundingClientRect();
+  const x = clientX - r.left;
+  const y = clientY - r.top;
+  TP.points.push({x, y, t: performance.now()});
+  if(TP.points.length > TRAIL_MAX) TP.points.shift();
+}
+
+function trailLoop(){
+  const cv = TP.canvas, ctx = TP.ctx;
+  if(!cv || !ctx){ TP.trailRaf = requestAnimationFrame(trailLoop); return; }
+  const now = performance.now();
+
+  // descarta pontos velhos
+  while(TP.points.length && now - TP.points[0].t > TRAIL_MS) TP.points.shift();
+
+  const r = TP.el.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+
+  if(TP.points.length > 1){
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for(let i = 1; i < TP.points.length; i++){
+      const a = TP.points[i-1], b = TP.points[i];
+      const age = (now - b.t) / TRAIL_MS;      // 0 novo -> 1 velho
+      const alpha = Math.max(0, 1 - age);
+      if(alpha <= 0) continue;
+      ctx.strokeStyle = `rgba(154,60,255,${alpha * 0.95})`;
+      ctx.lineWidth = 1 + 5 * alpha;
+      ctx.shadowColor = `rgba(124,0,240,${alpha})`;
+      ctx.shadowBlur = 14 * alpha;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+    // "ponta" brilhante embaixo do dedo
+    const last = TP.points[TP.points.length - 1];
+    const lastAge = (now - last.t) / TRAIL_MS;
+    if(lastAge < 1){
+      const a = Math.max(0, 1 - lastAge);
+      const grad = ctx.createRadialGradient(last.x, last.y, 0, last.x, last.y, 26);
+      grad.addColorStop(0, `rgba(200,140,255,${0.65 * a})`);
+      grad.addColorStop(1, 'rgba(154,60,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, 26, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  TP.trailRaf = requestAnimationFrame(trailLoop);
 }
 
 function tpStart(ev){
@@ -1134,6 +1217,11 @@ function tpStart(ev){
   TP.startX = t.clientX; TP.startY = t.clientY;
   TP.startT = Date.now();
   TP.el.classList.toggle('two', n >= 2);
+  addTrailPoint(t.clientX, t.clientY);
+  if(n >= 2){
+    const t1 = ev.touches[1];
+    addTrailPoint(t1.clientX, t1.clientY);
+  }
 }
 
 function tpMove(ev){
@@ -1142,6 +1230,7 @@ function tpMove(ev){
   if(n === 1){
     const t = ev.touches[0];
     tpProcessMove(t.clientX, t.clientY);
+    addTrailPoint(t.clientX, t.clientY);
   } else if(n >= 2){
     const t0 = ev.touches[0], t1 = ev.touches[1];
     const my = (t0.clientY + t1.clientY) / 2;
@@ -1152,6 +1241,8 @@ function tpMove(ev){
     }
     TP.lastX = (t0.clientX + t1.clientX) / 2;
     TP.lastY = my;
+    addTrailPoint(t0.clientX, t0.clientY);
+    addTrailPoint(t1.clientX, t1.clientY);
   }
 }
 
@@ -1322,7 +1413,7 @@ function pararVideoPip(){
   pipActive = false;
 }
 
-// ---------- Setup do Document PiP (roda após o requestWindow resolver) ----------
+// ---------- Setup do Document PiP ----------
 function setupDocPip(w){
   docPipWin = w;
   docPipStop = false;
@@ -1365,14 +1456,12 @@ function setupDocPip(w){
 function togglePip(){
   const btn = document.getElementById('btnPip');
 
-  // ---- Document PiP (Chrome 116+) ----
   if(PIP_METHOD === 'doc'){
     if(docPipWin && !docPipWin.closed){
       try{ docPipWin.close(); }catch(e){}
       return;
     }
     if(!telaAtiva) toggleAuto();
-    // dispara SÍNCRONO, dentro do handler do clique (preserva user-activation)
     documentPictureInPicture.requestWindow({ width: 640, height: 360 })
       .then(w => setupDocPip(w))
       .catch(e => {
@@ -1382,7 +1471,6 @@ function togglePip(){
     return;
   }
 
-  // ---- PiP via <video> (fallback) ----
   if(PIP_METHOD === 'video'){
     const vid = document.getElementById('pipVideo');
 
@@ -1407,7 +1495,6 @@ function togglePip(){
       return;
     }
 
-    // CHAMADA SÍNCRONA — sem await antes, mantém o user-activation
     const p = vid.requestPictureInPicture();
     if(p && p.then){
       p.then(() => {
