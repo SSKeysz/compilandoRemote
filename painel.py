@@ -24,10 +24,13 @@ try: from PIL import ImageGrab
 except Exception: ImageGrab = None
 
 try:
-    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    import comtypes
     from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     PYCAW_OK = True
-except Exception: PYCAW_OK = False
+except Exception:
+    comtypes = None
+    PYCAW_OK = False
 
 ABRIR_NAVEGADOR_NO_PC = False
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -163,6 +166,13 @@ def ip_local():
 
 def log_seguro(*a):
     try: print(*a)
+    except Exception: pass
+
+
+def _com_init():
+    """Garante que o COM está inicializado nesta thread (necessário pro pycaw)."""
+    if comtypes is None: return
+    try: comtypes.CoInitialize()
     except Exception: pass
 
 
@@ -435,7 +445,6 @@ def _clip_get():
 
 
 def _clip_set(texto):
-    """Seta o clipboard do Windows usando a API nativa (mais confiável que PowerShell)."""
     u = _user32; k = _kernel32
     ok = False
     for _ in range(6):
@@ -460,7 +469,6 @@ def _clip_set(texto):
         if not u.SetClipboardData(CF_UNICODETEXT, h):
             k.GlobalFree(h)
             raise Exception("SetClipboardData falhou")
-        # a partir daqui o Windows é dono do h, não liberar
         return True
     finally:
         try: u.CloseClipboard()
@@ -503,10 +511,13 @@ VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 # ===================== VOLUME MIXER (por app) =====================
 def listar_sessoes_audio():
-    """Lista sessões de áudio do Windows (volume mixer)."""
     if not PYCAW_OK:
         raise Exception("pycaw nao instalado")
-    sessions = AudioUtilities.GetAllSessions()
+    _com_init()
+    try:
+        sessions = AudioUtilities.GetAllSessions()
+    except Exception as e:
+        raise Exception(f"GetAllSessions falhou: {e}")
     resultado = []
     vistos = set()
     for s in sessions:
@@ -542,9 +553,9 @@ def listar_sessoes_audio():
 
 
 def setar_sessao_audio(nome_alvo, volume=None, mudo=None):
-    """Define volume (0-100) e/ou mute de todas as sessões de um processo."""
     if not PYCAW_OK:
         raise Exception("pycaw nao instalado")
+    _com_init()
     sessions = AudioUtilities.GetAllSessions()
     achou = False
     for s in sessions:
@@ -587,7 +598,7 @@ CAPTURA = {
 CAP_Q = 28
 CAP_W = 1100
 CAP_FPS = 15
-CAP_IDLE = 10
+CAP_IDLE = 60   # mantém a captura viva por 60s após o último pedido
 
 
 def _loop_captura():
@@ -1198,8 +1209,6 @@ async function enviarChar(ch){
 }
 function limparCampo(id){const el=$("#"+id);if(!el)return;el.value="";toast("Limpo");if(id==="txtEnv")el.focus()}
 
-// Digitação ao vivo: deixa o caractere aparecer no campo (eco) e manda pro PC.
-// Só bloqueia Tab/Esc que bagunçariam o foco.
 $("#txtEnv").addEventListener("keydown",e=>{
   if(!liveTyping)return;
   const k=e.key;
@@ -1542,8 +1551,6 @@ async function toggleDrag(){
 }
 
 // ==================== PIP ====================
-// O PiP agora busca os frames sozinho (direto do servidor), então
-// continua atualizando mesmo quando a aba principal está em background.
 let pipActive = false;
 let pipStream = null;
 let pipVideoReady = false;
@@ -1609,7 +1616,8 @@ function pararVideoPip(){
   pipActive = false;
 }
 
-// ---------- Document PiP: a janelinha busca os próprios frames ----------
+// ---------- Document PiP: usa <img> apontando pra stream MJPEG ----------
+// Isso é uma única conexão HTTP que fica aberta — o Chrome NÃO throttleia.
 function setupDocPip(w){
   docPipWin = w;
   docPipStop = false;
@@ -1617,72 +1625,25 @@ function setupDocPip(w){
   const st = w.document.createElement('style');
   st.textContent = `
     html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
-    canvas{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
-    .aviso{position:absolute;left:0;right:0;top:0;padding:6px 10px;font:11px system-ui;color:#9a3cff;background:rgba(0,0,0,.5);text-align:center;pointer-events:none}
+    img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
+    .aviso{position:absolute;left:0;right:0;bottom:6px;padding:4px 8px;font:11px system-ui;color:#9a3cff;background:rgba(0,0,0,.6);text-align:center;pointer-events:none}
   `;
   w.document.head.appendChild(st);
 
-  const cv = w.document.createElement('canvas');
-  cv.width = 960; cv.height = 540;
-  w.document.body.appendChild(cv);
-  const cx = cv.getContext('2d');
-
-  let parado = false;
-  let emVoo = false;
-  let erroCount = 0;
-
-  const desenhar = (im) => {
-    const cw = cv.width, ch = cv.height;
-    const iw = im.naturalWidth, ih = im.naturalHeight;
-    if(!iw || !ih) return;
-    const scale = Math.min(cw / iw, ch / ih);
-    const dw = iw * scale, dh = ih * scale;
-    const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
-    cx.fillStyle = '#000';
-    cx.fillRect(0, 0, cw, ch);
-    try{ cx.drawImage(im, dx, dy, dw, dh); }catch(e){}
-  };
-
-  const buscar = () => {
-    if(parado || w.closed) return;
-    if(emVoo){ w.setTimeout(buscar, 80); return; }
-    emVoo = true;
-    fetch(ORIGEM + "/api/tela.jpg?t=" + Date.now(), {cache: "no-store"})
-      .then(r => { if(!r.ok) throw new Error("http " + r.status); return r.blob(); })
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const im = new Image();
-        im.onload = () => {
-          desenhar(im);
-          URL.revokeObjectURL(url);
-          erroCount = 0;
-          emVoo = false;
-          if(!parado && !w.closed) w.setTimeout(buscar, 90);
-        };
-        im.onerror = () => {
-          URL.revokeObjectURL(url);
-          erroCount++;
-          emVoo = false;
-          if(!parado && !w.closed) w.setTimeout(buscar, Math.min(2000, 200 * erroCount));
-        };
-        im.src = url;
-      })
-      .catch(() => {
-        erroCount++;
-        emVoo = false;
-        if(!parado && !w.closed) w.setTimeout(buscar, Math.min(2000, 300 * erroCount));
-      });
-  };
-  buscar();
+  const im = w.document.createElement('img');
+  im.alt = "";
+  // Abre a stream e deixa o browser atualizar sozinho.
+  im.src = ORIGEM + "/api/stream.mjpg?t=" + Date.now();
+  w.document.body.appendChild(im);
 
   const btn = document.getElementById('btnPip');
   btn.textContent = 'Sair do PiP';
   btn.classList.add('on');
 
   const finalizar = () => {
-    parado = true;
     docPipStop = true;
     docPipWin = null;
+    try{ im.src = ""; }catch(e){}
     btn.textContent = 'Picture-in-Picture';
     btn.classList.remove('on');
   };
@@ -2355,12 +2316,10 @@ def api_atalho_exec():
 
 
 def copiar_pc(texto):
-    """Copia texto pro clipboard do Windows via API nativa. Cai pra PowerShell se falhar."""
     try:
         _clip_set(texto)
         return "Copiado pro clipboard do PC."
     except Exception as e:
-        # fallback PowerShell
         try:
             texto_esc = texto.replace("'", "''")
             script = f"Set-Clipboard -Value '{texto_esc}'"
@@ -2392,9 +2351,6 @@ ESPECIAIS_SENDKEYS = {"+":"{+}","^":"{^}","%":"{%}","~":"{~}","(":"{(}",")":"{)}
 
 
 def digitar_pc(texto):
-    """Digita o texto caractere-a-caractere usando keybd_event (baixo nível).
-    É mais confiável que SendKeys porque não depende de janela focada/idle.
-    Roda em thread de background (chamado pelo endpoint)."""
     for ch in texto:
         try:
             if ch in ("\n", "\r"):
@@ -2424,7 +2380,6 @@ def teclar_char(ch):
     u = ctypes.windll.user32
     res = u.VkKeyScanW(ord(ch))
     if res == -1:
-        # fallback SendKeys
         try:
             s = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
             script = ("Add-Type -AssemblyName System.Windows.Forms; "
@@ -2461,7 +2416,6 @@ def api_texto():
     if modo == "digitar":
         threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
         return jsonify(saida=f"Digitando {len(texto)} caractere(s) no PC…")
-    # modo clipboard
     try:
         msg = copiar_pc(texto)
         return jsonify(saida=msg)
@@ -2593,6 +2547,48 @@ def api_tela():
         return jsonify(erro=err or "sem captura"), 503
     return Response(jpeg, mimetype="image/jpeg",
                     headers={"Cache-Control": "no-store, max-age=0"})
+
+
+def _gerar_mjpeg():
+    """Gerador de stream MJPEG. Uma conexão HTTP persistente."""
+    boundary = b"--frame\r\n"
+    ultimo_enviado = None
+    while True:
+        with CAPTURA["lock"]:
+            jpeg = CAPTURA["jpeg"]
+        if jpeg and jpeg is not ultimo_enviado:
+            ultimo_enviado = jpeg
+            try:
+                yield (boundary +
+                       b"Content-Type: image/jpeg\r\n" +
+                       b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
+                       jpeg + b"\r\n")
+            except GeneratorExit:
+                return
+            except Exception:
+                return
+        time.sleep(1.0 / CAP_FPS)
+
+
+@app.route("/api/stream.mjpg")
+def api_stream_mjpg():
+    """Stream MJPEG contínuo — usado pelo PiP (não sofre throttling do Chrome)."""
+    b = exigir_auth()
+    if b: return b
+    if not TEM_MSS:
+        return jsonify(erro="mss nao instalado"), 503
+    CAPTURA["ultimo_pedido"] = time.time()
+    _garantir_captura()
+    # espera primeiro frame
+    for _ in range(40):
+        with CAPTURA["lock"]:
+            if CAPTURA["jpeg"]: break
+        time.sleep(0.05)
+    resp = Response(_gerar_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
@@ -2874,4 +2870,4 @@ if __name__ == "__main__":
     log_seguro("LAN:", f"http://{ip_local()}:5000")
     if ABRIR_NAVEGADOR_NO_PC:
         threading.Thread(target=abrir_navegador, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
