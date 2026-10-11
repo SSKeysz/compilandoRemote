@@ -11,7 +11,7 @@ from collections import deque
 try: import winreg
 except Exception: winreg = None
 
-from flask import Flask, Response, jsonify, request, session, send_file
+from flask import Flask, Response, jsonify, request, session, send_file, stream_with_context
 
 try:
     import mss as _mss
@@ -170,7 +170,6 @@ def log_seguro(*a):
 
 
 def _com_init():
-    """Garante que o COM está inicializado nesta thread (necessário pro pycaw)."""
     if comtypes is None: return
     try: comtypes.CoInitialize()
     except Exception: pass
@@ -510,79 +509,86 @@ VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
 # ===================== VOLUME MIXER (por app) =====================
+def _chave_e_nome(s):
+    """Retorna (chave_unica, nome_amigavel) de uma sessão de áudio.
+       chave é usada para identificar a sessão no servidor; nome é o que aparece na tela."""
+    try:
+        pid = getattr(s, "ProcessId", -1)
+        proc = getattr(s, "Process", None)
+        if proc is not None:
+            try:
+                nome = proc.name()
+            except Exception:
+                nome = None
+            if nome:
+                return ("p:" + nome.lower(), nome)
+        # Sons do Sistema (ProcessId == 0 ou Process == None)
+        if pid == 0 or proc is None:
+            return ("sys", "(Sons do Sistema)")
+        # fallback genérico
+        disp = None
+        try:
+            disp = s.DisplayName
+        except Exception:
+            pass
+        return ("pid:" + str(pid), disp or f"PID {pid}")
+    except Exception:
+        return (None, None)
+
+
 def listar_sessoes_audio():
     if not PYCAW_OK:
         raise Exception("pycaw nao instalado")
     _com_init()
+    resultado = {}
     try:
         sessions = AudioUtilities.GetAllSessions()
     except Exception as e:
         raise Exception(f"GetAllSessions falhou: {e}")
-    resultado = []
-    vistos = set()
     for s in sessions:
         try:
-            if s.Process:
-                try:
-                    nome = s.Process.name()
-                except Exception:
-                    continue
-                if not nome:
-                    continue
-            else:
-                nome = "(Sons do Sistema)"
-            try:
-                vol = s.SimpleAudioVolume
-                v = float(vol.GetMasterVolume())
-                m = bool(vol.GetMute())
-            except Exception:
+            chave, nome = _chave_e_nome(s)
+            if not chave:
                 continue
-            chave = nome.lower()
-            if chave in vistos:
+            if chave in resultado:
                 continue
-            vistos.add(chave)
-            resultado.append({
+            vol = s.SimpleAudioVolume
+            v = float(vol.GetMasterVolume())
+            m = bool(vol.GetMute())
+            resultado[chave] = {
+                "chave": chave,
                 "nome": nome,
                 "volume": int(round(v * 100)),
                 "mudo": m,
-            })
+            }
         except Exception:
             continue
-    resultado.sort(key=lambda x: x["nome"].lower())
-    return resultado
+    itens = list(resultado.values())
+    itens.sort(key=lambda x: x["nome"].lower())
+    return itens
 
 
-def setar_sessao_audio(nome_alvo, volume=None, mudo=None):
+def setar_sessao_audio(chave_alvo, volume=None, mudo=None):
     if not PYCAW_OK:
         raise Exception("pycaw nao instalado")
     _com_init()
-    sessions = AudioUtilities.GetAllSessions()
     achou = False
-    for s in sessions:
+    for s in AudioUtilities.GetAllSessions():
         try:
-            if s.Process:
-                try:
-                    nome = s.Process.name()
-                except Exception:
-                    continue
-            else:
-                nome = "(Sons do Sistema)"
-            if nome != nome_alvo:
+            chave, _ = _chave_e_nome(s)
+            if chave != chave_alvo:
                 continue
-            try:
-                vol = s.SimpleAudioVolume
-                if volume is not None:
-                    v = max(0.0, min(1.0, float(volume) / 100.0))
-                    vol.SetMasterVolume(v, None)
-                if mudo is not None:
-                    vol.SetMute(bool(mudo), None)
-                achou = True
-            except Exception:
-                pass
+            vol = s.SimpleAudioVolume
+            if volume is not None:
+                v = max(0.0, min(1.0, float(volume) / 100.0))
+                vol.SetMasterVolume(v, None)
+            if mudo is not None:
+                vol.SetMute(bool(mudo), None)
+            achou = True
         except Exception:
             continue
     if not achou:
-        raise Exception(f"sessao nao encontrada: {nome_alvo}")
+        raise Exception(f"sessao nao encontrada: {chave_alvo}")
 
 
 # ===================== CAPTURA DE TELA CONTÍNUA =====================
@@ -598,7 +604,7 @@ CAPTURA = {
 CAP_Q = 28
 CAP_W = 1100
 CAP_FPS = 15
-CAP_IDLE = 60   # mantém a captura viva por 60s após o último pedido
+CAP_IDLE = 60
 
 
 def _loop_captura():
@@ -751,7 +757,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 .mixLinha input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#1f1f2a}
 .mixLinha input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--acc2);box-shadow:0 0 6px var(--acc2);cursor:pointer;border:0}
 .mixVal{font-size:11px;color:var(--mut);min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
-.mixLinha .btn.mini{min-width:38px;padding:6px 8px;font-size:14px}
+.mixLinha .btn.mini{min-width:42px;padding:6px 8px;font-size:14px;transition:background .1s,color .1s}
 @media(max-width:500px){
   main{padding:0 8px 12px}
   .panel{padding:12px}
@@ -1098,9 +1104,15 @@ function iniciarPollClipHist(){
 function pararPollClipHist(){if(clipHistPoll){clearInterval(clipHistPoll);clipHistPoll=null}}
 
 let mixerTimer=null;
+let mixerUltimaInteracao = 0;
 function iniciarPollMixer(){
   pararPollMixer();
-  mixerTimer=setInterval(()=>{if(!document.hidden)carregarMixer(true)},4000);
+  mixerTimer=setInterval(()=>{
+    if(document.hidden) return;
+    // não mexe enquanto o usuário está interagindo com sliders
+    if(Date.now() - mixerUltimaInteracao < 4000) return;
+    carregarMixer(true);
+  },4000);
 }
 function pararPollMixer(){if(mixerTimer){clearInterval(mixerTimer);mixerTimer=null}}
 
@@ -1268,15 +1280,30 @@ async function carregarMixer(silencioso){
     const val = document.createElement("span");
     val.className = "mixVal";
     val.textContent = s.volume + "%";
-    slider.oninput = () => { val.textContent = slider.value + "%"; };
-    slider.onchange = () => { mixerSet(s.nome, parseInt(slider.value,10), null); };
+    slider.oninput = () => {
+      mixerUltimaInteracao = Date.now();
+      val.textContent = slider.value + "%";
+    };
+    slider.onpointerdown = () => { mixerUltimaInteracao = Date.now(); };
+    slider.onchange = () => {
+      mixerUltimaInteracao = Date.now();
+      mixerSet(s.chave, parseInt(slider.value,10), null);
+    };
     linha.appendChild(slider);
     linha.appendChild(val);
 
     const bMute = document.createElement("button");
     bMute.className = "btn mini" + (s.mudo ? " on" : "");
     bMute.textContent = s.mudo ? "🔇" : "🔊";
-    bMute.onclick = () => { mixerSet(s.nome, null, !s.mudo); };
+    bMute.onclick = () => {
+      // atualização otimista: muda na hora o visual, manda depois
+      const novo = !s.mudo;
+      s.mudo = novo;
+      bMute.textContent = novo ? "🔇" : "🔊";
+      bMute.classList.toggle("on", novo);
+      mixerUltimaInteracao = Date.now();
+      mixerSet(s.chave, null, novo);
+    };
     linha.appendChild(bMute);
 
     d.appendChild(linha);
@@ -1284,13 +1311,12 @@ async function carregarMixer(silencioso){
   });
 }
 
-async function mixerSet(nome, volume, mudo){
-  const body = { nome };
+async function mixerSet(chave, volume, mudo){
+  const body = { chave };
   if(volume !== null && volume !== undefined) body.volume = volume;
   if(mudo !== null && mudo !== undefined) body.mudo = mudo;
   const j = await post("/api/volume_mixer_set", body);
   if(j.erro) toast("Erro: " + j.erro);
-  else setTimeout(()=>carregarMixer(true), 250);
 }
 
 // ==================== TOUCHPAD ====================
@@ -1562,6 +1588,27 @@ const PIP_METHOD = ('documentPictureInPicture' in window)
   ? 'doc'
   : (document.pictureInPictureEnabled ? 'video' : 'none');
 
+function resetPipBtn(){
+  const bp = document.getElementById('btnPip');
+  if(!bp) return;
+  bp.textContent = 'Picture-in-Picture';
+  bp.classList.remove('on');
+}
+
+function fecharPip(comBtnReset){
+  if(docPipWin && !docPipWin.closed){
+    try{ docPipWin.close(); }catch(e){}
+    docPipWin = null;
+    docPipStop = true;
+  }
+  if(pipActive){
+    document.exitPictureInPicture().catch(()=>{});
+    pipActive = false;
+  }
+  pararVideoPip();
+  if(comBtnReset !== false) resetPipBtn();
+}
+
 async function prepararVideoPip(){
   if(pipVideoReady) return;
   const vid = document.getElementById('pipVideo');
@@ -1613,11 +1660,9 @@ function pararVideoPip(){
   const vid = document.getElementById('pipVideo');
   if(vid){ vid.srcObject = null; vid.style.cssText = "display:none"; }
   pipVideoReady = false;
-  pipActive = false;
 }
 
-// ---------- Document PiP: usa <img> apontando pra stream MJPEG ----------
-// Isso é uma única conexão HTTP que fica aberta — o Chrome NÃO throttleia.
+// ---------- Document PiP com <img> apontando pra stream MJPEG ----------
 function setupDocPip(w){
   docPipWin = w;
   docPipStop = false;
@@ -1626,13 +1671,11 @@ function setupDocPip(w){
   st.textContent = `
     html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
     img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
-    .aviso{position:absolute;left:0;right:0;bottom:6px;padding:4px 8px;font:11px system-ui;color:#9a3cff;background:rgba(0,0,0,.6);text-align:center;pointer-events:none}
   `;
   w.document.head.appendChild(st);
 
   const im = w.document.createElement('img');
   im.alt = "";
-  // Abre a stream e deixa o browser atualizar sozinho.
   im.src = ORIGEM + "/api/stream.mjpg?t=" + Date.now();
   w.document.body.appendChild(im);
 
@@ -1644,8 +1687,7 @@ function setupDocPip(w){
     docPipStop = true;
     docPipWin = null;
     try{ im.src = ""; }catch(e){}
-    btn.textContent = 'Picture-in-Picture';
-    btn.classList.remove('on');
+    resetPipBtn();
   };
   w.addEventListener('pagehide', finalizar, {once: true});
   w.addEventListener('unload', finalizar, {once: true});
@@ -1655,8 +1697,17 @@ function togglePip(){
   const btn = document.getElementById('btnPip');
 
   if(PIP_METHOD === 'doc'){
+    // se a janelinha estiver aberta, fecha
     if(docPipWin && !docPipWin.closed){
       try{ docPipWin.close(); }catch(e){}
+      docPipWin = null;
+      docPipStop = true;
+      resetPipBtn();
+      return;
+    }
+    // se não tem janelinha mas botão diz "Sair", estado inconsistente — só reseta
+    if(btn.classList.contains('on')){
+      resetPipBtn();
       return;
     }
     if(!telaAtiva) toggleAuto();
@@ -1674,6 +1725,7 @@ function togglePip(){
 
     if(pipActive){
       document.exitPictureInPicture().catch(()=>{});
+      resetPipBtn();
       return;
     }
 
@@ -1713,8 +1765,7 @@ function togglePip(){
       vid._pipLeaveBound = true;
       vid.addEventListener('leavepictureinpicture', () => {
         pararVideoPip();
-        btn.textContent = 'Picture-in-Picture';
-        btn.classList.remove('on');
+        resetPipBtn();
       });
     }
     return;
@@ -1796,7 +1847,8 @@ function toggleAuto(){
     img.src="";
     off.classList.remove("hid");
     $("#telaHora").textContent="—";
-    if(PIP_METHOD === 'video') pararVideoPip();
+    // fecha PiP junto (evita estado inconsistente)
+    fecharPip(true);
   }
 }
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&telaAtiva&&!telaEmVoo){clearTimeout(telaTimer);atualizarTela()}});
@@ -2504,13 +2556,13 @@ def api_volume_mixer_set():
     if not PYCAW_OK:
         return jsonify(erro="pycaw nao instalado no PC")
     d = request.get_json(force=True) or {}
-    nome = (d.get("nome") or "").strip()
+    chave = (d.get("chave") or "").strip()
     volume = d.get("volume", None)
     mudo = d.get("mudo", None)
-    if not nome:
-        return jsonify(erro="nome vazio")
+    if not chave:
+        return jsonify(erro="chave vazia")
     try:
-        setar_sessao_audio(nome, volume=volume, mudo=mudo)
+        setar_sessao_audio(chave, volume=volume, mudo=mudo)
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(erro=str(e))
@@ -2550,10 +2602,12 @@ def api_tela():
 
 
 def _gerar_mjpeg():
-    """Gerador de stream MJPEG. Uma conexão HTTP persistente."""
+    """Gerador de stream MJPEG. Mantém a captura viva enquanto houver consumidor."""
     boundary = b"--frame\r\n"
     ultimo_enviado = None
     while True:
+        # mantém a captura ativa (sem isso, o CAP_IDLE derruba o PiP em background)
+        CAPTURA["ultimo_pedido"] = time.time()
         with CAPTURA["lock"]:
             jpeg = CAPTURA["jpeg"]
         if jpeg and jpeg is not ultimo_enviado:
@@ -2572,19 +2626,19 @@ def _gerar_mjpeg():
 
 @app.route("/api/stream.mjpg")
 def api_stream_mjpg():
-    """Stream MJPEG contínuo — usado pelo PiP (não sofre throttling do Chrome)."""
+    """Stream MJPEG contínuo — usado pelo PiP."""
     b = exigir_auth()
     if b: return b
     if not TEM_MSS:
         return jsonify(erro="mss nao instalado"), 503
     CAPTURA["ultimo_pedido"] = time.time()
     _garantir_captura()
-    # espera primeiro frame
     for _ in range(40):
         with CAPTURA["lock"]:
             if CAPTURA["jpeg"]: break
         time.sleep(0.05)
-    resp = Response(_gerar_mjpeg(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    resp = Response(stream_with_context(_gerar_mjpeg()),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
