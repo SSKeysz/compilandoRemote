@@ -387,10 +387,14 @@ _user32.OpenClipboard.argtypes = [ctypes.c_void_p]
 _user32.OpenClipboard.restype = ctypes.c_bool
 _user32.CloseClipboard.argtypes = []
 _user32.CloseClipboard.restype = ctypes.c_bool
+_user32.EmptyClipboard.argtypes = []
+_user32.EmptyClipboard.restype = ctypes.c_bool
 _user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
 _user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
 _user32.GetClipboardData.argtypes = [ctypes.c_uint]
 _user32.GetClipboardData.restype = ctypes.c_void_p
+_user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+_user32.SetClipboardData.restype = ctypes.c_void_p
 _user32.GetClipboardSequenceNumber.argtypes = []
 _user32.GetClipboardSequenceNumber.restype = ctypes.c_ulong
 
@@ -398,6 +402,14 @@ _kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
 _kernel32.GlobalLock.restype = ctypes.c_void_p
 _kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 _kernel32.GlobalUnlock.restype = ctypes.c_bool
+_kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+_kernel32.GlobalAlloc.restype = ctypes.c_void_p
+_kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+_kernel32.GlobalFree.restype = ctypes.c_void_p
+
+GMEM_MOVEABLE = 0x0002
+GMEM_ZEROINIT = 0x0040
+CF_UNICODETEXT = 13
 
 
 def _clip_get():
@@ -408,8 +420,8 @@ def _clip_get():
         time.sleep(0.08)
     if not ok: return None
     try:
-        if not u.IsClipboardFormatAvailable(13): return None
-        h = u.GetClipboardData(13)
+        if not u.IsClipboardFormatAvailable(CF_UNICODETEXT): return None
+        h = u.GetClipboardData(CF_UNICODETEXT)
         if not h: return None
         p = k.GlobalLock(h)
         if not p: return None
@@ -417,6 +429,39 @@ def _clip_get():
         finally: k.GlobalUnlock(h)
     except Exception:
         return None
+    finally:
+        try: u.CloseClipboard()
+        except Exception: pass
+
+
+def _clip_set(texto):
+    """Seta o clipboard do Windows usando a API nativa (mais confiável que PowerShell)."""
+    u = _user32; k = _kernel32
+    ok = False
+    for _ in range(6):
+        if u.OpenClipboard(None): ok = True; break
+        time.sleep(0.1)
+    if not ok:
+        raise Exception("nao consegui abrir clipboard")
+    try:
+        u.EmptyClipboard()
+        buf = (texto + "\x00").encode("utf-16-le")
+        h = k.GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, len(buf))
+        if not h:
+            raise Exception("GlobalAlloc falhou")
+        p = k.GlobalLock(h)
+        if not p:
+            k.GlobalFree(h)
+            raise Exception("GlobalLock falhou")
+        try:
+            ctypes.memmove(p, buf, len(buf))
+        finally:
+            k.GlobalUnlock(h)
+        if not u.SetClipboardData(CF_UNICODETEXT, h):
+            k.GlobalFree(h)
+            raise Exception("SetClipboardData falhou")
+        # a partir daqui o Windows é dono do h, não liberar
+        return True
     finally:
         try: u.CloseClipboard()
         except Exception: pass
@@ -456,6 +501,79 @@ def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
+# ===================== VOLUME MIXER (por app) =====================
+def listar_sessoes_audio():
+    """Lista sessões de áudio do Windows (volume mixer)."""
+    if not PYCAW_OK:
+        raise Exception("pycaw nao instalado")
+    sessions = AudioUtilities.GetAllSessions()
+    resultado = []
+    vistos = set()
+    for s in sessions:
+        try:
+            if s.Process:
+                try:
+                    nome = s.Process.name()
+                except Exception:
+                    continue
+                if not nome:
+                    continue
+            else:
+                nome = "(Sons do Sistema)"
+            try:
+                vol = s.SimpleAudioVolume
+                v = float(vol.GetMasterVolume())
+                m = bool(vol.GetMute())
+            except Exception:
+                continue
+            chave = nome.lower()
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            resultado.append({
+                "nome": nome,
+                "volume": int(round(v * 100)),
+                "mudo": m,
+            })
+        except Exception:
+            continue
+    resultado.sort(key=lambda x: x["nome"].lower())
+    return resultado
+
+
+def setar_sessao_audio(nome_alvo, volume=None, mudo=None):
+    """Define volume (0-100) e/ou mute de todas as sessões de um processo."""
+    if not PYCAW_OK:
+        raise Exception("pycaw nao instalado")
+    sessions = AudioUtilities.GetAllSessions()
+    achou = False
+    for s in sessions:
+        try:
+            if s.Process:
+                try:
+                    nome = s.Process.name()
+                except Exception:
+                    continue
+            else:
+                nome = "(Sons do Sistema)"
+            if nome != nome_alvo:
+                continue
+            try:
+                vol = s.SimpleAudioVolume
+                if volume is not None:
+                    v = max(0.0, min(1.0, float(volume) / 100.0))
+                    vol.SetMasterVolume(v, None)
+                if mudo is not None:
+                    vol.SetMute(bool(mudo), None)
+                achou = True
+            except Exception:
+                pass
+        except Exception:
+            continue
+    if not achou:
+        raise Exception(f"sessao nao encontrada: {nome_alvo}")
+
+
 # ===================== CAPTURA DE TELA CONTÍNUA =====================
 CAPTURA = {
     "running": False,
@@ -469,7 +587,7 @@ CAPTURA = {
 CAP_Q = 28
 CAP_W = 1100
 CAP_FPS = 15
-CAP_IDLE = 6
+CAP_IDLE = 10
 
 
 def _loop_captura():
@@ -598,8 +716,8 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .lockbox .logo{max-width:200px;height:auto;margin:0 auto 8px;display:block}
 .toast{position:fixed;left:50%;bottom:78px;transform:translateX(-50%);background:#23232f;color:#fff;padding:10px 16px;border-radius:22px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:40;max-width:90%}
 .toast.on{opacity:1}
-#txtArquivos,#listaProcs,#listaClip,#gridComandos,#gridWol{display:grid;gap:6px}
-#txtArquivos,#listaProcs,#listaClip{max-height:340px;overflow:auto}
+#txtArquivos,#listaProcs,#listaClip,#gridComandos,#gridWol,#listaMixer{display:grid;gap:6px}
+#txtArquivos,#listaProcs,#listaClip,#listaMixer{max-height:420px;overflow:auto}
 .arq{display:flex;justify-content:space-between;align-items:center;background:#0d0d14;padding:11px 12px;border-radius:8px;font-size:13px;gap:6px}
 .arq .nome{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .arq .tam{color:var(--mut);font-size:11px;flex:none}
@@ -613,6 +731,16 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .touchpad.two::after{content:'2 dedos = scroll'}
 .touchpad canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
 pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.mix{background:#0d0d14;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.mixNome{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mixLinha{display:flex;align-items:center;gap:8px}
+.mixLinha input[type=range]{flex:1;padding:0;border:0;background:transparent;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;outline:none}
+.mixLinha input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:#1f1f2a}
+.mixLinha input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--acc2);box-shadow:0 0 6px var(--acc2);cursor:pointer;border:0;margin-top:-7px}
+.mixLinha input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#1f1f2a}
+.mixLinha input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--acc2);box-shadow:0 0 6px var(--acc2);cursor:pointer;border:0}
+.mixVal{font-size:11px;color:var(--mut);min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
+.mixLinha .btn.mini{min-width:38px;padding:6px 8px;font-size:14px}
 @media(max-width:500px){
   main{padding:0 8px 12px}
   .panel{padding:12px}
@@ -669,7 +797,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       </button>
       <div id="liveAviso" class="avisoLive hid">
         <span class="luz"></span>
-        <span>Tudo que você digitar aqui vai direto pro PC…</span>
+        <span>Tudo que você digitar aqui vai direto pro PC. O campo abaixo mostra o eco.</span>
       </div>
       <textarea id="txtEnv" placeholder="Toque em ATIVAR e depois digite aqui"></textarea>
       <div class="grid g2" style="margin-top:8px">
@@ -725,13 +853,19 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       </div>
     </div>
     <div class="panel">
-      <h2>Volume <span class="hint" style="font-weight:400;text-transform:none">(segure pra repetir)</span></h2>
+      <h2>Volume do sistema <span class="hint" style="font-weight:400;text-transform:none">(segure pra repetir)</span></h2>
       <div class="grid g3">
         <button class="btn icon" id="btnVolDown">&#128265;</button>
         <button class="btn icon" onclick="midia('mute')">&#128263;</button>
         <button class="btn icon" id="btnVolUp">&#128266;</button>
       </div>
       <div class="hint">Cada toque muda 2%. Segura pra ir rápido.</div>
+    </div>
+    <div class="panel">
+      <h2>Volume por app <span class="hint" style="font-weight:400;text-transform:none">• mixer</span></h2>
+      <div class="hint" style="margin-bottom:8px">Controle o volume de cada programa separadamente (estilo mixer do Windows).</div>
+      <button class="btn ghost block" onclick="carregarMixer()">Atualizar lista</button>
+      <div id="listaMixer" style="margin-top:10px"></div>
     </div>
   </section>
 
@@ -941,6 +1075,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const ORIGEM = window.location.origin;
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("on"),1400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
@@ -950,6 +1085,13 @@ function iniciarPollClipHist(){
   clipHistPoll=setInterval(()=>{if(!document.hidden)carregarClipHist()},2500);
 }
 function pararPollClipHist(){if(clipHistPoll){clearInterval(clipHistPoll);clipHistPoll=null}}
+
+let mixerTimer=null;
+function iniciarPollMixer(){
+  pararPollMixer();
+  mixerTimer=setInterval(()=>{if(!document.hidden)carregarMixer(true)},4000);
+}
+function pararPollMixer(){if(mixerTimer){clearInterval(mixerTimer);mixerTimer=null}}
 
 function show(nome){
   $$(".page").forEach(p=>p.classList.toggle("hid",p.id!=="p-"+nome));
@@ -961,6 +1103,7 @@ function show(nome){
   if(nome==="extra"){carregarWol();carregarTimers()}
   if(nome==="pc"){carregarProcessos();carregarComandos()}
   if(nome==="mouse"){initTouchpad()}
+  if(nome==="midia"){carregarMixer();iniciarPollMixer()}else{pararPollMixer()}
   if(nome==="texto"){carregarClipHist();iniciarPollClipHist()}else{pararPollClipHist()}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
@@ -1041,20 +1184,31 @@ function toggleLive(){
   if(liveTyping)$("#txtEnv").focus();
 }
 async function enviarTexto(modo){
-  const txt=$("#txtEnv").value;if(!txt){toast("Digite algo");return}
-  const j=await post("/api/texto",{texto:txt,modo});toast(j.saida||j.erro||"ok");
+  const txt=$("#txtEnv").value;
+  if(!txt){toast("Digite algo");return}
+  toast("Enviando…");
+  const j=await post("/api/texto",{texto:txt,modo});
+  toast(j.saida||j.erro||"ok");
 }
 async function tecla(nome){await post("/api/digitar_tecla",{tecla:nome});toast(nome);if(navigator.vibrate)navigator.vibrate(15)}
-async function enviarChar(ch){await fetch("/api/digitar_tecla",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tecla:ch})})}
+async function enviarChar(ch){
+  try{
+    await fetch("/api/digitar_tecla",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tecla:ch})});
+  }catch(e){}
+}
 function limparCampo(id){const el=$("#"+id);if(!el)return;el.value="";toast("Limpo");if(id==="txtEnv")el.focus()}
 
+// Digitação ao vivo: deixa o caractere aparecer no campo (eco) e manda pro PC.
+// Só bloqueia Tab/Esc que bagunçariam o foco.
 $("#txtEnv").addEventListener("keydown",e=>{
-  if(!liveTyping)return;const k=e.key;
+  if(!liveTyping)return;
+  const k=e.key;
   const mapa={"Backspace":"backspace","Enter":"enter","Tab":"tab","Escape":"esc","Delete":"delete",
     "ArrowLeft":"left","ArrowRight":"right","ArrowUp":"up","ArrowDown":"down","Home":"home","End":"end"};
-  if(mapa[k]){e.preventDefault();enviarChar(mapa[k]);return}
-  if(k===" "){e.preventDefault();enviarChar("space");return}
-  if(k.length===1){e.preventDefault();enviarChar(k)}
+  if(k==="Tab"||k==="Escape"){e.preventDefault();enviarChar(mapa[k]);return}
+  if(mapa[k]){enviarChar(mapa[k]);return}
+  if(k===" "){enviarChar("space");return}
+  if(k.length===1){enviarChar(k)}
 });
 
 async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";toast("Lido")}
@@ -1079,6 +1233,57 @@ async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await p
 
 async function midia(a){await post("/api/midia",{acao:a});if(navigator.vibrate)navigator.vibrate(10)}
 
+// ==================== VOLUME MIXER ====================
+async function carregarMixer(silencioso){
+  const j = await get("/api/volume_mixer");
+  const box = $("#listaMixer");
+  if(!box) return;
+  if(j.erro){ box.innerHTML = '<div class="hint">Erro: '+esc(j.erro)+'</div>'; return; }
+  const itens = j.itens || [];
+  if(!itens.length){ box.innerHTML = '<div class="hint">(nenhum app com áudio ativo no momento)</div>'; return; }
+  box.innerHTML = "";
+  itens.forEach(s => {
+    const d = document.createElement("div");
+    d.className = "mix";
+    const nomeEl = document.createElement("div");
+    nomeEl.className = "mixNome";
+    nomeEl.textContent = s.nome;
+    d.appendChild(nomeEl);
+
+    const linha = document.createElement("div");
+    linha.className = "mixLinha";
+
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = "0"; slider.max = "100";
+    slider.value = String(s.volume);
+    const val = document.createElement("span");
+    val.className = "mixVal";
+    val.textContent = s.volume + "%";
+    slider.oninput = () => { val.textContent = slider.value + "%"; };
+    slider.onchange = () => { mixerSet(s.nome, parseInt(slider.value,10), null); };
+    linha.appendChild(slider);
+    linha.appendChild(val);
+
+    const bMute = document.createElement("button");
+    bMute.className = "btn mini" + (s.mudo ? " on" : "");
+    bMute.textContent = s.mudo ? "🔇" : "🔊";
+    bMute.onclick = () => { mixerSet(s.nome, null, !s.mudo); };
+    linha.appendChild(bMute);
+
+    d.appendChild(linha);
+    box.appendChild(d);
+  });
+}
+
+async function mixerSet(nome, volume, mudo){
+  const body = { nome };
+  if(volume !== null && volume !== undefined) body.volume = volume;
+  if(mudo !== null && mudo !== undefined) body.mudo = mudo;
+  const j = await post("/api/volume_mixer_set", body);
+  if(j.erro) toast("Erro: " + j.erro);
+  else setTimeout(()=>carregarMixer(true), 250);
+}
+
 // ==================== TOUCHPAD ====================
 const TP = {
   el: null,
@@ -1092,7 +1297,6 @@ const TP = {
   pending: {dx: 0, dy: 0},
   sendTimer: null,
   inited: false,
-  // rastro
   canvas: null, ctx: null, points: [], trailRaf: null,
 };
 
@@ -1103,7 +1307,6 @@ function initTouchpad(){
   TP.inited = true;
   TP.el = el;
 
-  // --- canvas do rastro ---
   const cv = document.getElementById('tpCanvas');
   if(cv){
     TP.canvas = cv;
@@ -1147,9 +1350,8 @@ function initTouchpad(){
   });
 }
 
-// ---------- rastro roxo ----------
-const TRAIL_MS = 650;   // tempo de vida de cada ponto
-const TRAIL_MAX = 80;   // limite de pontos guardados
+const TRAIL_MS = 650;
+const TRAIL_MAX = 80;
 
 function addTrailPoint(clientX, clientY){
   if(!TP.canvas || !TP.el) return;
@@ -1164,19 +1366,15 @@ function trailLoop(){
   const cv = TP.canvas, ctx = TP.ctx;
   if(!cv || !ctx){ TP.trailRaf = requestAnimationFrame(trailLoop); return; }
   const now = performance.now();
-
-  // descarta pontos velhos
   while(TP.points.length && now - TP.points[0].t > TRAIL_MS) TP.points.shift();
-
   const r = TP.el.getBoundingClientRect();
   ctx.clearRect(0, 0, r.width, r.height);
-
   if(TP.points.length > 1){
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for(let i = 1; i < TP.points.length; i++){
       const a = TP.points[i-1], b = TP.points[i];
-      const age = (now - b.t) / TRAIL_MS;      // 0 novo -> 1 velho
+      const age = (now - b.t) / TRAIL_MS;
       const alpha = Math.max(0, 1 - age);
       if(alpha <= 0) continue;
       ctx.strokeStyle = `rgba(154,60,255,${alpha * 0.95})`;
@@ -1188,7 +1386,6 @@ function trailLoop(){
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
     }
-    // "ponta" brilhante embaixo do dedo
     const last = TP.points[TP.points.length - 1];
     const lastAge = (now - last.t) / TRAIL_MS;
     if(lastAge < 1){
@@ -1203,7 +1400,6 @@ function trailLoop(){
     }
     ctx.shadowBlur = 0;
   }
-
   TP.trailRaf = requestAnimationFrame(trailLoop);
 }
 
@@ -1346,6 +1542,8 @@ async function toggleDrag(){
 }
 
 // ==================== PIP ====================
+// O PiP agora busca os frames sozinho (direto do servidor), então
+// continua atualizando mesmo quando a aba principal está em background.
 let pipActive = false;
 let pipStream = null;
 let pipVideoReady = false;
@@ -1353,12 +1551,10 @@ let pipStopDraw = false;
 let docPipWin = null;
 let docPipStop = false;
 
-// Decide o método UMA VEZ no boot (não gasta user-activation testando)
 const PIP_METHOD = ('documentPictureInPicture' in window)
   ? 'doc'
   : (document.pictureInPictureEnabled ? 'video' : 'none');
 
-// ---------- Prepara o <video> em background (SEM user activation) ----------
 async function prepararVideoPip(){
   if(pipVideoReady) return;
   const vid = document.getElementById('pipVideo');
@@ -1413,7 +1609,7 @@ function pararVideoPip(){
   pipActive = false;
 }
 
-// ---------- Setup do Document PiP ----------
+// ---------- Document PiP: a janelinha busca os próprios frames ----------
 function setupDocPip(w){
   docPipWin = w;
   docPipStop = false;
@@ -1422,6 +1618,7 @@ function setupDocPip(w){
   st.textContent = `
     html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
     canvas{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
+    .aviso{position:absolute;left:0;right:0;top:0;padding:6px 10px;font:11px system-ui;color:#9a3cff;background:rgba(0,0,0,.5);text-align:center;pointer-events:none}
   `;
   w.document.head.appendChild(st);
 
@@ -1430,29 +1627,69 @@ function setupDocPip(w){
   w.document.body.appendChild(cv);
   const cx = cv.getContext('2d');
 
-  const loop = () => {
-    if(docPipStop || w.closed) return;
-    const src = document.getElementById('tela');
-    if(src && src.complete && src.naturalWidth > 0){
-      try{ cx.drawImage(src, 0, 0, cv.width, cv.height); }catch(e){}
-    }
-    requestAnimationFrame(loop);
+  let parado = false;
+  let emVoo = false;
+  let erroCount = 0;
+
+  const desenhar = (im) => {
+    const cw = cv.width, ch = cv.height;
+    const iw = im.naturalWidth, ih = im.naturalHeight;
+    if(!iw || !ih) return;
+    const scale = Math.min(cw / iw, ch / ih);
+    const dw = iw * scale, dh = ih * scale;
+    const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+    cx.fillStyle = '#000';
+    cx.fillRect(0, 0, cw, ch);
+    try{ cx.drawImage(im, dx, dy, dw, dh); }catch(e){}
   };
-  loop();
+
+  const buscar = () => {
+    if(parado || w.closed) return;
+    if(emVoo){ w.setTimeout(buscar, 80); return; }
+    emVoo = true;
+    fetch(ORIGEM + "/api/tela.jpg?t=" + Date.now(), {cache: "no-store"})
+      .then(r => { if(!r.ok) throw new Error("http " + r.status); return r.blob(); })
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const im = new Image();
+        im.onload = () => {
+          desenhar(im);
+          URL.revokeObjectURL(url);
+          erroCount = 0;
+          emVoo = false;
+          if(!parado && !w.closed) w.setTimeout(buscar, 90);
+        };
+        im.onerror = () => {
+          URL.revokeObjectURL(url);
+          erroCount++;
+          emVoo = false;
+          if(!parado && !w.closed) w.setTimeout(buscar, Math.min(2000, 200 * erroCount));
+        };
+        im.src = url;
+      })
+      .catch(() => {
+        erroCount++;
+        emVoo = false;
+        if(!parado && !w.closed) w.setTimeout(buscar, Math.min(2000, 300 * erroCount));
+      });
+  };
+  buscar();
 
   const btn = document.getElementById('btnPip');
   btn.textContent = 'Sair do PiP';
   btn.classList.add('on');
 
-  w.addEventListener('pagehide', () => {
+  const finalizar = () => {
+    parado = true;
     docPipStop = true;
     docPipWin = null;
     btn.textContent = 'Picture-in-Picture';
     btn.classList.remove('on');
-  }, {once: true});
+  };
+  w.addEventListener('pagehide', finalizar, {once: true});
+  w.addEventListener('unload', finalizar, {once: true});
 }
 
-// ---------- Clique no botão: SEM await antes de disparar o request ----------
 function togglePip(){
   const btn = document.getElementById('btnPip');
 
@@ -1550,7 +1787,7 @@ const TELA_INTERVALO=160;
 
 async function atualizarTela(){
   if(!telaAtiva||telaEmVoo)return;
-  if(document.hidden){telaTimer=setTimeout(atualizarTela,900);return}
+  if(document.hidden){telaTimer=setTimeout(atualizarTela,500);return}
   telaEmVoo=true;
   const t0=performance.now();
   try{
@@ -2118,10 +2355,22 @@ def api_atalho_exec():
 
 
 def copiar_pc(texto):
-    texto = texto.replace("'", "''")
-    script = f"Set-Clipboard -Value '{texto}'"
-    cod = base64.b64encode(script.encode("utf-16-le")).decode()
-    executar(["powershell", "-NoProfile", "-EncodedCommand", cod])
+    """Copia texto pro clipboard do Windows via API nativa. Cai pra PowerShell se falhar."""
+    try:
+        _clip_set(texto)
+        return "Copiado pro clipboard do PC."
+    except Exception as e:
+        # fallback PowerShell
+        try:
+            texto_esc = texto.replace("'", "''")
+            script = f"Set-Clipboard -Value '{texto_esc}'"
+            cod = base64.b64encode(script.encode("utf-16-le")).decode()
+            r = executar(["powershell", "-NoProfile", "-EncodedCommand", cod],
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=10)
+            return "Copiado pro clipboard do PC (via PowerShell)."
+        except Exception as e2:
+            return f"Falha ao copiar: {e} / {e2}"
 
 
 def ler_pc():
@@ -2143,15 +2392,20 @@ ESPECIAIS_SENDKEYS = {"+":"{+}","^":"{^}","%":"{%}","~":"{~}","(":"{(}",")":"{)}
 
 
 def digitar_pc(texto):
-    linhas = ["Add-Type -AssemblyName System.Windows.Forms", "Start-Sleep -Milliseconds 150"]
+    """Digita o texto caractere-a-caractere usando keybd_event (baixo nível).
+    É mais confiável que SendKeys porque não depende de janela focada/idle.
+    Roda em thread de background (chamado pelo endpoint)."""
     for ch in texto:
-        s = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
-        if s:
-            linhas.append(f"[System.Windows.Forms.SendKeys]::SendWait('{s}')")
-            linhas.append("Start-Sleep -Milliseconds 10")
-    script = "\n".join(linhas)
-    cod = base64.b64encode(script.encode("utf-16-le")).decode()
-    rodar_oculto(["powershell", "-NoProfile", "-EncodedCommand", cod])
+        try:
+            if ch in ("\n", "\r"):
+                teclar_especial("enter")
+            elif ch == "\t":
+                teclar_especial("tab")
+            else:
+                teclar_char(ch)
+        except Exception:
+            pass
+        time.sleep(0.015)
 
 
 VK_ESPECIAIS = {"enter":0x0D,"tab":0x09,"backspace":0x08,"esc":0x1B,"escape":0x1B,
@@ -2170,6 +2424,7 @@ def teclar_char(ch):
     u = ctypes.windll.user32
     res = u.VkKeyScanW(ord(ch))
     if res == -1:
+        # fallback SendKeys
         try:
             s = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
             script = ("Add-Type -AssemblyName System.Windows.Forms; "
@@ -2198,11 +2453,20 @@ def teclar_especial(nome):
 def api_texto():
     b = exigir_auth()
     if b: return b
-    d = request.get_json(force=True)
-    texto = (d.get("texto") or "")[:8000]; modo = d.get("modo", "clipboard")
+    d = request.get_json(force=True) or {}
+    texto = (d.get("texto") or "")[:8000]
+    modo = d.get("modo", "clipboard")
+    if not texto:
+        return jsonify(erro="texto vazio")
     if modo == "digitar":
-        digitar_pc(texto); return jsonify(saida="Digitando bloco no PC…")
-    copiar_pc(texto); return jsonify(saida="Copiado pra área de transferência do PC.")
+        threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
+        return jsonify(saida=f"Digitando {len(texto)} caractere(s) no PC…")
+    # modo clipboard
+    try:
+        msg = copiar_pc(texto)
+        return jsonify(saida=msg)
+    except Exception as e:
+        return jsonify(erro=str(e))
 
 
 @app.route("/api/digitar_tecla", methods=["POST"])
@@ -2264,6 +2528,38 @@ def api_midia():
     u = ctypes.windll.user32
     u.keybd_event(vk, 0, 0, 0); time.sleep(0.05); u.keybd_event(vk, 0, 2, 0)
     return jsonify(ok=True)
+
+
+@app.route("/api/volume_mixer")
+def api_volume_mixer():
+    b = exigir_auth()
+    if b: return b
+    if not PYCAW_OK:
+        return jsonify(erro="pycaw nao instalado no PC")
+    try:
+        itens = listar_sessoes_audio()
+        return jsonify(itens=itens)
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/volume_mixer_set", methods=["POST"])
+def api_volume_mixer_set():
+    b = exigir_auth()
+    if b: return b
+    if not PYCAW_OK:
+        return jsonify(erro="pycaw nao instalado no PC")
+    d = request.get_json(force=True) or {}
+    nome = (d.get("nome") or "").strip()
+    volume = d.get("volume", None)
+    mudo = d.get("mudo", None)
+    if not nome:
+        return jsonify(erro="nome vazio")
+    try:
+        setar_sessao_audio(nome, volume=volume, mudo=mudo)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(erro=str(e))
 
 
 @app.route("/api/tela.jpg")
