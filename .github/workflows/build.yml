@@ -20,7 +20,51 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias
+      - name: Baixar HWiNFO64 portable
+        shell: pwsh
+        run: |
+          # Instala via chocolatey (sempre pega a última versão)
+          choco install hwinfo --yes --no-progress
+
+          # Procura o HWiNFO64.exe instalado
+          $caminhos = @(
+            "C:\Program Files\HWiNFO64\HWiNFO64.exe",
+            "C:\Program Files (x86)\HWiNFO64\HWiNFO64.exe"
+          )
+          $exe = $null
+          foreach ($p in $caminhos) {
+            if (Test-Path $p) { $exe = $p; break }
+          }
+          if (-not $exe) {
+            $achado = Get-ChildItem -Path "C:\Program Files" -Recurse -Filter "HWiNFO64.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($achado) { $exe = $achado.FullName }
+          }
+          if (-not $exe) {
+            Write-Error "HWiNFO64.exe nao encontrado"
+            exit 1
+          }
+
+          # Copia pra raiz do projeto com nome minúsculo
+          Copy-Item $exe "hwinfo64.exe"
+          Write-Host "OK, copiado de: $exe"
+
+      - name: Criar HWiNFO64.INI padrao
+        shell: pwsh
+        run: |
+          # INI mínimo com as configs boas pra rodar em background
+          $ini = @"
+[Settings]
+MinimizeMainWndOnStartup=1
+MinimizeSensorsOnStartup=1
+SharedMemorySupport=1
+SensorsOnly=1
+AutoStart=1
+CloseOnExit=1
+"@
+          $ini | Out-File -FilePath "HWiNFO64.INI" -Encoding ASCII
+          Get-Content "HWiNFO64.INI"
+
+      - name: Instalar dependencias Python
         run: |
           python -m pip install --upgrade pip
           pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests sensorwatch pyinstaller
@@ -37,6 +81,9 @@ jobs:
             --add-data "hwinfo64.exe;." `
             --add-data "HWiNFO64.INI;." `
             painel.py
+
+      - name: Listar arquivos gerados
+        run: dir dist
 
       - name: Enviar exe como artefato
         uses: actions/upload-artifact@v4
