@@ -21,50 +21,18 @@ jobs:
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Baixar HWiNFO64
-        shell: pwsh
-        run: |
-          choco install hwinfo --yes --no-progress
-          $exe = "C:\Program Files\HWiNFO64\HWiNFO64.exe"
-          if (-not (Test-Path $exe)) {
-            $achado = Get-ChildItem "C:\Program Files" -Recurse -Filter "HWiNFO64.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($achado) { $exe = $achado.FullName } else { Write-Error "HWiNFO64.exe nao encontrado"; exit 1 }
-          }
-          Copy-Item $exe "hwinfo64.exe"
-          Write-Host "OK: $exe"
-
-      - name: Criar HWiNFO64.INI
-        shell: pwsh
-        run: |
-          @"
-          [Settings]
-          MinimizeMainWndOnStartup=1
-          MinimizeSensorsOnStartup=1
-          SharedMemorySupport=1
-          SensorsOnly=1
-          AutoStart=1
-          CloseOnExit=1
-          "@ | Out-File -FilePath "HWiNFO64.INI" -Encoding ASCII
+          python-version: "3.11"
 
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests sensorwatch pyinstaller
+          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests pyinstaller
 
       - name: Checar se compila
         run: python -m py_compile painel.py
 
       - name: Compilar exe
-        run: |
-          pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE `
-            --collect-all pycaw --collect-all comtypes --collect-all PIL `
-            --collect-all mss --collect-all psutil --collect-all qrcode `
-            --collect-all winsdk --collect-all sensorwatch `
-            --add-data "hwinfo64.exe;." `
-            --add-data "HWiNFO64.INI;." `
-            painel.py
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
 
       - name: Listar arquivos gerados
         run: dir dist
