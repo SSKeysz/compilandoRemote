@@ -1,6 +1,6 @@
 """
-RotaControl v2.0
-pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
+RotaControl v2.2 (só Groq)
+pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests sensorwatch
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk piloto.py
 """
@@ -73,7 +73,6 @@ except Exception:
 # ===== CHAVES DE IA EMBUTIDAS =====
 # =====================================================================
 GROQ_API_KEY   = "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"   # <<< gsk_...
-GEMINI_API_KEY = "AQ.Ab8RN6KVt0OnSPEehuHWJaFqiiLdw5JFUrxm6GbWlZZCFQX9xQ"   # <<< AIza...
 
 
 # =====================================================================
@@ -167,12 +166,14 @@ CONFIG_PADRAO = {
     "monitor_escolhido": 0,
     "modo_ui": "iniciante",
     "tutorial_visto": False,
-    "ia_groq_key": GROQ_API_KEY,
-    "ia_gemini_key": GEMINI_API_KEY,
-    "ia_provider": "auto",
     "ia_model_groq": "openai/gpt-oss-120b",
-    "ia_model_gemini": "gemini-2.0-flash",
-    "ia_system": "Voce e o assistente do RotaControl, um controle remoto de PC. Responda curto e direto em portugues do Brasil.",
+    "ia_system": (
+        "Você é o assistente do RotaControl, um controle remoto de PC. "
+        "Você PODE executar ações no PC usando as funções disponíveis: "
+        "abrir_youtube, abrir_site, abrir_programa, criar_atalho, desligar_pc, tirar_print, status_pc. "
+        "Se o usuário pedir para abrir algo, criar algo ou executar algo, CHAME a função correspondente. "
+        "Se for só uma pergunta, responda normalmente em português do Brasil, curto e direto."
+    ),
 }
 
 
@@ -187,8 +188,6 @@ def carregar_config():
     except Exception: pass
     if cfg.get("modo") not in ("lan", "wan"): cfg["modo"] = "lan"
     if cfg.get("modo_ui") not in ("iniciante", "avancado"): cfg["modo_ui"] = "iniciante"
-    cfg["ia_groq_key"] = GROQ_API_KEY
-    cfg["ia_gemini_key"] = GEMINI_API_KEY
     return cfg
 
 
@@ -203,8 +202,14 @@ ESTADO = carregar_config()
 
 
 def pasta_arquivos():
-    p = os.path.expandvars(ESTADO.get("pasta_arquivos") or "")
-    if not p or not os.path.isdir(p): p = os.path.expanduser("~")
+    p = ESTADO.get("pasta_arquivos") or ""
+    if "%USERPROFILE%" in p:
+        userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        p = p.replace("%USERPROFILE%", userprofile)
+    p = os.path.expandvars(p)
+    p = os.path.expanduser(p)
+    if not p or not os.path.isdir(p):
+        p = os.path.expanduser("~")
     return p
 
 
@@ -240,7 +245,7 @@ def _com_init():
     except Exception: pass
 
 
-# ===================== CPU CACHE (thread de fundo, evita 0↔100) =====
+# ===================== CPU CACHE =====
 _CPU_CACHE = {"v": 0.0, "lock": threading.Lock()}
 
 
@@ -252,6 +257,84 @@ def _loop_cpu():
                 _CPU_CACHE["v"] = v
         except Exception:
             time.sleep(1)
+
+
+# ===================== FUNÇÕES QUE A IA PODE CHAMAR =====================
+def _criar_atalho_interno(nome, combo):
+    partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
+    if not partes:
+        return "Combo inválido"
+    ESTADO.setdefault("atalhos", []).append({
+        "nome": nome[:40], "combo": partes, "texto": "+".join(partes),
+    })
+    salvar_config()
+    return f"Atalho '{nome}' criado."
+
+
+def _executar_print_ia():
+    idx = int(ESTADO.get("monitor_escolhido", 0))
+    png = _capturar_png_full(idx)
+    nome = time.strftime("print_ia_%Y-%m-%d_%H-%M-%S.png")
+    with open(os.path.join(pasta_arquivos(), nome), "wb") as f:
+        f.write(png)
+    return f"Print salvo: {nome}"
+
+
+def _status_pc_ia():
+    with _CPU_CACHE["lock"]:
+        cpu = _CPU_CACHE["v"]
+    ram = psutil.virtual_memory()
+    discos = _listar_discos()
+    linhas = [f"CPU: {cpu:.0f}%", f"RAM: {ram.percent:.0f}%"]
+    for d in discos:
+        linhas.append(f"{d['letra']}: {d['percent']}% usado")
+    return " | ".join(linhas)
+
+
+FUNCOES_IA = {
+    "abrir_youtube": {
+        "descricao": "Abre o YouTube no navegador do PC",
+        "parametros": {},
+        "executar": lambda: webbrowser.open_new_tab("https://youtube.com") or "YouTube aberto.",
+    },
+    "abrir_site": {
+        "descricao": "Abre um site qualquer no navegador do PC",
+        "parametros": {
+            "url": {"type": "string", "description": "URL completa (ex: https://google.com)"}
+        },
+        "executar": lambda url: webbrowser.open_new_tab(url) or f"Aberto: {url}",
+    },
+    "abrir_programa": {
+        "descricao": "Abre um programa no PC (notepad, calc, explorer, etc.)",
+        "parametros": {
+            "nome": {"type": "string", "description": "Nome do executável (ex: notepad.exe)"}
+        },
+        "executar": lambda nome: rodar_oculto(["cmd", "/c", "start", "", nome]) or f"Abrindo {nome}...",
+    },
+    "criar_atalho": {
+        "descricao": "Cria um atalho salvo no RotaControl",
+        "parametros": {
+            "nome": {"type": "string", "description": "Nome do botão"},
+            "combo": {"type": "string", "description": "Teclas (ex: ctrl+s)"}
+        },
+        "executar": lambda nome, combo: _criar_atalho_interno(nome, combo),
+    },
+    "desligar_pc": {
+        "descricao": "Desliga o PC em 3 segundos",
+        "parametros": {},
+        "executar": lambda: (_shutdown(restart=False, delay=3), "PC desligando em 3s.")[1],
+    },
+    "tirar_print": {
+        "descricao": "Tira um print da tela do PC e salva",
+        "parametros": {},
+        "executar": lambda: _executar_print_ia(),
+    },
+    "status_pc": {
+        "descricao": "Retorna o status atual do PC (CPU, RAM, discos)",
+        "parametros": {},
+        "executar": lambda: _status_pc_ia(),
+    },
+}
 
 
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1282,18 +1365,13 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <span class="hint">Provedor:</span>
-      <select id="iaProviderAba" onchange="salvarIAProvider()" style="margin-top:4px">
-        <option value="auto">Auto (Groq → Gemini)</option>
-        <option value="groq">Só Groq</option>
-        <option value="gemini">Só Gemini</option>
-      </select>
-      <div class="iaChat" id="iaChat" style="margin-top:10px"></div>
+      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações como <b>"abre o YouTube"</b> ou <b>"tira um print"</b>.</div>
+      <div class="iaChat" id="iaChat"></div>
       <div class="termInput" style="margin-top:10px">
-        <input id="iaInput" placeholder="Pergunte algo..." autocomplete="off" onkeydown="if(event.key==='Enter')iaEnviar()">
+        <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off" onkeydown="if(event.key==='Enter')iaEnviar()">
         <button class="btn acc" style="width:auto;padding:12px 16px" onclick="iaEnviar()">➤</button>
       </div>
-      <div class="hint" id="iaStatus">Chaves embutidas no programa.</div>
+      <div class="hint" id="iaStatus">Chave embutida no programa.</div>
       <button class="btn ghost block mini" style="margin-top:8px" onclick="document.getElementById('iaChat').innerHTML=''">Limpar conversa</button>
     </div>
   </section>
@@ -1352,17 +1430,6 @@ body[data-modo="iniciante"] .avancado{display:none!important}
         <button class="btn ghost" id="btnModoWan" onclick="setModo('wan')">Fora de casa</button>
       </div>
       <span class="hint" id="tunelStatus"></span>
-    </div>
-
-    <div class="panel">
-      <h2>Assistente IA</h2>
-      <span class="hint">Provedor:</span>
-      <select id="iaProvider" onchange="salvarIAProvider()" style="margin-top:4px">
-        <option value="auto">Auto (Groq → Gemini)</option>
-        <option value="groq">Só Groq</option>
-        <option value="gemini">Só Gemini</option>
-      </select>
-      <div class="hint" style="margin-top:8px">🔒 Chaves embutidas no programa. Só o provedor é configurável.</div>
     </div>
 
     <div class="panel">
@@ -1506,7 +1573,7 @@ const TUTORIAL_INICIANTE = `
     <li><b>🖥️ Tela</b> — vê a tela ao vivo e tira print</li>
     <li><b>📁 Arquivos</b> — envia arquivos do celular pro PC</li>
     <li><b>📊 PC</b> — status (CPU/RAM/GPU/discos) e processos</li>
-    <li><b>🤖 IA</b> — chat com o assistente</li>
+    <li><b>🤖 IA</b> — chat com o assistente (pode pedir ações!)</li>
     <li><b>⚙️ Sistema</b> — QR Code, LAN/WAN, PIN, pasta padrão</li>
     <li><b>✨ Extras</b> — timer pra desligar/dormir</li>
   </ul>
@@ -1976,7 +2043,7 @@ async function atualizarStatus(){
     stTemp.title = "";
   } else {
     stTemp.textContent = "N/D";
-    stTemp.title = "Sem acesso. Rode o RotaControl como admin ou abra o LibreHardwareMonitor.";
+    stTemp.title = "Rode o HWiNFO64 com Shared Memory ativo, ou rode o RotaControl como admin.";
   }
   $("#stUptime").textContent = j.uptime || "—";
   const ld = $("#listaDiscos"); if(ld){
@@ -2043,20 +2110,11 @@ async function iaEnviar(){
   iaHistorico.push({role:"assistant", content: resp});
   iaAddMsg("bot", resp);
 }
-async function salvarIAProvider(){
-  const v = $("#iaProviderAba").value || $("#iaProvider").value;
-  $("#iaProvider").value = v; $("#iaProviderAba").value = v;
-  const j = await post("/api/ia_config", { provider: v });
-  toast(j.erro ? ("Erro: " + j.erro) : "Provedor salvo");
-}
 async function carregarIAConfig(){
   const j = await get("/api/ia_config");
   if(j.erro) return;
-  const p = j.provider || "auto";
-  $("#iaProvider").value = p;
-  $("#iaProviderAba").value = p;
   const ativo = j.tem_chave;
-  $("#iaStatus").textContent = ativo ? "IA pronta ✓ (chaves embutidas)" : "⚠️ Sem chave de IA — configure no código";
+  $("#iaStatus").textContent = ativo ? "IA pronta ✓ (Groq)" : "⚠️ Sem chave da Groq — configure no código";
 }
 
 // ============ PIP ============
@@ -2186,20 +2244,23 @@ async function atualizarTunel(){try{const r=await fetch("/api/config");const j=a
 function copiarIP(){copiar(ultimoLan,"LAN")}
 function copiarTunel(){if(!ultimoTunel||!ultimoTunel.startsWith("http")){toast("Túnel inativo");return}copiar(ultimoTunel,"WAN")}
 
-// Predefinições de pasta (select limpo, sem emoji, input readonly)
+// Predefinições de pasta
 function setPastaSelect(v){
   if(!v) { $("#pastaIn").value = ""; return; }
-  const map = {
-    desktop:   "Desktop",
-    documents: "Documents",
-    downloads: "Downloads",
-    pictures:  "Pictures",
-    videos:    "Videos",
-    music:     "Music",
-    home:      "",
-  };
-  const sub = map[v] || "";
-  $("#pastaIn").value = sub ? `%USERPROFILE%\\${sub}` : "%USERPROFILE%";
+  fetch("/api/state").then(r=>r.json()).then(j=>{
+    const userprofile = j.userprofile || "C:\\Users\\Voce";
+    const map = {
+      desktop:   "Desktop",
+      documents: "Documents",
+      downloads: "Downloads",
+      pictures:  "Pictures",
+      videos:    "Videos",
+      music:     "Music",
+      home:      "",
+    };
+    const sub = map[v] || "";
+    $("#pastaIn").value = sub ? `${userprofile}\\${sub}` : userprofile;
+  });
 }
 async function salvarPasta(){
   const v=$("#pastaIn").value.trim();
@@ -2337,10 +2398,15 @@ def logo():
 
 @app.route("/api/state")
 def api_state():
-    return jsonify(ip=ip_local(), porta=5000, pin_set=bool(ESTADO.get("pin")),
-                   autenticado=autenticado(), modo=ESTADO.get("modo"),
-                   modo_ui=ESTADO.get("modo_ui", "iniciante"),
-                   pasta_arquivos=pasta_arquivos())
+    return jsonify(
+        ip=ip_local(), porta=5000,
+        pin_set=bool(ESTADO.get("pin")),
+        autenticado=autenticado(),
+        modo=ESTADO.get("modo"),
+        modo_ui=ESTADO.get("modo_ui", "iniciante"),
+        pasta_arquivos=pasta_arquivos(),
+        userprofile=os.environ.get("USERPROFILE") or os.path.expanduser("~"),
+    )
 
 
 @app.route("/api/modo_ui", methods=["POST"])
@@ -2610,7 +2676,7 @@ def api_monitor_escolhido():
 
 # ===================== STATUS =====================
 _STATUS_TEMP_CACHE = {"t": 0, "v": None}
-_TEMP_MIN_INTERVALO = 15
+_TEMP_MIN_INTERVALO = 30
 
 
 def _ler_temperatura():
@@ -2620,54 +2686,54 @@ def _ler_temperatura():
     _STATUS_TEMP_CACHE["t"] = now
     _STATUS_TEMP_CACHE["v"] = None
 
-    def _tenta(script, decoder):
-        try:
-            cod = base64.b64encode(script.encode("utf-16-le")).decode()
-            r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                         capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", timeout=8)
-            out = (r.stdout or "").strip()
-            if out:
-                v = decoder(out)
-                if v is not None and -50 < v < 200:
-                    return v
-        except Exception:
-            pass
-        return None
-
-    v = _tenta(
-        "$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
-        "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
-        "if ($t) { Write-Output ([math]::Round(($t/10 - 273.15), 1)) }",
-        lambda s: float(s) if re.match(r"^-?\d+(\.\d+)?$", s) else None,
-    )
-    if v is not None: _STATUS_TEMP_CACHE["v"] = v; return v
-
-    v = _tenta(
-        "$t = Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ThermalZoneInformation "
-        "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Temperature; "
-        "if ($t) { Write-Output ([math]::Round(($t - 273.15), 1)) }",
-        lambda s: float(s) if re.match(r"^-?\d+(\.\d+)?$", s) else None,
-    )
-    if v is not None: _STATUS_TEMP_CACHE["v"] = v; return v
-
-    for ns in ("LibreHardwareMonitor", "OpenHardwareMonitor"):
-        v = _tenta(
-            f"$t = (Get-CimInstance -Namespace root/{ns} -ClassName Sensor "
-            f"-ErrorAction SilentlyContinue | Where-Object {{ $_.SensorType -eq 'Temperature' -and "
-            f"$_.Name -match 'CPU|Package|Core' }} | Select-Object -First 1 -ExpandProperty Value); "
-            f"if ($t) {{ Write-Output $t }}",
-            lambda s: float(s) if re.match(r"^-?\d+(\.\d+)?$", s) else None,
+    # Tentativa 1: sensorwatch (HWiNFO64 shared memory, sem admin)
+    try:
+        r = executar(
+            [sys.executable, "-m", "sensorwatch", "snapshot",
+             "--include", "CPU", "--json"],
+            capture_output=True, text=True, timeout=5
         )
-        if v is not None: _STATUS_TEMP_CACHE["v"] = v; return v
+        out = (r.stdout or "").strip()
+        if out:
+            data = json.loads(out)
+            for sensor in data.get("sensors", []):
+                reading = (sensor.get("reading") or "").lower()
+                stype = (sensor.get("type") or "").lower()
+                if "temp" in stype or "temp" in reading:
+                    v = float(sensor.get("value", 0))
+                    if 0 < v < 200:
+                        _STATUS_TEMP_CACHE["v"] = v
+                        return v
+    except Exception:
+        pass
 
-    v = _tenta(
-        "$t = (Get-CimInstance -Namespace root/HWiNFO -ClassName Sensor "
-        "-ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'CPU' } | "
-        "Select-Object -First 1 -ExpandProperty Value); if ($t) { Write-Output $t }",
-        lambda s: float(s) if re.match(r"^-?\d+(\.\d+)?$", s) else None,
-    )
-    if v is not None: _STATUS_TEMP_CACHE["v"] = v; return v
+    # Tentativa 2: WinTmp (admin)
+    try:
+        import WinTmp
+        v = WinTmp.CPU_Temp()
+        if v and 0 < v < 200:
+            _STATUS_TEMP_CACHE["v"] = v
+            return v
+    except Exception:
+        pass
+
+    # Tentativa 3: WMI MSAcpi
+    try:
+        script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+                  "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
+                  "if ($t) { Write-Output ([math]::Round(($t/10 - 273.15), 1)) }")
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                     capture_output=True, text=True, encoding="utf-8",
+                     errors="replace", timeout=8)
+        out = (r.stdout or "").strip()
+        if out and re.match(r"^-?\d+(\.\d+)?$", out):
+            v = float(out)
+            if -50 < v < 200:
+                _STATUS_TEMP_CACHE["v"] = v
+                return v
+    except Exception:
+        pass
 
     return None
 
@@ -2713,7 +2779,6 @@ def _listar_discos():
         if mp in vistos: continue
         opts = (p.opts or "")
         if "cdrom" in opts: continue
-        # aceita pendrive mesmo com fstype vazio se for removable
         if not p.fstype and "removable" not in opts:
             continue
         try:
@@ -3011,6 +3076,9 @@ def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
 
 def _path_seguro(p):
     if not p: return pasta_arquivos()
+    if "%USERPROFILE%" in p:
+        userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        p = p.replace("%USERPROFILE%", userprofile)
     p = os.path.expandvars(p); p = os.path.expanduser(p); p = os.path.abspath(p)
     return p
 
@@ -3206,8 +3274,7 @@ def api_terminal():
                     headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
 
-# ===================== IA =====================
-# Modelos atualizados (os Llama 3.1/3.3 foram descontinuados em 08/2026)
+# ===================== IA (SÓ GROQ) =====================
 GROQ_MODELOS_FALLBACK = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
@@ -3218,20 +3285,55 @@ GROQ_MODELOS_FALLBACK = [
 
 def _ia_chamar_groq(key, model, msgs, system):
     if not REQ_OK: return None, "requests nao instalado"
+
+    tools = []
+    for nome, fn in FUNCOES_IA.items():
+        props = fn.get("parametros", {})
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": nome,
+                "description": fn["descricao"],
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": list(props.keys()),
+                }
+            }
+        })
+
     candidatos = [model] + [m for m in GROQ_MODELOS_FALLBACK if m != model]
     ultimo_erro = None
     for mdl in candidatos:
         try:
             r = _req.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"model": mdl,
-                      "messages": [{"role":"system","content":system}] + msgs,
-                      "temperature": 0.6, "max_tokens": 1024},
+                json={
+                    "model": mdl,
+                    "messages": [{"role":"system","content":system}] + msgs,
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "temperature": 0.6,
+                    "max_tokens": 1024,
+                },
                 timeout=45)
             if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"], None
+                data = r.json()
+                msg = data["choices"][0]["message"]
+                if msg.get("tool_calls"):
+                    resultados = []
+                    for tc in msg["tool_calls"]:
+                        nome_fn = tc["function"]["name"]
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                        if nome_fn in FUNCOES_IA:
+                            try:
+                                resultado = FUNCOES_IA[nome_fn]["executar"](**args)
+                                resultados.append(f"✅ {nome_fn}: {resultado}")
+                            except Exception as e:
+                                resultados.append(f"❌ {nome_fn}: {e}")
+                    return "\n".join(resultados), None
+                return msg.get("content", ""), None
             if r.status_code in (400, 404):
-                # 400 = modelo descontinuado/inválido, 404 = não existe → tenta próximo
                 ultimo_erro = f"Groq {r.status_code} no modelo {mdl}: {r.text[:150]}"
                 continue
             return None, f"Groq HTTP {r.status_code}: {r.text[:200]}"
@@ -3241,65 +3343,11 @@ def _ia_chamar_groq(key, model, msgs, system):
     return None, ultimo_erro or "Groq falhou em todos os modelos"
 
 
-def _ia_chamar_gemini(key, model, msgs, system):
-    if not REQ_OK: return None, "requests nao instalado"
-    modelos = [model, "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash"]
-    vistos = set()
-    ultimo_erro = None
-    for mdl in modelos:
-        if mdl in vistos: continue
-        vistos.add(mdl)
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}:generateContent"
-            contents = []
-            for m in msgs:
-                role = "user" if m.get("role") in ("user", "system") else "model"
-                contents.append({"role": role, "parts": [{"text": m.get("content") or ""}]})
-            payload = {
-                "contents": contents,
-                "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024},
-            }
-            if system:
-                payload["systemInstruction"] = {"parts": [{"text": system}]}
-            r = _req.post(url,
-                headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-                json=payload, timeout=45)
-            if r.status_code == 200:
-                data = r.json()
-                try:
-                    return data["candidates"][0]["content"]["parts"][0]["text"], None
-                except Exception:
-                    return None, f"Gemini resposta inesperada: {str(data)[:200]}"
-            if r.status_code in (401, 403):
-                return None, (f"Gemini {r.status_code}: chave inválida ou API não ativada. "
-                              f"Gere outra em https://aistudio.google.com/apikey e ative 'Generative Language API'.")
-            if r.status_code == 404:
-                ultimo_erro = f"Gemini 404 no modelo {mdl}"
-                continue
-            return None, f"Gemini HTTP {r.status_code}: {r.text[:200]}"
-        except Exception as e:
-            ultimo_erro = f"Gemini erro: {e}"
-            continue
-    return None, ultimo_erro or "Gemini falhou"
-
-
 @app.route("/api/ia_config", methods=["GET"])
 def api_ia_config_get():
     b = exigir_auth()
     if b: return b
-    return jsonify(
-        provider=ESTADO.get("ia_provider", "auto"),
-        tem_chave=bool(GROQ_API_KEY or GEMINI_API_KEY),
-    )
-
-
-@app.route("/api/ia_config", methods=["POST"])
-def api_ia_config_set():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    ESTADO["ia_provider"] = d.get("provider") or "auto"
-    salvar_config(); return jsonify(ok=True)
+    return jsonify(tem_chave=bool(GROQ_API_KEY))
 
 
 @app.route("/api/ia", methods=["POST"])
@@ -3312,24 +3360,13 @@ def api_ia():
     msgs = [{"role": m.get("role","user"), "content": (m.get("content") or "")[:4000]}
             for m in msgs if isinstance(m, dict) and m.get("role") in ("user","assistant","system")][-20:]
     if not msgs: return jsonify(erro="sem mensagens")
-    provider = ESTADO.get("ia_provider", "auto")
-    gk = GROQ_API_KEY
-    mk = GEMINI_API_KEY
-    modelo_g = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
-    modelo_m = ESTADO.get("ia_model_gemini", "gemini-2.0-flash")
+    if not GROQ_API_KEY:
+        return jsonify(erro="configure GROQ_API_KEY no codigo")
+    modelo = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
     sysmsg = ESTADO.get("ia_system", "")
-    erros = []
-    if provider in ("auto","groq") and gk:
-        resp, err = _ia_chamar_groq(gk, modelo_g, msgs, sysmsg)
-        if resp: return jsonify(resposta=resp, provedor="groq")
-        erros.append(err)
-    if provider in ("auto","gemini") and mk:
-        resp, err = _ia_chamar_gemini(mk, modelo_m, msgs, sysmsg)
-        if resp: return jsonify(resposta=resp, provedor="gemini")
-        erros.append(err)
-    if not gk and not mk:
-        return jsonify(erro="nenhuma chave embutida — configure GROQ_API_KEY/GEMINI_API_KEY no codigo")
-    return jsonify(erro=" | ".join(e for e in erros if e))
+    resp, err = _ia_chamar_groq(GROQ_API_KEY, modelo, msgs, sysmsg)
+    if resp: return jsonify(resposta=resp, provedor="groq")
+    return jsonify(erro=err or "Groq falhou")
 
 
 # ===================== SMTC =====================
