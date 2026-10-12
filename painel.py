@@ -1,5 +1,5 @@
 """
-RotaControl v1.9
+RotaControl v2.0
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk piloto.py
@@ -170,7 +170,7 @@ CONFIG_PADRAO = {
     "ia_groq_key": GROQ_API_KEY,
     "ia_gemini_key": GEMINI_API_KEY,
     "ia_provider": "auto",
-    "ia_model_groq": "llama-3.3-70b-versatile",
+    "ia_model_groq": "openai/gpt-oss-120b",
     "ia_model_gemini": "gemini-2.0-flash",
     "ia_system": "Voce e o assistente do RotaControl, um controle remoto de PC. Responda curto e direto em portugues do Brasil.",
 }
@@ -1412,15 +1412,15 @@ body[data-modo="iniciante"] .avancado{display:none!important}
       <div class="hint" style="margin-bottom:8px">Usada pra receber uploads e salvar prints.</div>
       <select id="pastaPreset" onchange="setPastaSelect(this.value)" style="margin-bottom:8px">
         <option value="">— Escolher pasta pronta —</option>
-        <option value="desktop">🖥️ Área de Trabalho</option>
-        <option value="documents">📄 Documentos</option>
-        <option value="downloads">⬇️ Downloads</option>
-        <option value="pictures">🖼️ Imagens</option>
-        <option value="videos">🎬 Vídeos</option>
-        <option value="music">🎵 Músicas</option>
-        <option value="home">🏠 Home do usuário</option>
+        <option value="desktop">Área de Trabalho</option>
+        <option value="documents">Documentos</option>
+        <option value="downloads">Downloads</option>
+        <option value="pictures">Imagens</option>
+        <option value="videos">Vídeos</option>
+        <option value="music">Músicas</option>
+        <option value="home">Home do usuário</option>
       </select>
-      <input id="pastaIn" type="text" placeholder="C:\Users\Voce\Desktop">
+      <input id="pastaIn" type="text" placeholder="C:\Users\Voce\Desktop" readonly>
       <button class="btn acc block" style="margin-top:8px" onclick="salvarPasta()">Salvar pasta</button>
     </div>
 
@@ -2186,21 +2186,28 @@ async function atualizarTunel(){try{const r=await fetch("/api/config");const j=a
 function copiarIP(){copiar(ultimoLan,"LAN")}
 function copiarTunel(){if(!ultimoTunel||!ultimoTunel.startsWith("http")){toast("Túnel inativo");return}copiar(ultimoTunel,"WAN")}
 
-// Predefinições de pasta
-const PASTAS_PRESET = {
-  desktop:   "%USERPROFILE%\\Desktop",
-  documents: "%USERPROFILE%\\Documents",
-  downloads: "%USERPROFILE%\\Downloads",
-  pictures:  "%USERPROFILE%\\Pictures",
-  videos:    "%USERPROFILE%\\Videos",
-  music:     "%USERPROFILE%\\Music",
-  home:      "%USERPROFILE%",
-};
+// Predefinições de pasta (select limpo, sem emoji, input readonly)
 function setPastaSelect(v){
-  if(!v) return;
-  $("#pastaIn").value = PASTAS_PRESET[v] || "";
+  if(!v) { $("#pastaIn").value = ""; return; }
+  const map = {
+    desktop:   "Desktop",
+    documents: "Documents",
+    downloads: "Downloads",
+    pictures:  "Pictures",
+    videos:    "Videos",
+    music:     "Music",
+    home:      "",
+  };
+  const sub = map[v] || "";
+  $("#pastaIn").value = sub ? `%USERPROFILE%\\${sub}` : "%USERPROFILE%";
 }
-async function salvarPasta(){const v=$("#pastaIn").value.trim();if(!v){toast("Digite uma pasta");return}const j=await post("/api/pasta",{pasta:v});toast("Salvo");if(j.pasta)$("#pastaIn").value=j.pasta}
+async function salvarPasta(){
+  const v=$("#pastaIn").value.trim();
+  if(!v){toast("Escolha uma pasta no menu");return}
+  const j=await post("/api/pasta",{pasta:v});
+  toast("Salvo");
+  if(j.pasta) $("#pastaIn").value=j.pasta;
+}
 
 async function definirPin(){const p=$("#pinIn").value.trim();if(p.length<4){alert("Mínimo 4");return}await post("/api/pin",{pin:p});$("#pinIn").value="";toast("PIN definido");carregarSistema()}
 async function removerPin(){if(!confirm("Remover PIN?"))return;await post("/api/pin",{pin:""});toast("PIN removido");carregarSistema()}
@@ -2706,7 +2713,9 @@ def _listar_discos():
         if mp in vistos: continue
         opts = (p.opts or "")
         if "cdrom" in opts: continue
-        if not p.fstype: continue
+        # aceita pendrive mesmo com fstype vazio se for removable
+        if not p.fstype and "removable" not in opts:
+            continue
         try:
             u = psutil.disk_usage(mp)
             vistos.add(mp)
@@ -3198,11 +3207,11 @@ def api_terminal():
 
 
 # ===================== IA =====================
+# Modelos atualizados (os Llama 3.1/3.3 foram descontinuados em 08/2026)
 GROQ_MODELOS_FALLBACK = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "llama-3.1-70b-versatile",
-    "mixtral-8x7b-32768",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
     "gemma2-9b-it",
 ]
 
@@ -3221,8 +3230,9 @@ def _ia_chamar_groq(key, model, msgs, system):
                 timeout=45)
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"], None
-            if r.status_code == 404:
-                ultimo_erro = f"Groq 404 no modelo {mdl}"
+            if r.status_code in (400, 404):
+                # 400 = modelo descontinuado/inválido, 404 = não existe → tenta próximo
+                ultimo_erro = f"Groq {r.status_code} no modelo {mdl}: {r.text[:150]}"
                 continue
             return None, f"Groq HTTP {r.status_code}: {r.text[:200]}"
         except Exception as e:
@@ -3305,7 +3315,7 @@ def api_ia():
     provider = ESTADO.get("ia_provider", "auto")
     gk = GROQ_API_KEY
     mk = GEMINI_API_KEY
-    modelo_g = ESTADO.get("ia_model_groq", "llama-3.3-70b-versatile")
+    modelo_g = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
     modelo_m = ESTADO.get("ia_model_gemini", "gemini-2.0-flash")
     sysmsg = ESTADO.get("ia_system", "")
     erros = []
