@@ -1,5 +1,5 @@
 """
-RotaControl v2.5
+RotaControl v2.6
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
@@ -161,14 +161,38 @@ CONFIG_PADRAO = {
     "tutorial_visto": False,
     "ia_model_groq": "openai/gpt-oss-120b",
     "ia_system": (
-        "Você é o RotaControl, o assistente pessoal do usuário. Fale em português do Brasil, "
+        "Você é o RotaControl, o assistente pessoal do usuário, integrado a um painel "
+        "web que controla o PC dele remotamente pelo celular. Fale em português do Brasil, "
         "de forma natural, simpática e direta — como um amigo prestativo. NUNCA responda com "
-        "nomes técnicos de funções. Quando executar uma ação, responda como se você mesmo "
-        "tivesse feito: 'Ok, abrindo o YouTube pra você! 🎬'. "
-        "Você PODE executar ações no PC: abrir_youtube, abrir_site, abrir_programa, criar_atalho, "
-        "desligar_pc, tirar_print, status_pc, get_weather. "
-        "Use get_weather quando o usuário perguntar temperatura/tempo de alguma cidade. "
-        "Se for só uma pergunta, responda normalmente com simpatia e clareza."
+        "nomes técnicos de funções.\n\n"
+
+        "O painel tem estas abas:\n"
+        "• Ações — botões que abrem programas/pastas/sites/URLs. Use a função criar_acao pra adicionar.\n"
+        "• Texto — digitar no PC, voz, teclas persistentes, clipboard.\n"
+        "• Mídia — play/pause, volume, shuffle, repeat, volume por app.\n"
+        "• Mouse — touchpad.\n"
+        "• Tela — ver ao vivo, print, PiP, escolher monitor.\n"
+        "• Arquivos — upload do celular, navegador de arquivos.\n"
+        "• PC — status, top processos, terminal, reparos.\n"
+        "• IA — você.\n"
+        "• Extras — timer de desligar/dormir, Wake-on-LAN.\n"
+        "• Sistema — QR, LAN/WAN, PIN, pasta padrão.\n\n"
+
+        "FUNÇÕES DISPONÍVEIS (chame sempre que precisar):\n"
+        "• criar_acao(nome, tipo, valor) → adiciona botão na aba Ações rápidas.\n"
+        "• criar_atalho(nome, combo) → cria atalho de TECLADO (Ctrl+S, etc).\n"
+        "• abrir_site(url), abrir_programa(nome), abrir_youtube()\n"
+        "• tirar_print(), status_pc(), desligar_pc()\n"
+        "• get_weather(cidade) → retorna temp, sensação, condição, umidade, vento e "
+        "  previsão do dia (inclui se vai chover e a chance em %).\n\n"
+
+        "IMPORTANTE:\n"
+        "• Se o usuário pedir 'adiciona o X em ações rápidas' → use criar_acao.\n"
+        "• Se pedir 'cria atalho Ctrl+Y pra X' → use criar_atalho.\n"
+        "• Se pedir 'vai chover?' → use get_weather e RESPONDA a pergunta sobre chuva, "
+        "  não só repita a temperatura.\n"
+        "• Se ele perguntar como usar alguma coisa do painel, EXPLIQUE baseado nas abas acima.\n"
+        "• Respostas curtas, simpáticas, com 1 emoji quando fizer sentido."
     ),
 }
 
@@ -362,6 +386,17 @@ def _criar_atalho_interno(nome, combo):
     return f"✅ Atalho '{nome}' criado! Aparece na aba Ações → Atalhos."
 
 
+def _criar_acao_interno(nome, tipo, valor):
+    tipo = (tipo or "abrir").lower().strip()
+    if tipo not in ("abrir","pasta","url","comando"):
+        tipo = "abrir"
+    ESTADO.setdefault("acoes", []).append({
+        "nome": nome[:40], "tipo": tipo, "valor": valor,
+    })
+    salvar_config()
+    return f"✅ Ação '{nome}' criada na aba Ações → Ações rápidas!"
+
+
 def _executar_print_ia():
     idx = int(ESTADO.get("monitor_escolhido", 0))
     png = _capturar_png_full(idx)
@@ -395,12 +430,31 @@ def _weather(cidade):
             return f"❌ Não consegui consultar o tempo de {cidade}."
         d = r.json()
         cc = d["current_condition"][0]
+        hoje = (d.get("weather") or [{}])[0]
         temp = cc["temp_C"]
         sens = cc["FeelsLikeC"]
         desc = cc["lang_pt"][0]["value"] if cc.get("lang_pt") else cc["weatherDesc"][0]["value"]
         umid = cc["humidity"]
         vento = cc["windspeedKmph"]
-        return f"🌡️ Em {cidade}: {temp}°C (sensação {sens}°C), {desc.lower()}. Umidade {umid}%, vento {vento} km/h."
+
+        max_c = hoje.get("maxtempC", "?")
+        min_c = hoje.get("mintempC", "?")
+        chuva_mm = hoje.get("totalprecipMM", "0")
+        chance = 0
+        try:
+            for h in hoje.get("hourly", []):
+                c = int(h.get("chanceofrain", 0))
+                if c > chance: chance = c
+        except Exception:
+            pass
+
+        vai_chover = (chance >= 40) or (float(chuva_mm) > 0.5)
+        return (
+            f"🌡️ Em {cidade}: {temp}°C (sensação {sens}°C), {desc.lower()}. "
+            f"Hoje: {min_c}~{max_c}°C. Chuva: {chance}% de chance, {chuva_mm}mm previstos "
+            f"→ {'vai chover ☔' if vai_chover else 'não deve chover ☀️'}. "
+            f"Umidade {umid}%, vento {vento} km/h."
+        )
     except Exception as e:
         return f"❌ Erro ao consultar tempo: {e}"
 
@@ -425,9 +479,24 @@ FUNCOES_IA = {
                                   f"Beleza, abrindo {nome}... 🚀")[1],
     },
     "criar_atalho": {
-        "descricao": "Cria um atalho salvo no RotaControl",
+        "descricao": "Cria um atalho de TECLADO salvo no RotaControl (ex: Ctrl+S, Ctrl+Shift+T)",
         "parametros": {"nome": {"type": "string"}, "combo": {"type": "string"}},
         "executar": lambda nome, combo: _criar_atalho_interno(nome, combo),
+    },
+    "criar_acao": {
+        "descricao": (
+            "Adiciona um BOTÃO na aba 'Ações rápidas' do RotaControl. "
+            "Use quando o usuário pedir pra adicionar uma ação/botão no site "
+            "(ex: 'adiciona o ChatGPT em ações rápidas'). NÃO é atalho de teclado — "
+            "é um botão visual. tipo pode ser: abrir (programa .exe), "
+            "pasta (caminho), url (site), comando (cmd)."
+        ),
+        "parametros": {
+            "nome":  {"type": "string", "description": "Nome do botão (ex: ChatGPT)"},
+            "tipo":  {"type": "string", "description": "abrir | pasta | url | comando"},
+            "valor": {"type": "string", "description": "Valor (URL, caminho, comando)"},
+        },
+        "executar": lambda nome, tipo, valor: _criar_acao_interno(nome, tipo, valor),
     },
     "desligar_pc": {
         "descricao": "Desliga o PC em 3 segundos",
@@ -446,7 +515,7 @@ FUNCOES_IA = {
         "executar": lambda: _status_pc_ia(),
     },
     "get_weather": {
-        "descricao": "Consulta a temperatura e condição do tempo em uma cidade",
+        "descricao": "Consulta a temperatura, condição e previsão do tempo em uma cidade",
         "parametros": {"cidade": {"type": "string", "description": "Nome da cidade"}},
         "executar": lambda cidade: _weather(cidade),
     },
@@ -1142,6 +1211,12 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .statBarIn{height:100%;background:linear-gradient(90deg,var(--acc2),var(--acc));transition:width .3s;border-radius:3px}
 .statBarIn.warn{background:linear-gradient(90deg,#f0a020,#e06010)}
 .statBarIn.crit{background:linear-gradient(90deg,#e04040,#c02020)}
+.tpProc{background:#0d0d14;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px}
+.tpProcTop{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tpProcNome{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.tpProcVal{font-size:11px;color:var(--mut);flex:none;font-variant-numeric:tabular-nums}
+.tpProcBar{height:6px;background:#1f1f2a;border-radius:3px;overflow:hidden}
+.tpProcBarIn{height:100%;border-radius:3px;transition:width .3s;background:linear-gradient(90deg,#9a3cff,#7c00f0)}
 .teclasPers{display:flex;flex-wrap:wrap;gap:8px}
 .teclasPers button{flex:1 1 calc(50% - 4px);min-width:0;padding:14px 8px;font-size:15px;position:relative}
 .teclasPers button.travada{background:var(--green);color:#04120b;box-shadow:0 0 0 2px rgba(35,209,96,.35),0 0 14px rgba(35,209,96,.45)}
@@ -1150,10 +1225,10 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .vozWrap textarea,.vozWrap input{padding-right:56px}
 .vozBtn{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:40px;height:40px;border-radius:50%;background:var(--acc);color:#fff;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(124,0,240,.4)}
 .vozBtn.on{background:var(--red);animation:pu 1s infinite}
-.musicaBox{background:#0d0d14;border-radius:10px;padding:12px;display:flex;gap:12px;align-items:center;overflow:hidden}
+.musicaBox{background:#0d0d14;border-radius:10px;padding:12px;display:flex;gap:12px;align-items:center;overflow:hidden;width:100%;box-sizing:border-box}
 .musicaCapa{width:64px;height:64px;border-radius:10px;background:#1f1f2a;flex:0 0 64px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#4a4a5a;overflow:hidden}
 .musicaCapa img{width:100%;height:100%;object-fit:cover;display:block}
-.musicaInfo{flex:1 1 auto;min-width:0;overflow:hidden}
+.musicaInfo{flex:1 1 0;min-width:0;overflow:hidden}
 .musicaTit{font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0}
 .musicaArt{font-size:12px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:3px 0 0 0}
 .musicaApp{font-size:11px;color:#4a4a5a;margin:3px 0 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1184,7 +1259,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   header{padding:6px 10px 4px}header .logo{height:22px}header .logoFb{font-size:14px}
   .modoToggle button{padding:5px 8px;font-size:10px}
   h1,h2{font-size:12px}
-  .musicaCapa{width:54px;height:54px;flex:0 0 54px;font-size:18px}
+  .musicaCapa{width:52px;height:52px;flex:0 0 52px;font-size:18px}
   .musicaTit{font-size:13px}.statVal{font-size:16px}
   .arq{flex-wrap:wrap;row-gap:6px}
   .arq .nome{flex:1 0 100%;font-size:12px;white-space:normal;word-break:break-all;overflow:visible;text-overflow:clip}
@@ -1299,7 +1374,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
           <div class="musicaApp" id="musicaApp">—</div>
         </div>
       </div>
-      <div class="grid g2" style="margin-top:10px">
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
         <button class="btn ghost mini" onclick="smtcAcao('shuffle_on')">🔀 Aleatório ON</button>
         <button class="btn ghost mini" onclick="smtcAcao('shuffle_off')">🔀 Aleatório OFF</button>
         <button class="btn ghost mini" onclick="smtcAcao('repeat_off')">🔁 Repetir OFF</button>
@@ -1474,7 +1549,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"tira um print"</b>, <b>"qual a temperatura em Americana?"</b></div>
+      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"tira um print"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"vai chover?"</b></div>
       <div class="iaChat" id="iaChat"></div>
       <div class="vozWrap" style="margin-top:10px">
         <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off"
@@ -1742,7 +1817,6 @@ function toggleVoz(){
   try{recVoz.start()}catch(e){toast("Erro ao iniciar voz")}
 }
 
-// Voz na IA — SÓ preenche o input (não envia)
 let recVozIA=null,vozIAAtiva=false;
 function toggleVozIA(){
   if(!window.isSecureContext){toast("Voz exige HTTPS (use modo WAN)");return}
@@ -1855,10 +1929,18 @@ async function carregarTopProcs(){
   const j=await get("/api/top_processos");const box=$("#listaTopProcs");if(!box)return;
   const procs=j.processos||[];
   if(!procs.length){box.innerHTML='<div class="hint">(nada)</div>';return}
+  const maior = procs[0].mem_mb || 1;
   box.innerHTML="";
   procs.forEach(p=>{
-    const d=document.createElement("div");d.className="arq";
-    d.innerHTML=`<span class="nome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span><span class="tam">${p.mem_mb} MB${p.cpu?(" • "+p.cpu+"%"):""}</span>`;
+    const pct = Math.max(2, Math.round((p.mem_mb / maior) * 100));
+    const d=document.createElement("div");d.className="tpProc";
+    d.innerHTML=`
+      <div class="tpProcTop">
+        <span class="tpProcNome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span>
+        <span class="tpProcVal">${p.mem_mb} MB${p.cpu?(" • "+p.cpu+"%"):""}</span>
+      </div>
+      <div class="tpProcBar"><div class="tpProcBarIn" style="width:${pct}%"></div></div>
+    `;
     box.appendChild(d);
   });
 }
@@ -1870,7 +1952,24 @@ function termRun(){const cmd=$("#termCmd").value.trim();if(!cmd)return;const pre
 
 let iaHistorico=[];
 function iaAddMsg(tipo,texto){const box=$("#iaChat");const d=document.createElement("div");d.className="iaMsg "+tipo;d.textContent=texto;box.appendChild(d);box.scrollTop=box.scrollHeight}
-async function iaEnviar(){const inp=$("#iaInput");const txt=inp.value.trim();if(!txt)return;inp.value="";iaAddMsg("user",txt);iaHistorico.push({role:"user",content:txt});iaAddMsg("sys","pensando…");const last=$("#iaChat").lastChild;const j=await post("/api/ia",{mensagens:iaHistorico});try{last.remove()}catch(e){}if(j.erro){iaAddMsg("sys","Erro: "+j.erro);return}const resp=j.resposta||"(vazio)";iaHistorico.push({role:"assistant",content:resp});iaAddMsg("bot",resp)}
+async function iaEnviar(){
+  const inp=$("#iaInput");const txt=inp.value.trim();if(!txt)return;
+  inp.value="";
+  iaAddMsg("user",txt);
+  iaHistorico.push({role:"user",content:txt});
+  iaAddMsg("sys","pensando…");
+  const last=$("#iaChat").lastChild;
+  const j=await post("/api/ia",{mensagens:iaHistorico});
+  try{last.remove()}catch(e){}
+  if(j.erro){iaAddMsg("sys","Erro: "+j.erro);return}
+  const resp=j.resposta||"(vazio)";
+  iaHistorico.push({role:"assistant",content:resp});
+  iaAddMsg("bot",resp);
+  // Se for pergunta sobre clima, limpa histórico de weather pra não viciar
+  if(/chuva|chover|tempo|temperatura|clima/i.test(txt)){
+    iaHistorico = iaHistorico.filter(m => !/🌡️ Em /.test(m.content || ""));
+  }
+}
 async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta ✓ (Groq)":"⚠️ Sem chave da Groq"}
 
 let pipActive=false,pipStream=null,pipVideoReady=false,pipStopDraw=false,docPipWin=null,docPipStop=false;
@@ -2306,7 +2405,7 @@ def _ler_temperatura():
 
 
 _GPU_CACHE = {"t": 0, "v": None}
-_GPU_INTERVALO = 8
+_GPU_INTERVALO = 6
 
 def _ler_gpu():
     now = time.time()
@@ -2315,6 +2414,7 @@ def _ler_gpu():
     _GPU_CACHE["t"] = now
     info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
 
+    # NVIDIA
     try:
         r = executar(["nvidia-smi",
                       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -2331,6 +2431,7 @@ def _ler_gpu():
                 _GPU_CACHE["v"] = info; return info
     except Exception: pass
 
+    # Nome via WMI
     if not info["nome"]:
         try:
             script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
@@ -2341,15 +2442,20 @@ def _ler_gpu():
             if out: info["nome"] = out
         except Exception: pass
 
+    # Uso real: pega SÓ o engine 3D e o MAIOR valor (igual Task Manager)
     if info["uso"] is None:
         try:
-            script = ("$c = Get-Counter -Counter '\\GPU Engine(*)\\Utilization Percentage' "
-                      "-ErrorAction SilentlyContinue -MaxSamples 1; "
-                      "if ($c) { $soma = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum; "
-                      "Write-Output ([math]::Min(100, [math]::Round($soma, 0))) }")
+            script = (
+                "$amostras = Get-Counter -Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' "
+                "-ErrorAction SilentlyContinue -MaxSamples 1; "
+                "if ($amostras) { "
+                "  $max = ($amostras.CounterSamples | Measure-Object -Property CookedValue -Maximum).Maximum; "
+                "  Write-Output ([math]::Min(100, [math]::Round($max, 0))) "
+                "}"
+            )
             cod = base64.b64encode(script.encode("utf-16-le")).decode()
             r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             out = (r.stdout or "").strip()
             if out and re.match(r"^\d+$", out):
                 v = int(out)
