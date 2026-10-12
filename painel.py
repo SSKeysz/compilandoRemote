@@ -1,5 +1,5 @@
 """
-RotaControl v2.6
+RotaControl v2.7
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
@@ -131,7 +131,6 @@ def pasta_base():
 def fmt_gib(b): return b / (1024 ** 3)
 
 
-# ===================== CONFIG =====================
 ARQ_CONFIG = os.path.join(pasta_base(), "rotacontrol_config.json")
 
 ACOES_PADRAO = [
@@ -166,8 +165,13 @@ CONFIG_PADRAO = {
         "de forma natural, simpática e direta — como um amigo prestativo. NUNCA responda com "
         "nomes técnicos de funções.\n\n"
 
+        "REGRA DE FORMATAÇÃO (MUITO IMPORTANTE):\n"
+        "• NUNCA use markdown. Nada de **asteriscos**, # cabeçalhos, __sublinhado__, `crase`.\n"
+        "• Texto puro, com emojis quando fizer sentido. Listas só com • ou números.\n"
+        "• Se precisar destacar algo, use MAIÚSCULAS ou emoji, não asteriscos.\n\n"
+
         "O painel tem estas abas:\n"
-        "• Ações — botões que abrem programas/pastas/sites/URLs. Use a função criar_acao pra adicionar.\n"
+        "• Ações — botões que abrem programas/pastas/sites/URLs. Use criar_acao pra adicionar.\n"
         "• Texto — digitar no PC, voz, teclas persistentes, clipboard.\n"
         "• Mídia — play/pause, volume, shuffle, repeat, volume por app.\n"
         "• Mouse — touchpad.\n"
@@ -182,6 +186,7 @@ CONFIG_PADRAO = {
         "• criar_acao(nome, tipo, valor) → adiciona botão na aba Ações rápidas.\n"
         "• criar_atalho(nome, combo) → cria atalho de TECLADO (Ctrl+S, etc).\n"
         "• abrir_site(url), abrir_programa(nome), abrir_youtube()\n"
+        "• digitar_texto(texto) → DIGITA o texto na tela do PC (onde o cursor estiver).\n"
         "• tirar_print(), status_pc(), desligar_pc()\n"
         "• get_weather(cidade) → retorna temp, sensação, condição, umidade, vento e "
         "  previsão do dia (inclui se vai chover e a chance em %).\n\n"
@@ -189,10 +194,11 @@ CONFIG_PADRAO = {
         "IMPORTANTE:\n"
         "• Se o usuário pedir 'adiciona o X em ações rápidas' → use criar_acao.\n"
         "• Se pedir 'cria atalho Ctrl+Y pra X' → use criar_atalho.\n"
+        "• Se pedir 'digita/escreve X na tela' → use digitar_texto.\n"
         "• Se pedir 'vai chover?' → use get_weather e RESPONDA a pergunta sobre chuva, "
         "  não só repita a temperatura.\n"
         "• Se ele perguntar como usar alguma coisa do painel, EXPLIQUE baseado nas abas acima.\n"
-        "• Respostas curtas, simpáticas, com 1 emoji quando fizer sentido."
+        "• Respostas curtas, simpáticas, sem markdown."
     ),
 }
 
@@ -261,7 +267,6 @@ def _com_init():
     except Exception: pass
 
 
-# ===================== CPU =====================
 _CPU_CACHE = {"v": 0.0, "lock": threading.Lock()}
 _CPU_MODEL_CACHE = {"v": None}
 
@@ -294,7 +299,6 @@ def _ler_cpu_model():
     return None
 
 
-# ===================== REDE =====================
 _NET_CACHE = {"t": 0, "sent": 0, "recv": 0, "down_mbps": 0.0, "up_mbps": 0.0, "lock": threading.Lock()}
 
 
@@ -326,7 +330,6 @@ def _loop_net():
             time.sleep(1)
 
 
-# ===================== PING =====================
 _PING_CACHE = {"t": 0, "v": None}
 
 def _ping_google():
@@ -347,7 +350,6 @@ def _ping_google():
     return _PING_CACHE["v"]
 
 
-# ===================== TOP PROCESSOS / CONTAGEM =====================
 def _top_processos(n=5):
     if not PSUTIL_OK: return []
     procs = []
@@ -369,13 +371,10 @@ def _top_processos(n=5):
 
 def _contar_processos():
     if not PSUTIL_OK: return 0
-    try:
-        return len(psutil.pids())
-    except Exception:
-        return 0
+    try: return len(psutil.pids())
+    except Exception: return 0
 
 
-# ===================== FUNÇÕES DA IA =====================
 def _criar_atalho_interno(nome, combo):
     partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
     if not partes: return "❌ Combo inválido."
@@ -397,13 +396,19 @@ def _criar_acao_interno(nome, tipo, valor):
     return f"✅ Ação '{nome}' criada na aba Ações → Ações rápidas!"
 
 
+def _digitar_texto_interno(texto):
+    if not texto: return "❌ Texto vazio."
+    threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
+    return f"✅ Digitando {len(texto)} caractere(s) na tela do PC."
+
+
 def _executar_print_ia():
     idx = int(ESTADO.get("monitor_escolhido", 0))
     png = _capturar_png_full(idx)
     nome = time.strftime("print_ia_%Y-%m-%d_%H-%M-%S.png")
     with open(os.path.join(pasta_arquivos(), nome), "wb") as f:
         f.write(png)
-    return f"📸 Print tirado! Salvei como `{nome}`."
+    return f"📸 Print tirado! Salvei como {nome}."
 
 
 def _status_pc_ia():
@@ -450,8 +455,8 @@ def _weather(cidade):
 
         vai_chover = (chance >= 40) or (float(chuva_mm) > 0.5)
         return (
-            f"🌡️ Em {cidade}: {temp}°C (sensação {sens}°C), {desc.lower()}. "
-            f"Hoje: {min_c}~{max_c}°C. Chuva: {chance}% de chance, {chuva_mm}mm previstos "
+            f"🌡️ Em {cidade} AGORA: {temp}°C (sensação {sens}°C), {desc.lower()}. "
+            f"Hoje {min_c}~{max_c}°C. Chance de chuva: {chance}% ({chuva_mm}mm) "
             f"→ {'vai chover ☔' if vai_chover else 'não deve chover ☀️'}. "
             f"Umidade {umid}%, vento {vento} km/h."
         )
@@ -478,6 +483,11 @@ FUNCOES_IA = {
         "executar": lambda nome: (rodar_oculto(["cmd","/c","start","",nome]),
                                   f"Beleza, abrindo {nome}... 🚀")[1],
     },
+    "digitar_texto": {
+        "descricao": "Digita um texto na tela do PC, onde o cursor estiver. Use quando o usuário pedir pra escrever/digitar algo na tela dele.",
+        "parametros": {"texto": {"type": "string", "description": "Texto que será digitado"}},
+        "executar": lambda texto: _digitar_texto_interno(texto),
+    },
     "criar_atalho": {
         "descricao": "Cria um atalho de TECLADO salvo no RotaControl (ex: Ctrl+S, Ctrl+Shift+T)",
         "parametros": {"nome": {"type": "string"}, "combo": {"type": "string"}},
@@ -486,10 +496,8 @@ FUNCOES_IA = {
     "criar_acao": {
         "descricao": (
             "Adiciona um BOTÃO na aba 'Ações rápidas' do RotaControl. "
-            "Use quando o usuário pedir pra adicionar uma ação/botão no site "
-            "(ex: 'adiciona o ChatGPT em ações rápidas'). NÃO é atalho de teclado — "
-            "é um botão visual. tipo pode ser: abrir (programa .exe), "
-            "pasta (caminho), url (site), comando (cmd)."
+            "Use quando o usuário pedir pra adicionar uma ação/botão no site. "
+            "tipo pode ser: abrir (programa .exe), pasta (caminho), url (site), comando (cmd)."
         ),
         "parametros": {
             "nome":  {"type": "string", "description": "Nome do botão (ex: ChatGPT)"},
@@ -522,7 +530,6 @@ FUNCOES_IA = {
 }
 
 
-# ===================== AUTOSTART =====================
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_NOME = "RotaControl"
 
@@ -554,7 +561,6 @@ def set_autostart(ativo):
         log_seguro("erro autostart:", e); return False
 
 
-# ===================== TÚNEL =====================
 TUNEL = {"proc": None, "url": None, "thread": None, "ativo": False}
 CF_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
@@ -729,7 +735,6 @@ def monitor_ligar():
     except Exception: pass
 
 
-# ===================== CLIPBOARD =====================
 CLIP_HIST = deque(maxlen=10)
 CLIP_ULTIMO = {"txt": ""}
 _user32 = ctypes.windll.user32
@@ -856,7 +861,6 @@ def iniciar_loop_clipboard():
     threading.Thread(target=_loop_clipboard, daemon=True).start()
 
 
-# ===================== VOLUME =====================
 VK_VOL_UP = 0xAF; VK_VOL_DOWN = 0xAE; VK_VOL_MUTE = 0xAD
 def _vtecla_up(): _teclar_vk(VK_VOL_UP)
 def _vtecla_down(): _teclar_vk(VK_VOL_DOWN)
@@ -864,7 +868,6 @@ def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
-# ===================== TECLAS PERSISTENTES =====================
 TECLAS_TRAVADAS = {}
 TECLAS_TIMERS = {}
 TECLAS_LOCK = threading.Lock()
@@ -926,7 +929,6 @@ def travar_tecla(nome):
         _agendar_destrava_auto(nome); return True
 
 
-# ===================== MIXER =====================
 def listar_sessoes_audio():
     if not PYCAW_OK: raise Exception("pycaw nao instalado")
     _com_init()
@@ -968,7 +970,6 @@ def setar_sessao_audio(chave_alvo, volume=None, mudo=None):
     if not achou: raise Exception(f"sessao nao encontrada: {chave_alvo}")
 
 
-# ===================== SMTC =====================
 async def _smtc_thumb_b64(thumb_ref):
     if thumb_ref is None or not SMTC_STREAMS_OK: return None
     try:
@@ -1028,7 +1029,6 @@ def smtc_acao(acao):
     except Exception: return False
 
 
-# ===================== CAPTURA =====================
 CAPTURA = {"running": False, "thread": None, "jpeg": None,
            "lock": threading.Lock(), "ultimo_pedido": 0.0,
            "erro": None, "monitor_idx": 0}
@@ -1113,9 +1113,6 @@ $g.Dispose(); $bmp.Dispose()
     with open(out, "rb") as f: return f.read()
 
 
-# ============================================================
-# PAGINA
-# ============================================================
 PAGINA = r"""
 <!doctype html>
 <html lang="pt-br">
@@ -1214,7 +1211,7 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .tpProc{background:#0d0d14;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px}
 .tpProcTop{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .tpProcNome{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
-.tpProcVal{font-size:11px;color:var(--mut);flex:none;font-variant-numeric:tabular-nums}
+.tpProcVal{font-size:11px;color:var(--mut);flex:none;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tpProcBar{height:6px;background:#1f1f2a;border-radius:3px;overflow:hidden}
 .tpProcBarIn{height:100%;border-radius:3px;transition:width .3s;background:linear-gradient(90deg,#9a3cff,#7c00f0)}
 .teclasPers{display:flex;flex-wrap:wrap;gap:8px}
@@ -1549,7 +1546,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"tira um print"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"vai chover?"</b></div>
+      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"escreve uma mensagem na tela"</b>, <b>"vai chover?"</b></div>
       <div class="iaChat" id="iaChat"></div>
       <div class="vozWrap" style="margin-top:10px">
         <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off"
@@ -1936,8 +1933,8 @@ async function carregarTopProcs(){
     const d=document.createElement("div");d.className="tpProc";
     d.innerHTML=`
       <div class="tpProcTop">
-        <span class="tpProcNome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span>
-        <span class="tpProcVal">${p.mem_mb} MB${p.cpu?(" • "+p.cpu+"%"):""}</span>
+        <span class="tpProcNome">${esc(p.nome)} <small style="color:#8b8b99">PID ${p.pid}</small></span>
+        <span class="tpProcVal">${p.mem_mb} MB • CPU ${p.cpu}%</span>
       </div>
       <div class="tpProcBar"><div class="tpProcBarIn" style="width:${pct}%"></div></div>
     `;
@@ -1965,10 +1962,8 @@ async function iaEnviar(){
   const resp=j.resposta||"(vazio)";
   iaHistorico.push({role:"assistant",content:resp});
   iaAddMsg("bot",resp);
-  // Se for pergunta sobre clima, limpa histórico de weather pra não viciar
-  if(/chuva|chover|tempo|temperatura|clima/i.test(txt)){
-    iaHistorico = iaHistorico.filter(m => !/🌡️ Em /.test(m.content || ""));
-  }
+  // SEMPRE limpa respostas de weather do histórico (força chamar de novo)
+  iaHistorico = iaHistorico.filter(m => !/🌡️ Em /.test(m.content || ""));
 }
 async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta ✓ (Groq)":"⚠️ Sem chave da Groq"}
 
@@ -2385,9 +2380,7 @@ def api_monitor_escolhido():
     return jsonify(ok=True, idx=idx)
 
 
-# ===================== STATUS =====================
 def _ler_temperatura():
-    """Fallback: só tenta WMI (na maioria dos PCs sem admin retorna None)."""
     try:
         script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
                   "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
@@ -2405,7 +2398,7 @@ def _ler_temperatura():
 
 
 _GPU_CACHE = {"t": 0, "v": None}
-_GPU_INTERVALO = 6
+_GPU_INTERVALO = 3
 
 def _ler_gpu():
     now = time.time()
@@ -2414,7 +2407,7 @@ def _ler_gpu():
     _GPU_CACHE["t"] = now
     info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
 
-    # NVIDIA
+    # NVIDIA (mais confiável)
     try:
         r = executar(["nvidia-smi",
                       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -2442,15 +2435,15 @@ def _ler_gpu():
             if out: info["nome"] = out
         except Exception: pass
 
-    # Uso real: pega SÓ o engine 3D e o MAIOR valor (igual Task Manager)
+    # AMD/Intel: soma de TODOS os engines (é o que o Task Manager faz)
     if info["uso"] is None:
         try:
             script = (
-                "$amostras = Get-Counter -Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' "
+                "$amostras = Get-Counter -Counter '\\GPU Engine(*)\\Utilization Percentage' "
                 "-ErrorAction SilentlyContinue -MaxSamples 1; "
                 "if ($amostras) { "
-                "  $max = ($amostras.CounterSamples | Measure-Object -Property CookedValue -Maximum).Maximum; "
-                "  Write-Output ([math]::Min(100, [math]::Round($max, 0))) "
+                "  $soma = ($amostras.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum; "
+                "  Write-Output ([math]::Min(100, [math]::Round($soma, 0))) "
                 "}"
             )
             cod = base64.b64encode(script.encode("utf-16-le")).decode()
@@ -2540,7 +2533,6 @@ def api_top_processos():
     return jsonify(processos=_top_processos(5))
 
 
-# ===================== SCREENSHOT =====================
 @app.route("/api/screenshot", methods=["POST"])
 def api_screenshot():
     b = exigir_auth()
@@ -2566,7 +2558,6 @@ def api_screenshot_clip():
     except Exception as e: return jsonify(erro=str(e))
 
 
-# ===================== REPAROS =====================
 @app.route("/api/reparar", methods=["POST"])
 def api_reparar():
     b = exigir_auth()
@@ -2597,7 +2588,6 @@ def api_reparar():
     return jsonify(erro="tipo invalido")
 
 
-# ===================== QR CODE =====================
 def _gerar_qr_png_bytes(url):
     if not QRCODE_OK: return None
     try:
@@ -2690,7 +2680,6 @@ vig();requestAnimationFrame(frame)}requestAnimationFrame(frame);})();
         return f"Erro: {e}", 500
 
 
-# ===================== TELA =====================
 @app.route("/api/tela.jpg")
 def api_tela():
     b = exigir_auth()
@@ -2759,7 +2748,6 @@ def api_stream_mjpg():
     return resp
 
 
-# ===================== ARQUIVOS =====================
 def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
 
 def _path_seguro(p):
@@ -2864,7 +2852,6 @@ def api_apagar():
     except Exception as e: return jsonify(erro=str(e))
 
 
-# ===================== PROCESSOS / COMANDOS =====================
 @app.route("/api/processos")
 def api_processos():
     b = exigir_auth()
@@ -2937,7 +2924,6 @@ def api_comando_exec():
     return jsonify(saida=run_cmd_escondido(cmds[idx]["cmd"]).strip() or "(sem saida)")
 
 
-# ===================== TERMINAL SSE =====================
 @app.route("/api/terminal")
 def api_terminal():
     b = exigir_auth()
@@ -2962,7 +2948,6 @@ def api_terminal():
                     headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
 
-# ===================== IA =====================
 GROQ_MODELOS_FALLBACK = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
@@ -3046,7 +3031,6 @@ def api_ia():
     return jsonify(erro=err or "Groq falhou")
 
 
-# ===================== SMTC =====================
 @app.route("/api/midia_info")
 def api_midia_info():
     b = exigir_auth()
@@ -3065,7 +3049,6 @@ def api_midia_smtc():
     return jsonify(ok=ok) if ok else jsonify(erro="falhou")
 
 
-# ===================== TIMERS / WOL / SISTEMA =====================
 @app.route("/api/timer", methods=["POST"])
 def api_timer():
     b = exigir_auth()
@@ -3158,7 +3141,6 @@ def api_sistema():
     return jsonify(erro="acao desconhecida")
 
 
-# ===================== TEXTO / CLIPBOARD =====================
 def copiar_pc(texto):
     try:
         _clip_set(texto); time.sleep(0.05); lido = _clip_get()
