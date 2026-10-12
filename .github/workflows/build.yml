@@ -26,13 +26,13 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" pyinstaller
+          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests pyinstaller
 
       - name: Checar se compila
-        run: python -m py_compile painel.py
+        run: python -m py_compile piloto.py
 
       - name: Compilar exe
-        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode painel.py
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk piloto.py
 
       - name: Listar arquivos gerados
         run: dir dist
