@@ -29,10 +29,10 @@ jobs:
           pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests pyinstaller
 
       - name: Checar se compila
-        run: python -m py_compile piloto.py
+        run: python -m py_compile painel.py
 
       - name: Compilar exe
-        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk piloto.py
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
 
       - name: Listar arquivos gerados
         run: dir dist
