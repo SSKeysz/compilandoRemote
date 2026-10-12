@@ -1,11 +1,11 @@
 """
-RotaControl v2.4
-pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests sensorwatch
+RotaControl v2.5
+pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
-    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk --collect-all sensorwatch --add-data "hwinfo64.exe;." --add-data "HWiNFO64.INI;." painel.py
+    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
 """
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv, asyncio
-import logging, tempfile, threading, subprocess, webbrowser, urllib.request, shutil
+import logging, tempfile, threading, subprocess, webbrowser, urllib.request
 from collections import deque
 
 try: import winreg
@@ -76,7 +76,6 @@ QR_LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAABOYAAATmCAYAAACF/K4qAAAQAElEQVR4Aez9y44sS
 
 
 ABRIR_NAVEGADOR_NO_PC = False
-ABRIR_HWINFO_NO_BOOT = True
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
@@ -129,69 +128,7 @@ def pasta_base():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def pasta_bundle():
-    """Onde os arquivos embutidos estão: _MEIPASS se compilado, senão a pasta do script."""
-    if getattr(sys, "frozen", False):
-        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def fmt_gib(b): return b / (1024 ** 3)
-
-
-# ===================== HWiNFO64 (embutido) =====================
-_HWINFO_PROC = {"proc": None, "pasta": None}
-
-
-def iniciar_hwinfo():
-    """Extrai o hwinfo64.exe embutido e roda em background."""
-    if not ABRIR_HWINFO_NO_BOOT: return False
-    try:
-        # Já está rodando?
-        if PSUTIL_OK:
-            for p in psutil.process_iter(["name"]):
-                try:
-                    nome = (p.info["name"] or "").lower()
-                    if "hwinfo" in nome:
-                        log_seguro("HWiNFO já rodando.")
-                        return True
-                except Exception: pass
-
-        exe_src = os.path.join(pasta_bundle(), "hwinfo64.exe")
-        ini_src = os.path.join(pasta_bundle(), "HWiNFO64.INI")
-        if not os.path.exists(exe_src):
-            log_seguro("hwinfo64.exe não encontrado no bundle.")
-            return False
-
-        # Pasta temp pra rodar (não pode rodar direto do _MEIPASS que é read-only em alguns casos)
-        pasta = os.path.join(tempfile.gettempdir(), "RotaControl_HWiNFO")
-        os.makedirs(pasta, exist_ok=True)
-        _HWINFO_PROC["pasta"] = pasta
-
-        exe_dest = os.path.join(pasta, "hwinfo64.exe")
-        ini_dest = os.path.join(pasta, "HWiNFO64.INI")
-
-        # Copia se ainda não tem
-        try:
-            if not os.path.exists(exe_dest) or os.path.getsize(exe_dest) != os.path.getsize(exe_src):
-                shutil.copy2(exe_src, exe_dest)
-            if os.path.exists(ini_src) and not os.path.exists(ini_dest):
-                shutil.copy2(ini_src, ini_dest)
-        except Exception as e:
-            log_seguro("erro copiando hwinfo:", e)
-
-        # Roda
-        p = subprocess.Popen([exe_dest], cwd=pasta,
-                             creationflags=CREATE_NO_WINDOW,
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        _HWINFO_PROC["proc"] = p
-        log_seguro("HWiNFO iniciado, PID", p.pid)
-        return True
-    except Exception as e:
-        log_seguro("erro ao iniciar HWiNFO:", e)
-        return False
 
 
 # ===================== CONFIG =====================
@@ -386,7 +323,7 @@ def _ping_google():
     return _PING_CACHE["v"]
 
 
-# ===================== TOP PROCESSOS =====================
+# ===================== TOP PROCESSOS / CONTAGEM =====================
 def _top_processos(n=5):
     if not PSUTIL_OK: return []
     procs = []
@@ -404,6 +341,14 @@ def _top_processos(n=5):
         except Exception: continue
     procs.sort(key=lambda x: x["mem_mb"], reverse=True)
     return procs[:n]
+
+
+def _contar_processos():
+    if not PSUTIL_OK: return 0
+    try:
+        return len(psutil.pids())
+    except Exception:
+        return 0
 
 
 # ===================== FUNÇÕES DA IA =====================
@@ -432,8 +377,9 @@ def _status_pc_ia():
     discos = _listar_discos()
     with _NET_CACHE["lock"]:
         down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
+    qtd = _contar_processos()
     linhas = [f"CPU em {cpu:.0f}%", f"RAM em {ram.percent:.0f}%",
-              f"Rede: ↓{down} Mbps ↑{up} Mbps"]
+              f"Rede: ↓{down} Mbps ↑{up} Mbps", f"{qtd} processos ativos"]
     for d in discos[:3]:
         linhas.append(f"{d['letra']} com {d['percent']}% usado")
     return "🖥️ " + " • ".join(linhas)
@@ -495,7 +441,7 @@ FUNCOES_IA = {
         "executar": lambda: _executar_print_ia(),
     },
     "status_pc": {
-        "descricao": "Retorna status do PC (CPU, RAM, rede, discos)",
+        "descricao": "Retorna status do PC (CPU, RAM, rede, discos, processos)",
         "parametros": {},
         "executar": lambda: _status_pc_ia(),
     },
@@ -1468,16 +1414,16 @@ body[data-modo="iniciante"] .avancado{display:none!important}
           <div class="statBar"><div class="statBarIn" id="stGpuBar" style="width:0%"></div></div>
         </div>
         <div class="statBox">
+          <span class="statLbl">Processos</span>
+          <span class="statVal" id="stQtdProc">—</span>
+        </div>
+        <div class="statBox">
           <span class="statLbl">Rede</span>
           <span class="statVal peq" id="stRede">—</span>
         </div>
         <div class="statBox">
           <span class="statLbl">Ping</span>
           <span class="statVal" id="stPing">—</span>
-        </div>
-        <div class="statBox">
-          <span class="statLbl">Temperatura</span>
-          <span class="statVal" id="stTemp">—</span>
         </div>
         <div class="statBox" style="grid-column:span 2">
           <span class="statLbl">Ligado há</span>
@@ -1886,13 +1832,11 @@ async function atualizarStatus(){
     stGpu.title=g.nome+(g.mem_usada?` | ${g.mem_usada}/${g.mem_total} MB`:"");
     if(g.uso!==null&&g.uso!==undefined)setBar("stGpuBar",g.uso);else setBar("stGpuBar",0);
   } else {stGpu.textContent="N/D";setBar("stGpuBar",0)}
+  $("#stQtdProc").textContent=(j.qtd_processos||0)+" ativos";
   const rd=j.rede||{};
   $("#stRede").textContent = `↓ ${(rd.down_mbps||0).toFixed(2)} ↑ ${(rd.up_mbps||0).toFixed(2)} Mbps`;
   const pg=j.ping;
   $("#stPing").textContent = (pg!==null&&pg!==undefined) ? (pg+" ms") : "—";
-  const stTemp=$("#stTemp");
-  if(j.temp!==null&&j.temp!==undefined){stTemp.textContent=j.temp.toFixed(0)+"°C";stTemp.title=""}
-  else{stTemp.textContent="N/D";stTemp.title="Abra o HWiNFO64 (embutido) ou rode como admin."}
   $("#stUptime").textContent=j.uptime||"—";
   const ld=$("#listaDiscos");
   if(ld){
@@ -2343,43 +2287,8 @@ def api_monitor_escolhido():
 
 
 # ===================== STATUS =====================
-_STATUS_TEMP_CACHE = {"t": 0, "v": None}
-_TEMP_MIN_INTERVALO = 30
-
-
 def _ler_temperatura():
-    now = time.time()
-    if now - _STATUS_TEMP_CACHE["t"] < _TEMP_MIN_INTERVALO:
-        return _STATUS_TEMP_CACHE["v"]
-    _STATUS_TEMP_CACHE["t"] = now
-    _STATUS_TEMP_CACHE["v"] = None
-
-    # 1) sensorwatch (HWiNFO64 shared memory)
-    try:
-        r = executar([sys.executable, "-m", "sensorwatch", "snapshot",
-                      "--include", "CPU", "--json"],
-                     capture_output=True, text=True, timeout=5)
-        out = (r.stdout or "").strip()
-        if out:
-            data = json.loads(out)
-            for sensor in data.get("sensors", []):
-                reading = (sensor.get("reading") or "").lower()
-                stype = (sensor.get("type") or "").lower()
-                if "temp" in stype or "temp" in reading:
-                    v = float(sensor.get("value", 0))
-                    if 0 < v < 200:
-                        _STATUS_TEMP_CACHE["v"] = v; return v
-    except Exception: pass
-
-    # 2) WinTmp (admin)
-    try:
-        import WinTmp
-        v = WinTmp.CPU_Temp()
-        if v and 0 < v < 200:
-            _STATUS_TEMP_CACHE["v"] = v; return v
-    except Exception: pass
-
-    # 3) WMI MSAcpi
+    """Fallback: só tenta WMI (na maioria dos PCs sem admin retorna None)."""
     try:
         script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
                   "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
@@ -2387,12 +2296,11 @@ def _ler_temperatura():
         cod = base64.b64encode(script.encode("utf-16-le")).decode()
         r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
                      capture_output=True, text=True, encoding="utf-8",
-                     errors="replace", timeout=8)
+                     errors="replace", timeout=6)
         out = (r.stdout or "").strip()
         if out and re.match(r"^-?\d+(\.\d+)?$", out):
             v = float(out)
-            if -50 < v < 200:
-                _STATUS_TEMP_CACHE["v"] = v; return v
+            if -50 < v < 200: return v
     except Exception: pass
     return None
 
@@ -2407,7 +2315,6 @@ def _ler_gpu():
     _GPU_CACHE["t"] = now
     info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
 
-    # NVIDIA
     try:
         r = executar(["nvidia-smi",
                       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -2424,7 +2331,6 @@ def _ler_gpu():
                 _GPU_CACHE["v"] = info; return info
     except Exception: pass
 
-    # Nome via WMI
     if not info["nome"]:
         try:
             script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
@@ -2435,7 +2341,6 @@ def _ler_gpu():
             if out: info["nome"] = out
         except Exception: pass
 
-    # Uso via GPU Engine counter (AMD/Intel/NVIDIA Win10+)
     if info["uso"] is None:
         try:
             script = ("$c = Get-Counter -Counter '\\GPU Engine(*)\\Utilization Percentage' "
@@ -2517,6 +2422,7 @@ def api_status():
             discos=discos,
             rede={"down_mbps": down, "up_mbps": up},
             ping=ping,
+            qtd_processos=_contar_processos(),
         )
     except Exception as e: return jsonify(erro=str(e))
 
@@ -3412,8 +3318,6 @@ if __name__ == "__main__":
     if PSUTIL_OK:
         threading.Thread(target=_loop_cpu, daemon=True).start()
         threading.Thread(target=_loop_net, daemon=True).start()
-    # Abre o HWiNFO64 embutido (opção B)
-    threading.Thread(target=iniciar_hwinfo, daemon=True).start()
     if ESTADO.get("modo") == "wan":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
     log_seguro("RotaControl:", "http://127.0.0.1:5000")
