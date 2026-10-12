@@ -1,5 +1,5 @@
 """
-RotaControl v2.7
+RotaControl v2.8
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
@@ -160,45 +160,39 @@ CONFIG_PADRAO = {
     "tutorial_visto": False,
     "ia_model_groq": "openai/gpt-oss-120b",
     "ia_system": (
-        "Você é o RotaControl, o assistente pessoal do usuário, integrado a um painel "
-        "web que controla o PC dele remotamente pelo celular. Fale em português do Brasil, "
-        "de forma natural, simpática e direta — como um amigo prestativo. NUNCA responda com "
-        "nomes técnicos de funções.\n\n"
+        "Você é o assistente do RotaControl, um app que controla o PC pelo celular. "
+        "Fale em português do Brasil, curto, simpático e direto.\n\n"
 
-        "REGRA DE FORMATAÇÃO (MUITO IMPORTANTE):\n"
-        "• NUNCA use markdown. Nada de **asteriscos**, # cabeçalhos, __sublinhado__, `crase`.\n"
-        "• Texto puro, com emojis quando fizer sentido. Listas só com • ou números.\n"
-        "• Se precisar destacar algo, use MAIÚSCULAS ou emoji, não asteriscos.\n\n"
+        "REGRAS ABSOLUTAS:\n"
+        "1. NUNCA use markdown: sem **, sem #, sem `, sem _.\n"
+        "2. Se for pedido de AÇÃO, use a função correspondente. Não explique como fazer, FAÇA.\n"
+        "3. Se for PERGUNTA, responda em texto simples, curto.\n"
+        "4. Nunca invente. Se não souber, diga 'não sei'.\n\n"
 
-        "O painel tem estas abas:\n"
-        "• Ações — botões que abrem programas/pastas/sites/URLs. Use criar_acao pra adicionar.\n"
-        "• Texto — digitar no PC, voz, teclas persistentes, clipboard.\n"
-        "• Mídia — play/pause, volume, shuffle, repeat, volume por app.\n"
-        "• Mouse — touchpad.\n"
-        "• Tela — ver ao vivo, print, PiP, escolher monitor.\n"
-        "• Arquivos — upload do celular, navegador de arquivos.\n"
-        "• PC — status, top processos, terminal, reparos.\n"
-        "• IA — você.\n"
-        "• Extras — timer de desligar/dormir, Wake-on-LAN.\n"
-        "• Sistema — QR, LAN/WAN, PIN, pasta padrão.\n\n"
+        "ABAS DO APP: Ações, Texto, Mídia, Mouse, Tela, Arquivos, PC, IA, Extras, Sistema.\n\n"
 
-        "FUNÇÕES DISPONÍVEIS (chame sempre que precisar):\n"
-        "• criar_acao(nome, tipo, valor) → adiciona botão na aba Ações rápidas.\n"
-        "• criar_atalho(nome, combo) → cria atalho de TECLADO (Ctrl+S, etc).\n"
+        "FUNÇÕES QUE VOCÊ PODE CHAMAR:\n"
+        "• criar_acao(nome, tipo, valor) → botão em Ações. tipo: abrir/pasta/url/comando.\n"
+        "• criar_atalho(nome, combo) → atalho de teclado tipo ctrl+s.\n"
         "• abrir_site(url), abrir_programa(nome), abrir_youtube()\n"
-        "• digitar_texto(texto) → DIGITA o texto na tela do PC (onde o cursor estiver).\n"
-        "• tirar_print(), status_pc(), desligar_pc()\n"
-        "• get_weather(cidade) → retorna temp, sensação, condição, umidade, vento e "
-        "  previsão do dia (inclui se vai chover e a chance em %).\n\n"
+        "• digitar_texto(texto) → digita onde o cursor tiver\n"
+        "• clicar(x, y) → clica em coordenada da tela\n"
+        "• tirar_print() → salva print da tela\n"
+        "• status_pc() → CPU/RAM/rede\n"
+        "• desligar_pc()\n\n"
 
-        "IMPORTANTE:\n"
-        "• Se o usuário pedir 'adiciona o X em ações rápidas' → use criar_acao.\n"
-        "• Se pedir 'cria atalho Ctrl+Y pra X' → use criar_atalho.\n"
-        "• Se pedir 'digita/escreve X na tela' → use digitar_texto.\n"
-        "• Se pedir 'vai chover?' → use get_weather e RESPONDA a pergunta sobre chuva, "
-        "  não só repita a temperatura.\n"
-        "• Se ele perguntar como usar alguma coisa do painel, EXPLIQUE baseado nas abas acima.\n"
-        "• Respostas curtas, simpáticas, sem markdown."
+        "EXEMPLOS:\n"
+        "Pergunta: 'adiciona o ChatGPT em ações rápidas'\n"
+        "Ação: criar_acao(nome='ChatGPT', tipo='url', valor='https://chat.openai.com')\n\n"
+
+        "Pergunta: 'abre o youtube'\n"
+        "Ação: abrir_youtube()\n\n"
+
+        "Pergunta: 'digita bom dia'\n"
+        "Ação: digitar_texto(texto='bom dia')\n\n"
+
+        "Pergunta: 'como uso fora de casa?'\n"
+        "Resposta: 'Na aba Sistema, ativa o modo WAN. Ele cria um link HTTPS que você abre no celular de qualquer lugar. Não precisa instalar nada.'\n"
     ),
 }
 
@@ -353,7 +347,7 @@ def _ping_google():
 def _top_processos(n=5):
     if not PSUTIL_OK: return []
     procs = []
-    for p in psutil.process_iter(["pid","name","memory_info","cpu_percent"]):
+    for p in psutil.process_iter(["pid","name","memory_info"]):
         try:
             info = p.info
             mi = info.get("memory_info")
@@ -362,7 +356,6 @@ def _top_processos(n=5):
                 "pid": info["pid"],
                 "nome": info["name"] or "?",
                 "mem_mb": round(mem_mb, 1),
-                "cpu": round(info.get("cpu_percent") or 0, 1),
             })
         except Exception: continue
     procs.sort(key=lambda x: x["mem_mb"], reverse=True)
@@ -377,12 +370,12 @@ def _contar_processos():
 
 def _criar_atalho_interno(nome, combo):
     partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
-    if not partes: return "❌ Combo inválido."
+    if not partes: return "Combo inválido."
     ESTADO.setdefault("atalhos", []).append({
         "nome": nome[:40], "combo": partes, "texto": "+".join(partes),
     })
     salvar_config()
-    return f"✅ Atalho '{nome}' criado! Aparece na aba Ações → Atalhos."
+    return f"Atalho '{nome}' criado! Aparece na aba Ações, Atalhos."
 
 
 def _criar_acao_interno(nome, tipo, valor):
@@ -393,13 +386,25 @@ def _criar_acao_interno(nome, tipo, valor):
         "nome": nome[:40], "tipo": tipo, "valor": valor,
     })
     salvar_config()
-    return f"✅ Ação '{nome}' criada na aba Ações → Ações rápidas!"
+    return f"Ação '{nome}' criada na aba Ações rápidas!"
 
 
 def _digitar_texto_interno(texto):
-    if not texto: return "❌ Texto vazio."
+    if not texto: return "Texto vazio."
     threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
-    return f"✅ Digitando {len(texto)} caractere(s) na tela do PC."
+    return f"Digitando {len(texto)} caractere(s) na tela do PC."
+
+
+def _clicar_interno(x, y):
+    try:
+        u = ctypes.windll.user32
+        u.SetCursorPos(int(x), int(y))
+        time.sleep(0.1)
+        u.mouse_event(0x0002, 0, 0, 0, 0)
+        u.mouse_event(0x0004, 0, 0, 0, 0)
+        return f"Cliquei em ({x}, {y})."
+    except Exception as e:
+        return f"Erro ao clicar: {e}"
 
 
 def _executar_print_ia():
@@ -408,7 +413,7 @@ def _executar_print_ia():
     nome = time.strftime("print_ia_%Y-%m-%d_%H-%M-%S.png")
     with open(os.path.join(pasta_arquivos(), nome), "wb") as f:
         f.write(png)
-    return f"📸 Print tirado! Salvei como {nome}."
+    return f"Print salvo como {nome}."
 
 
 def _status_pc_ia():
@@ -419,49 +424,10 @@ def _status_pc_ia():
         down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
     qtd = _contar_processos()
     linhas = [f"CPU em {cpu:.0f}%", f"RAM em {ram.percent:.0f}%",
-              f"Rede: ↓{down} Mbps ↑{up} Mbps", f"{qtd} processos ativos"]
+              f"Rede: {down} Mbps down / {up} Mbps up", f"{qtd} processos ativos"]
     for d in discos[:3]:
         linhas.append(f"{d['letra']} com {d['percent']}% usado")
-    return "🖥️ " + " • ".join(linhas)
-
-
-def _weather(cidade):
-    if not REQ_OK: return "❌ requests não instalado."
-    try:
-        from urllib.parse import quote
-        url = f"https://wttr.in/{quote(cidade)}?format=j1&lang=pt"
-        r = _req.get(url, timeout=10)
-        if r.status_code != 200:
-            return f"❌ Não consegui consultar o tempo de {cidade}."
-        d = r.json()
-        cc = d["current_condition"][0]
-        hoje = (d.get("weather") or [{}])[0]
-        temp = cc["temp_C"]
-        sens = cc["FeelsLikeC"]
-        desc = cc["lang_pt"][0]["value"] if cc.get("lang_pt") else cc["weatherDesc"][0]["value"]
-        umid = cc["humidity"]
-        vento = cc["windspeedKmph"]
-
-        max_c = hoje.get("maxtempC", "?")
-        min_c = hoje.get("mintempC", "?")
-        chuva_mm = hoje.get("totalprecipMM", "0")
-        chance = 0
-        try:
-            for h in hoje.get("hourly", []):
-                c = int(h.get("chanceofrain", 0))
-                if c > chance: chance = c
-        except Exception:
-            pass
-
-        vai_chover = (chance >= 40) or (float(chuva_mm) > 0.5)
-        return (
-            f"🌡️ Em {cidade} AGORA: {temp}°C (sensação {sens}°C), {desc.lower()}. "
-            f"Hoje {min_c}~{max_c}°C. Chance de chuva: {chance}% ({chuva_mm}mm) "
-            f"→ {'vai chover ☔' if vai_chover else 'não deve chover ☀️'}. "
-            f"Umidade {umid}%, vento {vento} km/h."
-        )
-    except Exception as e:
-        return f"❌ Erro ao consultar tempo: {e}"
+    return " | ".join(linhas)
 
 
 FUNCOES_IA = {
@@ -469,24 +435,32 @@ FUNCOES_IA = {
         "descricao": "Abre o YouTube no navegador do PC",
         "parametros": {},
         "executar": lambda: (webbrowser.open_new_tab("https://youtube.com"),
-                             "Ok, abrindo o YouTube pra você! 🎬")[1],
+                             "Ok, abrindo o YouTube pra você!")[1],
     },
     "abrir_site": {
         "descricao": "Abre um site qualquer no navegador do PC",
         "parametros": {"url": {"type": "string", "description": "URL completa"}},
         "executar": lambda url: (webbrowser.open_new_tab(url),
-                                 f"Ok, abrindo {url} no navegador! 🌐")[1],
+                                 f"Ok, abrindo {url} no navegador!")[1],
     },
     "abrir_programa": {
         "descricao": "Abre um programa no PC (notepad, calc, explorer, etc.)",
         "parametros": {"nome": {"type": "string", "description": "Nome do executável"}},
         "executar": lambda nome: (rodar_oculto(["cmd","/c","start","",nome]),
-                                  f"Beleza, abrindo {nome}... 🚀")[1],
+                                  f"Beleza, abrindo {nome}...")[1],
     },
     "digitar_texto": {
         "descricao": "Digita um texto na tela do PC, onde o cursor estiver. Use quando o usuário pedir pra escrever/digitar algo na tela dele.",
         "parametros": {"texto": {"type": "string", "description": "Texto que será digitado"}},
         "executar": lambda texto: _digitar_texto_interno(texto),
+    },
+    "clicar": {
+        "descricao": "Move o mouse e clica com o botão esquerdo nas coordenadas (x, y) da tela do PC.",
+        "parametros": {
+            "x": {"type": "integer", "description": "Coordenada X em pixels"},
+            "y": {"type": "integer", "description": "Coordenada Y em pixels"},
+        },
+        "executar": lambda x, y: _clicar_interno(x, y),
     },
     "criar_atalho": {
         "descricao": "Cria um atalho de TECLADO salvo no RotaControl (ex: Ctrl+S, Ctrl+Shift+T)",
@@ -510,7 +484,7 @@ FUNCOES_IA = {
         "descricao": "Desliga o PC em 3 segundos",
         "parametros": {},
         "executar": lambda: (_shutdown(restart=False, delay=3),
-                             "Ok, desligando o PC em 3 segundos. Até logo! 👋")[1],
+                             "Ok, desligando o PC em 3 segundos.")[1],
     },
     "tirar_print": {
         "descricao": "Tira um print da tela do PC e salva",
@@ -522,12 +496,19 @@ FUNCOES_IA = {
         "parametros": {},
         "executar": lambda: _status_pc_ia(),
     },
-    "get_weather": {
-        "descricao": "Consulta a temperatura, condição e previsão do tempo em uma cidade",
-        "parametros": {"cidade": {"type": "string", "description": "Nome da cidade"}},
-        "executar": lambda cidade: _weather(cidade),
-    },
 }
+
+
+def _limpar_markdown(texto):
+    if not texto: return texto
+    texto = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', texto)
+    texto = re.sub(r'\*\*([^*]+)\*\*', r'\1', texto)
+    texto = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'\1', texto)
+    texto = re.sub(r'__([^_]+)__', r'\1', texto)
+    texto = re.sub(r'(?<!_)_([^_\n]+)_(?!_)', r'\1', texto)
+    texto = re.sub(r'`([^`]+)`', r'\1', texto)
+    texto = re.sub(r'^#{1,6}\s*', '', texto, flags=re.MULTILINE)
+    return texto
 
 
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1113,6 +1094,9 @@ $g.Dispose(); $bmp.Dispose()
     with open(out, "rb") as f: return f.read()
 
 
+# ============================================================
+# PAGINA
+# ============================================================
 PAGINA = r"""
 <!doctype html>
 <html lang="pt-br">
@@ -1546,7 +1530,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"escreve uma mensagem na tela"</b>, <b>"vai chover?"</b></div>
+      <div class="hint" style="margin-bottom:8px">Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"escreve uma mensagem na tela"</b></div>
       <div class="iaChat" id="iaChat"></div>
       <div class="vozWrap" style="margin-top:10px">
         <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off"
@@ -1796,7 +1780,7 @@ $("#txtEnv").addEventListener("keydown",e=>{
 
 let recVoz=null,vozAtiva=false;
 function toggleVoz(){
-  if(!window.isSecureContext){$("#vozStatus").innerHTML="⚠️ Voz exige HTTPS.";toast("Precisa HTTPS");return}
+  if(!window.isSecureContext){$("#vozStatus").innerHTML="Voz exige HTTPS.";toast("Precisa HTTPS");return}
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){$("#vozStatus").textContent="Navegador não suporta voz.";return}
   if(vozAtiva){try{recVoz.stop()}catch(e){}return}
@@ -1871,9 +1855,9 @@ async function toggleDrag(){TP.drag=!TP.drag;const b=document.getElementById('bt
 let ESTADO_MONITOR_ATUAL=0;
 async function carregarMonitores(){const j=await get("/api/monitores");const sel=$("#selMonitor");if(!sel)return;ESTADO_MONITOR_ATUAL=j.atual||0;sel.innerHTML="";const o0=document.createElement("option");o0.value="0";o0.textContent="Todas as telas juntas";sel.appendChild(o0);(j.lista||[]).forEach(m=>{const o=document.createElement("option");o.value=String(m.idx);o.textContent=`Monitor ${m.idx} — ${m.w}x${m.h}${m.principal?" (principal)":""}`;sel.appendChild(o)});sel.value=String(ESTADO_MONITOR_ATUAL)}
 async function trocarMonitor(v){const idx=parseInt(v,10)||0;await post("/api/monitor_escolhido",{idx});ESTADO_MONITOR_ATUAL=idx;toast("Monitor trocado");if(telaAtiva){clearTimeout(telaTimer);telaEmVoo=false;atualizarTela()}}
-async function tirarScreenshot(){toast("📸 Tirando print...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}toast("Salvo: "+j.nome)}
-async function screenshotClip(){toast("📋 Copiando print...");const j=await post("/api/screenshot_clip",{});toast(j.saida||j.erro||"ok")}
-async function screenshotBaixar(){toast("📸 Preparando...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}window.open("/api/download?nome="+encodeURIComponent(j.nome),"_blank")}
+async function tirarScreenshot(){toast("Tirando print...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}toast("Salvo: "+j.nome)}
+async function screenshotClip(){toast("Copiando print...");const j=await post("/api/screenshot_clip",{});toast(j.saida||j.erro||"ok")}
+async function screenshotBaixar(){toast("Preparando...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}window.open("/api/download?nome="+encodeURIComponent(j.nome),"_blank")}
 
 let CAMINHO_ATUAL=null;
 async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+encodeURIComponent(path)):"");const j=await get(url);if(j.erro){$("#txtArquivos").innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}CAMINHO_ATUAL=j.pasta;const bc=$("#breadcrumb");bc.innerHTML="";(j.partes||[]).forEach((p,i)=>{const s=document.createElement("span");s.textContent=p.nome;if(i===j.partes.length-1)s.classList.add("atual");s.onclick=()=>carregarArquivos(p.path);bc.appendChild(s);if(i<j.partes.length-1){const sep=document.createElement("span");sep.textContent="›";sep.style.background="transparent";sep.style.cursor="default";sep.onclick=()=>{};bc.appendChild(sep)}});const box=$("#txtArquivos");box.innerHTML="";(j.itens||[]).forEach(a=>{const d=document.createElement("div");d.className="arq"+(a.tipo==="pasta"?" pasta":"");if(a.tipo==="pasta"){d.innerHTML=`<span class="nome"><span class="icoTipo">📁</span>${esc(a.nome)}</span><button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome)}else{d.innerHTML=`<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span><span class="tam">${fmtTam(a.tam)}</span><button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button><button class="del" onclick="event.stopPropagation();apagar('${encodeURIComponent(a.nome)}')">x</button>`}box.appendChild(d)});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
@@ -1897,15 +1881,24 @@ async function atualizarStatus(){
   const g=j.gpu||{};
   const stGpu=$("#stGpu");
   if(g.nome){
-    let txt=g.nome;
-    if(g.uso!==null&&g.uso!==undefined)txt=g.nome.split(" ").slice(-2).join(" ")+" • "+g.uso+"%";
-    stGpu.textContent=txt;
-    stGpu.title=g.nome+(g.mem_usada?` | ${g.mem_usada}/${g.mem_total} MB`:"");
-    if(g.uso!==null&&g.uso!==undefined)setBar("stGpuBar",g.uso);else setBar("stGpuBar",0);
-  } else {stGpu.textContent="N/D";setBar("stGpuBar",0)}
+    stGpu.textContent = (g.uso!==null && g.uso!==undefined)
+      ? g.nome.split(" ").slice(-2).join(" ") + " • " + g.uso + "%"
+      : g.nome;
+    stGpu.title = g.nome + (g.mem_usada ? ` | ${g.mem_usada}/${g.mem_total} MB` : "");
+    if(g.uso!==null && g.uso!==undefined){
+      setBar("stGpuBar", g.uso);
+      stGpu.classList.remove("peq");
+    } else {
+      setBar("stGpuBar", 0);
+      stGpu.classList.add("peq");
+    }
+  } else {
+    stGpu.textContent = "N/D";
+    setBar("stGpuBar", 0);
+  }
   $("#stQtdProc").textContent=(j.qtd_processos||0)+" ativos";
   const rd=j.rede||{};
-  $("#stRede").textContent = `↓ ${(rd.down_mbps||0).toFixed(2)} ↑ ${(rd.up_mbps||0).toFixed(2)} Mbps`;
+  $("#stRede").textContent = "↓ "+((rd.down_mbps||0).toFixed(2))+" ↑ "+((rd.up_mbps||0).toFixed(2))+" Mbps";
   const pg=j.ping;
   $("#stPing").textContent = (pg!==null&&pg!==undefined) ? (pg+" ms") : "—";
   $("#stUptime").textContent=j.uptime||"—";
@@ -1934,7 +1927,7 @@ async function carregarTopProcs(){
     d.innerHTML=`
       <div class="tpProcTop">
         <span class="tpProcNome">${esc(p.nome)} <small style="color:#8b8b99">PID ${p.pid}</small></span>
-        <span class="tpProcVal">${p.mem_mb} MB • CPU ${p.cpu}%</span>
+        <span class="tpProcVal">${p.mem_mb} MB</span>
       </div>
       <div class="tpProcBar"><div class="tpProcBarIn" style="width:${pct}%"></div></div>
     `;
@@ -1962,10 +1955,8 @@ async function iaEnviar(){
   const resp=j.resposta||"(vazio)";
   iaHistorico.push({role:"assistant",content:resp});
   iaAddMsg("bot",resp);
-  // SEMPRE limpa respostas de weather do histórico (força chamar de novo)
-  iaHistorico = iaHistorico.filter(m => !/🌡️ Em /.test(m.content || ""));
 }
-async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta ✓ (Groq)":"⚠️ Sem chave da Groq"}
+async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta (Groq)":"Sem chave da Groq"}
 
 let pipActive=false,pipStream=null,pipVideoReady=false,pipStopDraw=false,docPipWin=null,docPipStop=false;
 const PIP_METHOD=('documentPictureInPicture' in window)?'doc':(document.pictureInPictureEnabled?'video':'none');
@@ -1974,7 +1965,7 @@ function fecharPip(comBtnReset){if(docPipWin&&!docPipWin.closed){try{docPipWin.c
 async function prepararVideoPip(){if(pipVideoReady)return;const vid=document.getElementById('pipVideo'),cvs=document.getElementById('pipCanvas');if(!vid||!cvs)return;const img=document.getElementById('tela');for(let i=0;i<50&&(!img.src||!img.complete||img.naturalWidth===0);i++){await new Promise(r=>setTimeout(r,100))}if(!img.src||!img.complete||img.naturalWidth===0)return;cvs.width=640;cvs.height=360;const ctx=cvs.getContext('2d');pipStopDraw=false;const draw=()=>{if(pipStopDraw)return;const im=document.getElementById('tela');if(im&&im.complete&&im.naturalWidth>0){try{ctx.drawImage(im,0,0,640,360)}catch(e){}}setTimeout(draw,60)};draw();await new Promise(r=>setTimeout(r,200));try{pipStream=cvs.captureStream(20);vid.style.cssText="position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";vid.muted=true;vid.playsInline=true;vid.srcObject=pipStream;await vid.play();for(let i=0;i<40;i++){if(vid.readyState>=2&&vid.videoWidth>0)break;await new Promise(r=>setTimeout(r,100))}if(vid.readyState>=2&&vid.videoWidth>0)pipVideoReady=true}catch(e){}}
 function pararVideoPip(){pipStopDraw=true;if(pipStream){pipStream.getTracks().forEach(t=>t.stop());pipStream=null}const vid=document.getElementById('pipVideo');if(vid){vid.srcObject=null;vid.style.cssText="display:none"}pipVideoReady=false;pipActive=false}
 function setupDocPip(w){docPipWin=w;docPipStop=false;const st=w.document.createElement('style');st.textContent='html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}';w.document.head.appendChild(st);const im=w.document.createElement('img');im.alt="";im.src=ORIGEM+"/api/stream.mjpg?monitor="+ESTADO_MONITOR_ATUAL;w.document.body.appendChild(im);const btn=document.getElementById('btnPip');btn.textContent='Sair do PiP';btn.classList.add('on');const f=()=>{docPipStop=true;docPipWin=null;try{im.src=""}catch(e){}resetPipBtn()};w.addEventListener('pagehide',f,{once:true});w.addEventListener('unload',f,{once:true})}
-function togglePip(){const btn=document.getElementById('btnPip');if(PIP_METHOD==='doc'){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true;resetPipBtn();return}if(btn.classList.contains('on')){resetPipBtn();return}if(!telaAtiva)toggleAuto();documentPictureInPicture.requestWindow({width:640,height:360}).then(w=>setupDocPip(w)).catch(e=>toast('Erro PiP: '+(e.name||'')+' '+(e.message||e)));return}if(PIP_METHOD==='video'){const vid=document.getElementById('pipVideo');if(pipActive){document.exitPictureInPicture().catch(()=>{});resetPipBtn();return}if(!telaAtiva){toggleAuto();toast('Ativei "Ver ao vivo". Clique de novo.');if(!pipVideoReady)prepararVideoPip();return}if(!pipVideoReady){prepararVideoPip();toast('Preparando… clique de novo');return}if(vid.readyState<2||vid.videoWidth===0){toast('Aguarde um instante');return}const p=vid.requestPictureInPicture();if(p&&p.then){p.then(()=>{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}).catch(e=>toast('Erro PiP: '+(e.name||'')))}else{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}if(!vid._pipLeaveBound){vid._pipLeaveBound=true;vid.addEventListener('leavepictureinpicture',()=>{pararVideoPip();resetPipBtn()})}return}toast('PiP não suportado')}
+function togglePip(){const btn=document.getElementById('btnPip');if(PIP_METHOD==='doc'){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true;resetPipBtn();return}if(btn.classList.contains('on')){resetPipBtn();return}if(!telaAtiva)toggleAuto();documentPictureInPicture.requestWindow({width:640,height:360}).then(w=>setupDocPip(w)).catch(e=>toast('Erro PiP: '+(e.name||'')+' '+(e.message||e)));return}if(PIP_METHOD==='video'){const vid=document.getElementById('pipVideo');if(pipActive){document.exitPictureInPicture().catch(()=>{});resetPipBtn();return}if(!telaAtiva){toggleAuto();toast('Ativei Ver ao vivo. Clique de novo.');if(!pipVideoReady)prepararVideoPip();return}if(!pipVideoReady){prepararVideoPip();toast('Preparando... clique de novo');return}if(vid.readyState<2||vid.videoWidth===0){toast('Aguarde um instante');return}const p=vid.requestPictureInPicture();if(p&&p.then){p.then(()=>{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}).catch(e=>toast('Erro PiP: '+(e.name||'')))}else{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}if(!vid._pipLeaveBound){vid._pipLeaveBound=true;vid.addEventListener('leavepictureinpicture',()=>{pararVideoPip();resetPipBtn()})}return}toast('PiP não suportado')}
 
 function segurarBotao(el,fn,delay=250){if(!el)return;let timer=null;const start=e=>{if(e){e.preventDefault()}if(timer)return;fn();timer=setInterval(fn,delay)};const stop=()=>{if(timer){clearInterval(timer);timer=null}};el.addEventListener("mousedown",start);el.addEventListener("touchstart",start,{passive:false});el.addEventListener("mouseup",stop);el.addEventListener("mouseleave",stop);el.addEventListener("touchend",stop);el.addEventListener("touchcancel",stop);el.addEventListener("blur",stop)}
 let telaAtiva=false,telaTimer=null,telaEmVoo=false;
@@ -1994,7 +1985,7 @@ async function agendarTimer(){const min=parseInt($("#timerMin").value)||30;const
 async function timerRapido(m){$("#timerMin").value=m;agendarTimer()}
 async function carregarTimers(){const j=await get("/api/timers");const t=j.timers||[];if(!t.length){$("#timerInfo").textContent="Nenhum timer ativo."}else{const agora=Date.now()/1000;$("#timerInfo").textContent=t.map(x=>`${x.acao} em ${Math.max(0,Math.round(x.quando-agora))}s`).join(" • ")}}
 async function cancelarTimers(){await post("/api/timers_cancelar",{});carregarTimers();toast("Cancelados")}
-async function carregarWol(){const j=await get("/api/wol");const g=$("#gridWol");if(!g)return;g.innerHTML="";(j.wol||[]).forEach((w,i)=>{const b=document.createElement("button");b.className="btn";b.textContent="⚡ "+w.nome;b.onclick=()=>acordarPc(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${w.nome}"?`))removerWol(i)};g.appendChild(b)});if(!(j.wol||[]).length)g.innerHTML='<div class="hint">(nenhum)</div>'}
+async function carregarWol(){const j=await get("/api/wol");const g=$("#gridWol");if(!g)return;g.innerHTML="";(j.wol||[]).forEach((w,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=w.nome;b.onclick=()=>acordarPc(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${w.nome}"?`))removerWol(i)};g.appendChild(b)});if(!(j.wol||[]).length)g.innerHTML='<div class="hint">(nenhum)</div>'}
 async function addWol(){const nome=$("#wolNome").value.trim();const mac=$("#wolMac").value.trim();if(!nome||!mac){toast("Preencha");return}await post("/api/wol_add",{nome,mac});$("#wolNome").value="";$("#wolMac").value="";carregarWol()}
 async function removerWol(i){await post("/api/wol_remover",{idx:i});carregarWol()}
 async function acordarPc(i){const j=await post("/api/wol_exec",{idx:i});toast(j.saida||j.erro||"ok")}
@@ -2008,7 +1999,7 @@ async function atualizarTunel(){try{const r=await fetch("/api/config");const j=a
 function copiarIP(){copiar(ultimoLan,"LAN")}
 function copiarTunel(){if(!ultimoTunel||!ultimoTunel.startsWith("http")){toast("Túnel inativo");return}copiar(ultimoTunel,"WAN")}
 
-function setPastaSelect(v){if(!v){$("#pastaIn").value="";return}fetch("/api/state").then(r=>r.json()).then(j=>{const up=j.userprofile||"C:\\Users\\Voce";const map={desktop:"Desktop",documents:"Documents",downloads:"Downloads",pictures:"Pictures",videos:"Videos",music:"Music",home:""};const sub=map[v]||"";$("#pastaIn").value=sub?`${up}\\${sub}`:up})}
+function setPastaSelect(v){if(!v){$("#pastaIn").value="";return}fetch("/api/state").then(r=>r.json()).then(j=>{const up=j.userprofile||"C:\\Users\\Voce";const map={desktop:"Desktop",documents:"Documents",downloads:"Downloads",pictures:"Pictures",videos:"Videos",music:"Music",home:""};const sub=map[v]||"";$("#pastaIn").value=sub?(up+"\\"+sub):up})}
 async function salvarPasta(){const v=$("#pastaIn").value.trim();if(!v){toast("Escolha uma pasta no menu");return}const j=await post("/api/pasta",{pasta:v});toast("Salvo");if(j.pasta)$("#pastaIn").value=j.pasta}
 
 async function definirPin(){const p=$("#pinIn").value.trim();if(p.length<4){alert("Mínimo 4");return}await post("/api/pin",{pin:p});$("#pinIn").value="";toast("PIN definido");carregarSistema()}
@@ -2025,12 +2016,12 @@ async function setModo(m){if(m===modoAtual){toast("Já está em "+m);return}toas
 
 let autoAtivo=false;
 async function carregarAutostart(){try{const r=await fetch("/api/autostart");const j=await r.json();autoAtivo=!!j.ativo;atualizarBotaoAuto()}catch(e){}}
-function atualizarBotaoAuto(){const b=$("#btnAuto2");if(!b)return;if(autoAtivo){b.innerHTML="✓ Iniciar com Windows: <b>ATIVADO</b>";b.classList.remove("ghost");b.classList.add("on")}else{b.innerHTML="Iniciar com Windows: DESATIVADO";b.classList.add("ghost");b.classList.remove("on")}}
+function atualizarBotaoAuto(){const b=$("#btnAuto2");if(!b)return;if(autoAtivo){b.innerHTML="Iniciar com Windows: ATIVADO";b.classList.remove("ghost");b.classList.add("on")}else{b.innerHTML="Iniciar com Windows: DESATIVADO";b.classList.add("ghost");b.classList.remove("on")}}
 async function toggleAutostart(){const novo=!autoAtivo;const r=await fetch("/api/autostart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ativo:novo})});if(r.ok){autoAtivo=novo;atualizarBotaoAuto();toast(novo?"Autostart ON":"Autostart OFF")}}
 
 let deferredPrompt=null;
 window.addEventListener('beforeinstallprompt',(e)=>{e.preventDefault();deferredPrompt=e;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.remove('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='Pronto pra instalar!'});
-window.addEventListener('appinstalled',()=>{deferredPrompt=null;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.add('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='App instalado ✓';toast("App instalado ✓")});
+window.addEventListener('appinstalled',()=>{deferredPrompt=null;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.add('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='App instalado';toast("App instalado")});
 async function instalarPWA(){if(!deferredPrompt){toast("Não disponível");return}deferredPrompt.prompt();const{outcome}=await deferredPrompt.userChoice;if(outcome==="accepted")toast("Instalando...");deferredPrompt=null}
 
 function mostrarLock(){$("#lockScreen").classList.remove("hid")}
@@ -2398,7 +2389,7 @@ def _ler_temperatura():
 
 
 _GPU_CACHE = {"t": 0, "v": None}
-_GPU_INTERVALO = 3
+_GPU_INTERVALO = 5
 
 def _ler_gpu():
     now = time.time()
@@ -2407,7 +2398,6 @@ def _ler_gpu():
     _GPU_CACHE["t"] = now
     info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
 
-    # NVIDIA (mais confiável)
     try:
         r = executar(["nvidia-smi",
                       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -2421,39 +2411,18 @@ def _ler_gpu():
                 for i, key in enumerate(["uso","mem_usada","mem_total","temp"], start=1):
                     try: info[key] = int(float(parts[i]))
                     except: pass
-                _GPU_CACHE["v"] = info; return info
+                _GPU_CACHE["v"] = info
+                return info
     except Exception: pass
 
-    # Nome via WMI
-    if not info["nome"]:
-        try:
-            script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
-            cod = base64.b64encode(script.encode("utf-16-le")).decode()
-            r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
-            out = (r.stdout or "").strip()
-            if out: info["nome"] = out
-        except Exception: pass
-
-    # AMD/Intel: soma de TODOS os engines (é o que o Task Manager faz)
-    if info["uso"] is None:
-        try:
-            script = (
-                "$amostras = Get-Counter -Counter '\\GPU Engine(*)\\Utilization Percentage' "
-                "-ErrorAction SilentlyContinue -MaxSamples 1; "
-                "if ($amostras) { "
-                "  $soma = ($amostras.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum; "
-                "  Write-Output ([math]::Min(100, [math]::Round($soma, 0))) "
-                "}"
-            )
-            cod = base64.b64encode(script.encode("utf-16-le")).decode()
-            r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            out = (r.stdout or "").strip()
-            if out and re.match(r"^\d+$", out):
-                v = int(out)
-                if 0 <= v <= 100: info["uso"] = v
-        except Exception: pass
+    try:
+        script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
+        out = (r.stdout or "").strip()
+        if out: info["nome"] = out
+    except Exception: pass
 
     _GPU_CACHE["v"] = info
     return info
@@ -2554,7 +2523,7 @@ def api_screenshot_clip():
         idx = int(ESTADO.get("monitor_escolhido", 0))
         png = _capturar_png_full(idx)
         _clip_set_imagem_png(png)
-        return jsonify(saida="📋 Print copiado pra área de transferência do PC.")
+        return jsonify(saida="Print copiado pra área de transferência do PC.")
     except Exception as e: return jsonify(erro=str(e))
 
 
@@ -2639,7 +2608,7 @@ def qr_para_pc_page():
         else:
             img_tag = '<p style="color:#888;padding:20px">Instale qrcode[pil].</p>'
         html = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<title>RotaControl — QR</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RotaControl - QR</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{color-scheme:dark}
 html,body{margin:0;padding:0;height:100vh;overflow:hidden;background:#05050a}
@@ -2993,9 +2962,9 @@ def _ia_chamar_groq(key, model, msgs, system):
                                 resultado = FUNCOES_IA[nome_fn]["executar"](**args)
                                 resultados.append(str(resultado))
                             except Exception as e:
-                                resultados.append(f"❌ Erro ao executar {nome_fn}: {e}")
+                                resultados.append(f"Erro ao executar {nome_fn}: {e}")
                     return "\n".join(resultados), None
-                return msg.get("content", ""), None
+                return _limpar_markdown(msg.get("content", "")), None
             if r.status_code in (400, 404):
                 ultimo_erro = f"Groq {r.status_code} no modelo {mdl}: {r.text[:150]}"
                 continue
@@ -3027,7 +2996,9 @@ def api_ia():
     modelo = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
     sysmsg = ESTADO.get("ia_system", "")
     resp, err = _ia_chamar_groq(GROQ_API_KEY, modelo, msgs, sysmsg)
-    if resp: return jsonify(resposta=resp, provedor="groq")
+    if resp:
+        resp = _limpar_markdown(resp)
+        return jsonify(resposta=resp, provedor="groq")
     return jsonify(erro=err or "Groq falhou")
 
 
