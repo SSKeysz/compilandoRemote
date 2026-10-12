@@ -7,6 +7,7 @@ on:
 
 env:
   NOME_EXE: RotaControl
+  
 
 jobs:
   build:
