@@ -1,8 +1,8 @@
 """
 RotaControl - controle do PC pelo celular.
-pip install flask pillow mss pycaw comtypes
+pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]"
 Compilar:
-    pyinstaller --onefile --noconsole --icon=NONE --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss painel.py
+    pyinstaller --onefile --noconsole --icon=NONE --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode painel.py
 """
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv
 import logging, tempfile, threading, subprocess, webbrowser, urllib.request
@@ -31,6 +31,20 @@ try:
 except Exception:
     comtypes = None
     PYCAW_OK = False
+
+try:
+    import psutil
+    PSUTIL_OK = True
+except Exception:
+    psutil = None
+    PSUTIL_OK = False
+
+try:
+    import qrcode
+    QRCODE_OK = True
+except Exception:
+    qrcode = None
+    QRCODE_OK = False
 
 ABRIR_NAVEGADOR_NO_PC = False
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -111,6 +125,7 @@ CONFIG_PADRAO = {
     "pasta_arquivos": r"%USERPROFILE%\Desktop",
     "acoes": ACOES_PADRAO, "atalhos": [], "wol": [],
     "comandos": COMANDOS_PADRAO,
+    "monitor_escolhido": 0,   # 0 = todos os monitores
 }
 
 
@@ -508,9 +523,81 @@ def _vtecla_mute(): _teclar_vk(VK_VOL_MUTE)
 VK_MEDIA = {"play": 0xB3, "next": 0xB0, "prev": 0xB1}
 
 
+# ===================== TECLAS PERSISTENTES =====================
+TECLAS_TRAVADAS = {}   # {"shift": True, "ctrl": False, ...}
+TECLAS_TIMERS = {}     # {"shift": threading.Timer(...), ...}
+TECLAS_LOCK = threading.Lock()
+TECLAS_TIMEOUT = 60    # segundos até destravar sozinho
+
+
+def _vks_modificadores():
+    return {"shift": 0x10, "ctrl": 0x11, "alt": 0x12, "win": 0x5B}
+
+
+def _soltar_tecla(nome):
+    vk = _vks_modificadores().get(nome)
+    if vk is None: return
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 2, 0)   # key up
+    u.keybd_event(vk, 0, 2, 0)   # manda 2x pra garantir
+
+
+def _travar_tecla(nome):
+    vk = _vks_modificadores().get(nome)
+    if vk is None: return False
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 0, 0)   # key down
+    return True
+
+
+def _cancelar_timer_trava(nome):
+    t = TECLAS_TIMERS.pop(nome, None)
+    if t is not None:
+        try: t.cancel()
+        except Exception: pass
+
+
+def _agendar_destrava_auto(nome):
+    _cancelar_timer_trava(nome)
+    def f():
+        try: soltar_tecla_travada(nome)
+        except Exception: pass
+    t = threading.Timer(TECLAS_TIMEOUT, f); t.daemon = True
+    t.start()
+    TECLAS_TIMERS[nome] = t
+
+
+def soltar_tecla_travada(nome):
+    with TECLAS_LOCK:
+        if TECLAS_TRAVADAS.get(nome):
+            _soltar_tecla(nome)
+            TECLAS_TRAVADAS[nome] = False
+        _cancelar_timer_trava(nome)
+
+
+def soltar_todas_travadas():
+    with TECLAS_LOCK:
+        for nome in list(TECLAS_TRAVADAS.keys()):
+            if TECLAS_TRAVADAS.get(nome):
+                _soltar_tecla(nome)
+            TECLAS_TRAVADAS[nome] = False
+        for nome in list(TECLAS_TIMERS.keys()):
+            _cancelar_timer_trava(nome)
+
+
+def travar_tecla(nome):
+    with TECLAS_LOCK:
+        if nome not in _vks_modificadores(): return False
+        # se já está travada, não trava de novo
+        if TECLAS_TRAVADAS.get(nome): return True
+        _travar_tecla(nome)
+        TECLAS_TRAVADAS[nome] = True
+        _agendar_destrava_auto(nome)
+        return True
+
+
 # ===================== VOLUME MIXER (por app) =====================
 def listar_sessoes_audio():
-    """Lista sessões de áudio do Windows (volume mixer). Ignora sons do sistema."""
     if not PYCAW_OK:
         raise Exception("pycaw nao instalado")
     _com_init()
@@ -522,27 +609,17 @@ def listar_sessoes_audio():
     for s in sessions:
         try:
             proc = getattr(s, "Process", None)
-            if proc is None:
-                # sem processo associado => normalmente "Sons do Sistema"
-                # (não funciona de forma confiável, então ignoramos)
-                continue
-            try:
-                nome = proc.name()
-            except Exception:
-                continue
-            if not nome:
-                continue
+            if proc is None: continue
+            try: nome = proc.name()
+            except Exception: continue
+            if not nome: continue
             chave = "p:" + nome.lower()
-            if chave in resultado:
-                continue
+            if chave in resultado: continue
             vol = s.SimpleAudioVolume
-            v = float(vol.GetMasterVolume())
-            m = bool(vol.GetMute())
+            v = float(vol.GetMasterVolume()); m = bool(vol.GetMute())
             resultado[chave] = {
-                "chave": chave,
-                "nome": nome,
-                "volume": int(round(v * 100)),
-                "mudo": m,
+                "chave": chave, "nome": nome,
+                "volume": int(round(v * 100)), "mudo": m,
             }
         except Exception:
             continue
@@ -559,16 +636,11 @@ def setar_sessao_audio(chave_alvo, volume=None, mudo=None):
     for s in AudioUtilities.GetAllSessions():
         try:
             proc = getattr(s, "Process", None)
-            if proc is None:
-                continue
-            try:
-                nome = proc.name()
-            except Exception:
-                continue
-            if not nome:
-                continue
-            if ("p:" + nome.lower()) != chave_alvo:
-                continue
+            if proc is None: continue
+            try: nome = proc.name()
+            except Exception: continue
+            if not nome: continue
+            if ("p:" + nome.lower()) != chave_alvo: continue
             vol = s.SimpleAudioVolume
             if volume is not None:
                 v = max(0.0, min(1.0, float(volume) / 100.0))
@@ -590,6 +662,7 @@ CAPTURA = {
     "lock": threading.Lock(),
     "ultimo_pedido": 0.0,
     "erro": None,
+    "monitor_idx": 0,   # qual monitor está sendo capturado
 }
 
 CAP_Q = 28
@@ -608,7 +681,9 @@ def _loop_captura():
                     break
                 t0 = time.time()
                 try:
-                    shot = sct.grab(sct.monitors[0])
+                    idx = CAPTURA["monitor_idx"]
+                    if idx < 0 or idx >= len(sct.monitors): idx = 0
+                    shot = sct.grab(sct.monitors[idx])
                     pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
                     if pil.width > CAP_W:
                         pil = pil.resize((CAP_W, round(pil.height * CAP_W / pil.width)))
@@ -638,10 +713,30 @@ def _garantir_captura():
     time.sleep(0.15)
 
 
-def _capturar_pil(q=CAP_Q, w=CAP_W):
-    img = ImageGrab.grab()
+def _capturar_pil(q=CAP_Q, w=CAP_W, monitor_idx=0):
+    if TEM_MSS:
+        with _mss.mss() as sct:
+            idx = monitor_idx
+            if idx < 0 or idx >= len(sct.monitors): idx = 0
+            shot = sct.grab(sct.monitors[idx])
+            img = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    else:
+        img = ImageGrab.grab()
     if img.width > w: img = img.resize((w, round(img.height * w / img.width)))
     buf = io.BytesIO(); img.convert("RGB").save(buf, "JPEG", quality=q); return buf.getvalue()
+
+
+def _capturar_png_full(monitor_idx=0):
+    """Screenshot em PNG na resolução nativa (para salvar como arquivo)."""
+    if TEM_MSS:
+        with _mss.mss() as sct:
+            idx = monitor_idx
+            if idx < 0 or idx >= len(sct.monitors): idx = 0
+            shot = sct.grab(sct.monitors[idx])
+            img = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    else:
+        img = ImageGrab.grab()
+    buf = io.BytesIO(); img.save(buf, "PNG", optimize=True); return buf.getvalue()
 
 
 def _capturar_ps():
@@ -749,6 +844,26 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 .mixLinha input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--acc2);box-shadow:0 0 6px var(--acc2);cursor:pointer;border:0}
 .mixVal{font-size:11px;color:var(--mut);min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
 .mixLinha .btn.mini{min-width:42px;padding:6px 8px;font-size:14px;transition:background .1s,color .1s}
+/* STATUS */
+.statGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.statBox{background:#0d0d14;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px}
+.statLbl{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
+.statVal{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.statBar{height:6px;background:#1f1f2a;border-radius:3px;overflow:hidden;margin-top:4px}
+.statBarIn{height:100%;background:linear-gradient(90deg,var(--acc2),var(--acc));transition:width .3s;border-radius:3px}
+.statBarIn.warn{background:linear-gradient(90deg,#f0a020,#e06010)}
+.statBarIn.crit{background:linear-gradient(90deg,#e04040,#c02020)}
+/* TECLAS PERSISTENTES */
+.teclasPers{display:flex;flex-wrap:wrap;gap:8px}
+.teclasPers button{flex:1 1 calc(50% - 4px);min-width:0;padding:14px 8px;font-size:15px;position:relative}
+.teclasPers button.travada{background:var(--green);color:#04120b;box-shadow:0 0 0 2px rgba(35,209,96,.35),0 0 14px rgba(35,209,96,.45)}
+.teclasPers button.travada::after{content:'🔒';position:absolute;top:4px;right:6px;font-size:11px}
+.emerg{background:var(--red);color:#fff;font-weight:700;padding:14px;font-size:15px;margin-top:10px}
+/* VOZ */
+.vozWrap{position:relative}
+.vozWrap textarea{padding-right:56px}
+.vozBtn{position:absolute;right:8px;top:8px;width:40px;height:40px;border-radius:50%;background:var(--acc);color:#fff;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(124,0,240,.4)}
+.vozBtn.on{background:var(--red);animation:pu 1s infinite}
 @media(max-width:500px){
   main{padding:0 8px 12px}
   .panel{padding:12px}
@@ -775,6 +890,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
 
 <main>
 
+  <!-- ============ AÇÕES ============ -->
   <section id="p-acoes" class="page">
     <div class="panel">
       <h2>Ações rápidas</h2>
@@ -791,12 +907,14 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       </div>
     </div>
     <div class="panel">
-      <h2>Atalhos configurados</h2>
+      <h2>Atalhos salvos</h2>
       <div class="grid g2" id="gridAtalhos"></div>
       <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovoAtalho()">+ Adicionar atalho</button>
+      <div class="hint">Atalhos de teclas (ex: ctrl+s) rodam instantâneo.</div>
     </div>
   </section>
 
+  <!-- ============ TEXTO ============ -->
   <section id="p-texto" class="page hid">
     <div class="panel">
       <h2>Digitar ao vivo</h2>
@@ -805,15 +923,25 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       </button>
       <div id="liveAviso" class="avisoLive hid">
         <span class="luz"></span>
-        <span>Tudo que você digitar aqui vai direto pro PC. O campo abaixo mostra o eco.</span>
+        <span>Tudo que você digitar aqui vai direto pro PC.</span>
       </div>
-      <textarea id="txtEnv" placeholder="Toque em ATIVAR e depois digite aqui"></textarea>
+      <div class="vozWrap" style="margin-top:10px">
+        <textarea id="txtEnv" placeholder="Toque em ATIVAR e depois digite (ou fale 🎤)"></textarea>
+        <button class="vozBtn" id="btnVoz" onclick="toggleVoz()" title="Ditar por voz">🎤</button>
+      </div>
+      <div class="hint" id="vozStatus"></div>
       <div class="grid g2" style="margin-top:8px">
         <button class="btn" onclick="enviarTexto('clipboard')">Copiar no PC</button>
         <button class="btn" onclick="enviarTexto('digitar')">Enviar bloco</button>
       </div>
-      <div class="hint">"Copiar no PC" põe o texto na área de transferência do PC. "Enviar bloco" digita o texto direto (tecla por tecla) no PC.</div>
       <button class="btn ghost block" style="margin-top:8px" onclick="limparCampo('txtEnv')">Limpar campo</button>
+    </div>
+
+    <div class="panel">
+      <h2>Teclas persistentes <span class="hint" style="font-weight:400;text-transform:none">• travam até destravar</span></h2>
+      <div class="hint" style="margin-bottom:10px">Trave uma tecla modificadora e depois use as teclas soltas normalmente. Destrava sozinho em 60s.</div>
+      <div class="teclasPers" id="teclasPers"></div>
+      <button class="btn emerg" id="btnSoltarTudo" onclick="soltarTodas()">🔓 SOLTAR TODAS AS TECLAS</button>
     </div>
 
     <div class="panel">
@@ -845,13 +973,13 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
 
     <div class="panel">
-      <h2>Histórico de clipboard (PC) <span class="hint" style="font-weight:400;text-transform:none">• auto</span></h2>
-      <div class="hint" style="margin-bottom:8px">Copie qualquer coisa no PC com Ctrl+C que aparece aqui (atualiza sozinho).</div>
+      <h2>Histórico de clipboard <span class="hint" style="font-weight:400;text-transform:none">• auto</span></h2>
       <div id="listaClip"></div>
       <button class="btn ghost block" style="margin-top:8px" onclick="limparClipHist()">Limpar histórico</button>
     </div>
   </section>
 
+  <!-- ============ MÍDIA ============ -->
   <section id="p-midia" class="page hid">
     <div class="panel">
       <h2>Mídia</h2>
@@ -868,16 +996,15 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
         <button class="btn icon" onclick="midia('mute')">&#128263;</button>
         <button class="btn icon" id="btnVolUp">&#128266;</button>
       </div>
-      <div class="hint">Cada toque muda 2%. Segura pra ir rápido.</div>
     </div>
     <div class="panel">
       <h2>Volume por app <span class="hint" style="font-weight:400;text-transform:none">• mixer</span></h2>
-      <div class="hint" style="margin-bottom:8px">Controle o volume de cada programa separadamente (estilo mixer do Windows).</div>
       <button class="btn ghost block" onclick="carregarMixer()">Atualizar lista</button>
       <div id="listaMixer" style="margin-top:10px"></div>
     </div>
   </section>
 
+  <!-- ============ MOUSE ============ -->
   <section id="p-mouse" class="page hid">
     <div class="panel">
       <h2>Touchpad</h2>
@@ -891,14 +1018,18 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
         <button class="btn ghost" onclick="mouseClick('double')">Duplo clique</button>
         <button class="btn ghost" id="btnDragToggle" onclick="toggleDrag()">Arrastar (manter)</button>
       </div>
-      <div class="hint">1 dedo = move • 2 dedos = scroll • 3 dedos = clique direito • toque = clique esquerdo • 2 toques = duplo</div>
     </div>
   </section>
 
+  <!-- ============ TELA ============ -->
   <section id="p-tela" class="page hid">
     <div class="panel">
-      <h2>Tela do PC <span class="hint" style="font-weight:400;text-transform:none">• todas as telas</span></h2>
-      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+      <h2>Tela do PC</h2>
+      <label class="hint" style="display:block;margin-bottom:6px">Monitor:</label>
+      <select id="selMonitor" onchange="trocarMonitor(this.value)">
+        <option value="0">Todas as telas juntas</option>
+      </select>
+      <div class="row" style="justify-content:space-between;margin:10px 0">
         <button class="btn ghost" onclick="atualizarTela()">Atualizar agora</button>
         <button class="btn acc" id="btnAuto" onclick="toggleAuto()">Ver ao vivo</button>
       </div>
@@ -910,12 +1041,13 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
       <canvas id="pipCanvas" style="display:none"></canvas>
       <div class="grid g2" style="margin-top:10px">
         <button class="btn" id="btnPip" onclick="togglePip()">Picture-in-Picture</button>
-        <span class="hint" style="align-self:center">Abre a tela numa janelinha flutuante do sistema</span>
+        <button class="btn" onclick="tirarScreenshot()">📸 Screenshot</button>
       </div>
       <div class="hint" id="telaHora">—</div>
     </div>
   </section>
 
+  <!-- ============ ARQUIVOS ============ -->
   <section id="p-arquivos" class="page hid">
     <div class="panel">
       <h2>Enviar celular para PC</h2>
@@ -929,18 +1061,58 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
   </section>
 
+  <!-- ============ PC ============ -->
   <section id="p-pc" class="page hid">
+    <div class="panel">
+      <h2>Status do PC <span class="hint" style="font-weight:400;text-transform:none">• atualiza a cada 2s</span></h2>
+      <div class="statGrid" id="statGrid">
+        <div class="statBox">
+          <span class="statLbl">CPU</span>
+          <span class="statVal" id="stCpu">—</span>
+          <div class="statBar"><div class="statBarIn" id="stCpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="statBox">
+          <span class="statLbl">RAM</span>
+          <span class="statVal" id="stRam">—</span>
+          <div class="statBar"><div class="statBarIn" id="stRamBar" style="width:0%"></div></div>
+        </div>
+        <div class="statBox">
+          <span class="statLbl">Disco C:</span>
+          <span class="statVal" id="stDisco">—</span>
+          <div class="statBar"><div class="statBarIn" id="stDiscoBar" style="width:0%"></div></div>
+        </div>
+        <div class="statBox">
+          <span class="statLbl">Temperatura</span>
+          <span class="statVal" id="stTemp">—</span>
+        </div>
+        <div class="statBox" style="grid-column:span 2">
+          <span class="statLbl">Ligado há</span>
+          <span class="statVal" id="stUptime" style="font-size:16px">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Reparos rápidos</h2>
+      <div class="grid g2">
+        <button class="btn" onclick="reparar('explorer')">🔄 Reiniciar Explorer</button>
+        <button class="btn" onclick="reparar('audio')">🔊 Reiniciar Áudio</button>
+      </div>
+      <div class="hint">Explorer resolve barra de tarefas travada. Áudio resolve som que parou (usa audiodg, sem precisar admin).</div>
+    </div>
+
     <div class="panel">
       <h2>Processos abertos</h2>
       <button class="btn ghost block" onclick="carregarProcessos()">Atualizar lista</button>
       <div id="listaProcs" style="margin-top:10px"></div>
     </div>
+
     <div class="panel">
       <h2>Comandos rápidos</h2>
       <div class="grid g2" id="gridComandos"></div>
       <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovoComando()">+ Adicionar comando</button>
-      <div class="hint">Toque para rodar (roda escondido). Segure para remover.</div>
     </div>
+
     <div class="panel" id="saidaComandoWrap" style="display:none">
       <h2>Saída</h2>
       <pre class="saida" id="saidaComando"></pre>
@@ -948,6 +1120,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
   </section>
 
+  <!-- ============ EXTRAS ============ -->
   <section id="p-extra" class="page hid">
     <div class="panel">
       <h2>Timer</h2>
@@ -972,7 +1145,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
     <div class="panel">
       <h2>Wake-on-LAN</h2>
-      <div class="warn">Isso liga <b>outros PCs</b> da sua rede. O PC-alvo precisa ter WOL na BIOS e cabo de rede. O RotaControl precisa estar ligado pra mandar o pacote.</div>
+      <div class="warn">Isso liga <b>outros PCs</b> da rede. Precisa ter WOL na BIOS e cabo de rede.</div>
       <input id="wolNome" type="text" placeholder="Nome do PC" style="margin-top:8px">
       <input id="wolMac" type="text" placeholder="MAC (AA:BB:CC:11:22:33)" style="margin-top:8px">
       <button class="btn acc block" style="margin-top:8px" onclick="addWol()">Adicionar dispositivo</button>
@@ -980,6 +1153,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
     </div>
   </section>
 
+  <!-- ============ SISTEMA ============ -->
   <section id="p-sistema" class="page hid">
     <div class="panel">
       <h2>Acesso remoto</h2>
@@ -991,6 +1165,8 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
         <button class="btn" onclick="copiarIP()">Copiar LAN</button>
         <button class="btn" onclick="copiarTunel()">Copiar WAN</button>
       </div>
+      <button class="btn acc block" style="margin-top:8px" onclick="mostrarQR()">📱 Mostrar QR Code no PC</button>
+      <div class="hint">Abre o QR na tela do PC pra você escanear com o celular.</div>
     </div>
     <div class="panel">
       <h2>Modo de acesso</h2>
@@ -1066,7 +1242,7 @@ pre.saida{background:#000;color:#c8ffd8;font:12px/1.5 ui-monospace,Consolas,mono
   <button data-t="mouse"><span class="ico">&#128433;</span>Mouse</button>
   <button data-t="tela"><span class="ico">&#128421;</span>Tela</button>
   <button data-t="arquivos"><span class="ico">&#128193;</span>Arquivos</button>
-  <button data-t="pc"><span class="ico">&#128295;</span>PC</button>
+  <button data-t="pc"><span class="ico">&#128202;</span>PC</button>
   <button data-t="extra"><span class="ico">&#10024;</span>Extras</button>
   <button data-t="sistema"><span class="ico">&#9881;</span>Sistema</button>
 </nav>
@@ -1088,40 +1264,6 @@ const ORIGEM = window.location.origin;
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("on"),1400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
-// ==================== CROSS-TAB SYNC ====================
-const RC_BC_KEY = "rc_bc";
-const RC_PIP_KEY = "rc_pip_estado";
-
-function bcEnviar(tipo){
-  try{
-    localStorage.setItem(RC_BC_KEY, JSON.stringify({tipo, t: Date.now()}));
-    // remove depois pra próxima mensagem do mesmo tipo ainda disparar storage event
-    setTimeout(()=>{ try{ localStorage.removeItem(RC_BC_KEY); }catch(e){} }, 100);
-  }catch(e){}
-}
-function bcAssinar(cb){
-  window.addEventListener("storage", ev => {
-    if(ev.key !== RC_BC_KEY || !ev.newValue) return;
-    try{ cb(JSON.parse(ev.newValue)); }catch(e){}
-  });
-}
-function pipEstadoEscrever(aberto){
-  try{
-    localStorage.setItem(RC_PIP_KEY, JSON.stringify({aberto: !!aberto, t: Date.now()}));
-  }catch(e){}
-}
-function pipEstadoLer(){
-  try{
-    const raw = localStorage.getItem(RC_PIP_KEY);
-    if(!raw) return null;
-    const d = JSON.parse(raw);
-    if(!d || !d.aberto) return null;
-    if(Date.now() - d.t > 25000) return null; // heartbeat velho
-    return d;
-  }catch(e){ return null; }
-}
-
-// ==================== PÁGINAS ====================
 let clipHistPoll=null;
 function iniciarPollClipHist(){
   pararPollClipHist();
@@ -1141,6 +1283,14 @@ function iniciarPollMixer(){
 }
 function pararPollMixer(){if(mixerTimer){clearInterval(mixerTimer);mixerTimer=null}}
 
+let statTimer=null;
+function iniciarPollStatus(){
+  pararPollStatus();
+  atualizarStatus();
+  statTimer=setInterval(()=>{if(!document.hidden)atualizarStatus()}, 2000);
+}
+function pararPollStatus(){if(statTimer){clearInterval(statTimer);statTimer=null}}
+
 function show(nome){
   $$(".page").forEach(p=>p.classList.toggle("hid",p.id!=="p-"+nome));
   $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===nome));
@@ -1149,10 +1299,11 @@ function show(nome){
   if(nome==="sistema")carregarSistema();
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
-  if(nome==="pc"){carregarProcessos();carregarComandos()}
+  if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos()}else{pararPollStatus()}
   if(nome==="mouse"){initTouchpad()}
   if(nome==="midia"){carregarMixer();iniciarPollMixer()}else{pararPollMixer()}
-  if(nome==="texto"){carregarClipHist();iniciarPollClipHist()}else{pararPollClipHist()}
+  if(nome==="texto"){carregarClipHist();iniciarPollClipHist();carregarTeclasPersistentes();}else{pararPollClipHist()}
+  if(nome==="tela"){carregarMonitores();}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
 
@@ -1223,6 +1374,7 @@ function abrirNovoAtalho(){
   post("/api/atalho_add",{nome,combo}).then(carregarAtalhos);
 }
 
+// ==================== TEXTO / VOZ ====================
 let liveTyping=false;
 function toggleLive(){
   liveTyping=!liveTyping;
@@ -1256,6 +1408,105 @@ $("#txtEnv").addEventListener("keydown",e=>{
   if(k===" "){enviarChar("space");return}
   if(k.length===1){enviarChar(k)}
 });
+
+// ---------- VOZ ----------
+let recVoz = null;
+let vozAtiva = false;
+function toggleVoz(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ toast("Navegador não suporta voz"); return; }
+  if(vozAtiva){
+    try{ recVoz.stop(); }catch(e){}
+    return;
+  }
+  recVoz = new SR();
+  recVoz.lang = "pt-BR";
+  recVoz.continuous = true;
+  recVoz.interimResults = true;
+
+  let textoBase = $("#txtEnv").value;
+
+  recVoz.onstart = () => {
+    vozAtiva = true;
+    $("#btnVoz").classList.add("on");
+    $("#vozStatus").textContent = "🎤 Ouvindo… toque de novo para parar";
+  };
+  recVoz.onend = () => {
+    vozAtiva = false;
+    $("#btnVoz").classList.remove("on");
+    $("#vozStatus").textContent = "";
+  };
+  recVoz.onerror = (e) => {
+    vozAtiva = false;
+    $("#btnVoz").classList.remove("on");
+    $("#vozStatus").textContent = "Erro: " + (e.error || "?");
+  };
+  recVoz.onresult = (ev) => {
+    let finalTxt = "", interim = "";
+    for(let i = ev.resultIndex; i < ev.results.length; i++){
+      const r = ev.results[i];
+      if(r.isFinal) finalTxt += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    // escreve no textarea (append)
+    if(finalTxt){
+      textoBase = (textoBase ? textoBase + " " : "") + finalTxt.trim();
+      $("#txtEnv").value = textoBase;
+      if(liveTyping){
+        // manda só o pedaço final pro PC
+        for(const ch of finalTxt){
+          if(ch === "\n" || ch === "\r") enviarChar("enter");
+          else enviarChar(ch);
+        }
+      }
+    } else {
+      $("#txtEnv").value = (textoBase ? textoBase + " " : "") + interim;
+    }
+  };
+  try{ recVoz.start(); }catch(e){ toast("Erro ao iniciar voz"); }
+}
+
+// ---------- TECLAS PERSISTENTES ----------
+const TECLAS_DISP = [
+  {id:"shift", lbl:"Shift"},
+  {id:"ctrl", lbl:"Ctrl"},
+  {id:"alt", lbl:"Alt"},
+  {id:"win", lbl:"Win"},
+];
+async function carregarTeclasPersistentes(){
+  const j = await get("/api/teclas/estado");
+  const box = $("#teclasPers");
+  if(!box) return;
+  const travadas = j.travadas || {};
+  box.innerHTML = "";
+  TECLAS_DISP.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "btn" + (travadas[t.id] ? " travada" : "");
+    b.textContent = t.lbl;
+    b.onclick = () => {
+      if(travadas[t.id]) soltarTecla(t.id);
+      else travarTecla(t.id);
+    };
+    box.appendChild(b);
+  });
+}
+async function travarTecla(nome){
+  const j = await post("/api/teclas/travar", {nome});
+  if(j.erro){ toast("Erro: " + j.erro); return; }
+  toast("🔒 " + nome + " travada");
+  carregarTeclasPersistentes();
+}
+async function soltarTecla(nome){
+  await post("/api/teclas/soltar", {nome});
+  toast("🔓 " + nome + " solta");
+  carregarTeclasPersistentes();
+}
+async function soltarTodas(){
+  await post("/api/teclas/soltar_todas", {});
+  toast("🔓 Todas soltas");
+  carregarTeclasPersistentes();
+  if(navigator.vibrate) navigator.vibrate(30);
+}
 
 async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";toast("Lido")}
 function copiarTextoRec(){const t=$("#txtRec");copiar(t.value||"","clipboard")}
@@ -1295,28 +1546,19 @@ async function carregarMixer(silencioso){
     nomeEl.className = "mixNome";
     nomeEl.textContent = s.nome;
     d.appendChild(nomeEl);
-
     const linha = document.createElement("div");
     linha.className = "mixLinha";
-
     const slider = document.createElement("input");
     slider.type = "range"; slider.min = "0"; slider.max = "100";
     slider.value = String(s.volume);
     const val = document.createElement("span");
     val.className = "mixVal";
     val.textContent = s.volume + "%";
-    slider.oninput = () => {
-      mixerUltimaInteracao = Date.now();
-      val.textContent = slider.value + "%";
-    };
+    slider.oninput = () => { mixerUltimaInteracao = Date.now(); val.textContent = slider.value + "%"; };
     slider.onpointerdown = () => { mixerUltimaInteracao = Date.now(); };
-    slider.onchange = () => {
-      mixerUltimaInteracao = Date.now();
-      mixerSet(s.chave, parseInt(slider.value,10), null);
-    };
+    slider.onchange = () => { mixerUltimaInteracao = Date.now(); mixerSet(s.chave, parseInt(slider.value,10), null); };
     linha.appendChild(slider);
     linha.appendChild(val);
-
     const bMute = document.createElement("button");
     bMute.className = "btn mini" + (s.mudo ? " on" : "");
     bMute.textContent = s.mudo ? "🔇" : "🔊";
@@ -1329,12 +1571,10 @@ async function carregarMixer(silencioso){
       mixerSet(s.chave, null, novo);
     };
     linha.appendChild(bMute);
-
     d.appendChild(linha);
     box.appendChild(d);
   });
 }
-
 async function mixerSet(chave, volume, mudo){
   const body = { chave };
   if(volume !== null && volume !== undefined) body.volume = volume;
@@ -1344,20 +1584,7 @@ async function mixerSet(chave, volume, mudo){
 }
 
 // ==================== TOUCHPAD ====================
-const TP = {
-  el: null,
-  lastX: 0, lastY: 0,
-  startX: 0, startY: 0,
-  startT: 0,
-  moved: false,
-  fingers: 0,
-  lastTap: 0,
-  drag: false,
-  pending: {dx: 0, dy: 0},
-  sendTimer: null,
-  inited: false,
-  canvas: null, ctx: null, points: [], trailRaf: null,
-};
+const TP = {el:null,lastX:0,lastY:0,startX:0,startY:0,startT:0,moved:false,fingers:0,lastTap:0,drag:false,pending:{dx:0,dy:0},sendTimer:null,inited:false,canvas:null,ctx:null,points:[],trailRaf:null};
 
 function initTouchpad(){
   const el = document.getElementById('touchpad');
@@ -1365,7 +1592,6 @@ function initTouchpad(){
   if(TP.inited) return;
   TP.inited = true;
   TP.el = el;
-
   const cv = document.getElementById('tpCanvas');
   if(cv){
     TP.canvas = cv;
@@ -1382,16 +1608,13 @@ function initTouchpad(){
     if(window.ResizeObserver) new ResizeObserver(resize).observe(el);
     trailLoop();
   }
-
   el.addEventListener('touchstart', tpStart, {passive: false});
   el.addEventListener('touchmove', tpMove, {passive: false});
   el.addEventListener('touchend', tpEnd, {passive: false});
   el.addEventListener('touchcancel', tpEnd, {passive: false});
-
   el.addEventListener('mousedown', ev => {
     ev.preventDefault();
-    TP.fingers = 1;
-    TP.moved = false;
+    TP.fingers = 1; TP.moved = false;
     TP.startX = ev.clientX; TP.startY = ev.clientY;
     TP.lastX = ev.clientX; TP.lastY = ev.clientY;
     TP.startT = Date.now();
@@ -1403,24 +1626,16 @@ function initTouchpad(){
     tpProcessMove(ev.clientX, ev.clientY);
     addTrailPoint(ev.clientX, ev.clientY);
   });
-  el.addEventListener('mouseup', ev => {
-    ev.preventDefault();
-    tpProcessEnd();
-  });
+  el.addEventListener('mouseup', ev => { ev.preventDefault(); tpProcessEnd(); });
 }
 
-const TRAIL_MS = 650;
-const TRAIL_MAX = 80;
-
+const TRAIL_MS = 650; const TRAIL_MAX = 80;
 function addTrailPoint(clientX, clientY){
   if(!TP.canvas || !TP.el) return;
   const r = TP.el.getBoundingClientRect();
-  const x = clientX - r.left;
-  const y = clientY - r.top;
-  TP.points.push({x, y, t: performance.now()});
+  TP.points.push({x: clientX - r.left, y: clientY - r.top, t: performance.now()});
   if(TP.points.length > TRAIL_MAX) TP.points.shift();
 }
-
 function trailLoop(){
   const cv = TP.canvas, ctx = TP.ctx;
   if(!cv || !ctx){ TP.trailRaf = requestAnimationFrame(trailLoop); return; }
@@ -1429,8 +1644,7 @@ function trailLoop(){
   const r = TP.el.getBoundingClientRect();
   ctx.clearRect(0, 0, r.width, r.height);
   if(TP.points.length > 1){
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     for(let i = 1; i < TP.points.length; i++){
       const a = TP.points[i-1], b = TP.points[i];
       const age = (now - b.t) / TRAIL_MS;
@@ -1440,10 +1654,7 @@ function trailLoop(){
       ctx.lineWidth = 1 + 5 * alpha;
       ctx.shadowColor = `rgba(124,0,240,${alpha})`;
       ctx.shadowBlur = 14 * alpha;
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     }
     const last = TP.points[TP.points.length - 1];
     const lastAge = (now - last.t) / TRAIL_MS;
@@ -1453,32 +1664,24 @@ function trailLoop(){
       grad.addColorStop(0, `rgba(200,140,255,${0.65 * a})`);
       grad.addColorStop(1, 'rgba(154,60,255,0)');
       ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(last.x, last.y, 26, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(last.x, last.y, 26, 0, Math.PI * 2); ctx.fill();
     }
     ctx.shadowBlur = 0;
   }
   TP.trailRaf = requestAnimationFrame(trailLoop);
 }
-
 function tpStart(ev){
   ev.preventDefault();
   const n = ev.touches.length;
-  TP.fingers = n;
-  TP.moved = false;
+  TP.fingers = n; TP.moved = false;
   const t = ev.touches[0];
   TP.lastX = t.clientX; TP.lastY = t.clientY;
   TP.startX = t.clientX; TP.startY = t.clientY;
   TP.startT = Date.now();
   TP.el.classList.toggle('two', n >= 2);
   addTrailPoint(t.clientX, t.clientY);
-  if(n >= 2){
-    const t1 = ev.touches[1];
-    addTrailPoint(t1.clientX, t1.clientY);
-  }
+  if(n >= 2){ const t1 = ev.touches[1]; addTrailPoint(t1.clientX, t1.clientY); }
 }
-
 function tpMove(ev){
   ev.preventDefault();
   const n = ev.touches.length;
@@ -1490,438 +1693,227 @@ function tpMove(ev){
     const t0 = ev.touches[0], t1 = ev.touches[1];
     const my = (t0.clientY + t1.clientY) / 2;
     const dy = TP.lastY - my;
-    if(Math.abs(dy) > 2){
-      TP.moved = true;
-      mouseScroll(Math.round(dy * 4));
-    }
-    TP.lastX = (t0.clientX + t1.clientX) / 2;
-    TP.lastY = my;
-    addTrailPoint(t0.clientX, t0.clientY);
-    addTrailPoint(t1.clientX, t1.clientY);
+    if(Math.abs(dy) > 2){ TP.moved = true; mouseScroll(Math.round(dy * 4)); }
+    TP.lastX = (t0.clientX + t1.clientX) / 2; TP.lastY = my;
+    addTrailPoint(t0.clientX, t0.clientY); addTrailPoint(t1.clientX, t1.clientY);
   }
 }
-
 function tpProcessMove(x, y){
   const rect = TP.el.getBoundingClientRect();
-  const dx = x - TP.lastX;
-  const dy = y - TP.lastY;
+  const dx = x - TP.lastX; const dy = y - TP.lastY;
   if(Math.abs(dx) + Math.abs(dy) > 3) TP.moved = true;
   if(!TP.moved) return;
-
   const sw = window.screen ? window.screen.width : 1920;
   const sh = window.screen ? window.screen.height : 1080;
   const fx = (sw * 1.8) / rect.width;
   const fy = (sh * 1.8) / rect.height;
   const vel = Math.hypot(dx, dy);
   const multi = 1 + Math.min(vel / 8, 1.8);
-
   TP.pending.dx += dx * fx * multi;
   TP.pending.dy += dy * fy * multi;
   if(!TP.sendTimer) TP.sendTimer = setTimeout(tpFlush, 25);
   TP.lastX = x; TP.lastY = y;
 }
-
 async function tpFlush(){
   TP.sendTimer = null;
   const dx = Math.round(TP.pending.dx);
   const dy = Math.round(TP.pending.dy);
   TP.pending.dx = 0; TP.pending.dy = 0;
   if(dx === 0 && dy === 0) return;
-  try{
-    await fetch('/api/mouse_move', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({dx, dy})
-    });
-  }catch(e){}
+  try{ await fetch('/api/mouse_move', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dx, dy})}); }catch(e){}
 }
-
 function tpProcessEnd(){
   const dur = Date.now() - TP.startT;
-  const d = Math.hypot(TP.lastX - TP.startX, TP.lastY - TP.startY);
   TP.el.classList.remove('two');
-  if(TP.fingers >= 3 && !TP.moved && dur < 350){
-    mouseClick('right');
-    TP.fingers = 0;
-    return;
-  }
+  if(TP.fingers >= 3 && !TP.moved && dur < 350){ mouseClick('right'); TP.fingers = 0; return; }
   if(TP.fingers === 1 && !TP.moved && dur < 300){
     const now = Date.now();
-    if(now - TP.lastTap < 300){
-      mouseClick('double');
-      TP.lastTap = 0;
-    } else {
-      TP.lastTap = now;
-      setTimeout(()=>{
-        if(TP.lastTap === now){ mouseClick('left'); TP.lastTap = 0; }
-      }, 260);
-    }
+    if(now - TP.lastTap < 300){ mouseClick('double'); TP.lastTap = 0; }
+    else { TP.lastTap = now; setTimeout(()=>{ if(TP.lastTap === now){ mouseClick('left'); TP.lastTap = 0; } }, 260); }
   }
   TP.fingers = 0;
 }
-
-function tpEnd(ev){
-  ev.preventDefault();
-  tpProcessEnd();
-}
-
+function tpEnd(ev){ ev.preventDefault(); tpProcessEnd(); }
 async function mouseClick(tipo){
-  try{
-    await fetch('/api/mouse_click', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({tipo})
-    });
+  try{ await fetch('/api/mouse_click', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tipo})});
     if(navigator.vibrate) navigator.vibrate(8);
   }catch(e){}
 }
-
 async function mouseScroll(dy){
-  try{
-    await fetch('/api/mouse_scroll', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({dy})
-    });
-  }catch(e){}
+  try{ await fetch('/api/mouse_scroll', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dy})}); }catch(e){}
 }
-
 async function toggleDrag(){
   TP.drag = !TP.drag;
   const b = document.getElementById('btnDragToggle');
   b.classList.toggle('on', TP.drag);
   b.textContent = TP.drag ? '✓ Soltar' : 'Arrastar (manter)';
-  try{
-    await fetch('/api/mouse_drag', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({tipo: TP.drag ? 'drag_down' : 'drag_up'})
-    });
-  }catch(e){}
+  try{ await fetch('/api/mouse_drag', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tipo: TP.drag ? 'drag_down' : 'drag_up'})}); }catch(e){}
+}
+
+// ==================== MONITORES ====================
+async function carregarMonitores(){
+  const j = await get("/api/monitores");
+  const sel = $("#selMonitor");
+  if(!sel) return;
+  const atual = j.atual || 0;
+  sel.innerHTML = "";
+  const o0 = document.createElement("option");
+  o0.value = "0"; o0.textContent = "Todas as telas juntas";
+  sel.appendChild(o0);
+  (j.lista || []).forEach(m => {
+    const o = document.createElement("option");
+    o.value = String(m.idx);
+    o.textContent = `Monitor ${m.idx} — ${m.w}x${m.h}${m.principal ? " (principal)" : ""}`;
+    sel.appendChild(o);
+  });
+  sel.value = String(atual);
+}
+async function trocarMonitor(v){
+  const idx = parseInt(v, 10) || 0;
+  await post("/api/monitor_escolhido", {idx});
+  toast("Monitor trocado");
+  if(telaAtiva) atualizarTela();
+}
+
+// ==================== SCREENSHOT ====================
+async function tirarScreenshot(){
+  toast("📸 Tirando print…");
+  const j = await post("/api/screenshot", {});
+  if(j.erro){ toast("Erro: " + j.erro); return; }
+  if(j.nome){
+    toast("Salvo: " + j.nome);
+    if(confirm("Screenshot salvo como:\n" + j.nome + "\n\nBaixar pro celular?")){
+      window.open("/api/download?nome=" + encodeURIComponent(j.nome), "_blank");
+    }
+  } else {
+    toast(j.saida || "Print tirado");
+  }
+}
+
+// ==================== STATUS ====================
+async function atualizarStatus(){
+  const j = await get("/api/status");
+  if(j.erro) return;
+  const cpu = j.cpu || 0;
+  const ram = j.ram || 0;
+  const disco = j.disco || 0;
+  $("#stCpu").textContent = cpu.toFixed(0) + "%";
+  $("#stRam").textContent = ram.toFixed(0) + "%" + (j.ram_detalhe ? " " + j.ram_detalhe : "");
+  $("#stDisco").textContent = disco.toFixed(0) + "%" + (j.disco_detalhe ? " " + j.disco_detalhe : "");
+  const setBar = (id, val) => {
+    const el = $("#" + id);
+    el.style.width = Math.min(100, Math.max(0, val)) + "%";
+    el.classList.toggle("warn", val >= 70 && val < 90);
+    el.classList.toggle("crit", val >= 90);
+  };
+  setBar("stCpuBar", cpu); setBar("stRamBar", ram); setBar("stDiscoBar", disco);
+  $("#stTemp").textContent = j.temp ? (j.temp + "°C") : "—";
+  $("#stUptime").textContent = j.uptime || "—";
+}
+
+// ==================== REPAROS ====================
+async function reparar(tipo){
+  toast("Executando…");
+  const j = await post("/api/reparar", {tipo});
+  toast(j.saida || j.erro || "ok");
 }
 
 // ==================== PIP ====================
-let pipActive = false;
-let pipStream = null;
-let pipVideoReady = false;
-let pipStopDraw = false;
-let docPipWin = null;
-let docPipStop = false;
-let pipHeartbeat = null;
-let pipAbertoEmOutraAba = false;
-
-const PIP_METHOD = ('documentPictureInPicture' in window)
-  ? 'doc'
-  : (document.pictureInPictureEnabled ? 'video' : 'none');
-
-function resetPipBtn(){
-  const bp = document.getElementById('btnPip');
-  if(!bp) return;
-  bp.textContent = 'Picture-in-Picture';
-  bp.classList.remove('on');
-}
-
-function marcarPipOn(){
-  const bp = document.getElementById('btnPip');
-  if(!bp) return;
-  bp.textContent = 'Sair do PiP';
-  bp.classList.add('on');
-}
-
-function iniciarHeartbeatPip(){
-  pararHeartbeatPip();
-  pipHeartbeat = setInterval(()=>{
-    if(docPipWin && !docPipWin.closed){
-      pipEstadoEscrever(true);
-    } else {
-      pararHeartbeatPip();
-    }
-  }, 5000);
-}
-function pararHeartbeatPip(){
-  if(pipHeartbeat){ clearInterval(pipHeartbeat); pipHeartbeat = null; }
-}
-
+let pipActive = false, pipStream = null, pipVideoReady = false, pipStopDraw = false;
+let docPipWin = null, docPipStop = false;
+const PIP_METHOD = ('documentPictureInPicture' in window) ? 'doc' : (document.pictureInPictureEnabled ? 'video' : 'none');
+function resetPipBtn(){ const bp = document.getElementById('btnPip'); if(!bp) return; bp.textContent = 'Picture-in-Picture'; bp.classList.remove('on'); }
 function fecharPip(comBtnReset){
-  if(docPipWin && !docPipWin.closed){
-    try{ docPipWin.close(); }catch(e){}
-    docPipWin = null;
-    docPipStop = true;
-  }
-  if(pipActive){
-    document.exitPictureInPicture().catch(()=>{});
-    pipActive = false;
-  }
+  if(docPipWin && !docPipWin.closed){ try{ docPipWin.close(); }catch(e){} docPipWin = null; docPipStop = true; }
+  if(pipActive){ document.exitPictureInPicture().catch(()=>{}); pipActive = false; }
   pararVideoPip();
-  pararHeartbeatPip();
-  pipEstadoEscrever(false);
-  bcEnviar("pip_off");
-  pipAbertoEmOutraAba = false;
   if(comBtnReset !== false) resetPipBtn();
 }
-
 async function prepararVideoPip(){
   if(pipVideoReady) return;
-  const vid = document.getElementById('pipVideo');
-  const cvs = document.getElementById('pipCanvas');
+  const vid = document.getElementById('pipVideo'); const cvs = document.getElementById('pipCanvas');
   if(!vid || !cvs) return;
-
   const img = document.getElementById('tela');
-  for(let i=0; i<50 && (!img.src || !img.complete || img.naturalWidth === 0); i++){
-    await new Promise(r => setTimeout(r, 100));
-  }
+  for(let i=0; i<50 && (!img.src || !img.complete || img.naturalWidth === 0); i++){ await new Promise(r => setTimeout(r, 100)); }
   if(!img.src || !img.complete || img.naturalWidth === 0) return;
-
   cvs.width = 640; cvs.height = 360;
   const ctx = cvs.getContext('2d');
-
   pipStopDraw = false;
   const draw = () => {
     if(pipStopDraw) return;
     const im = document.getElementById('tela');
-    if(im && im.complete && im.naturalWidth > 0){
-      try{ ctx.drawImage(im, 0, 0, 640, 360); }catch(e){}
-    }
+    if(im && im.complete && im.naturalWidth > 0){ try{ ctx.drawImage(im, 0, 0, 640, 360); }catch(e){} }
     setTimeout(draw, 60);
   };
   draw();
-
   await new Promise(r => setTimeout(r, 200));
-
   try{
     pipStream = cvs.captureStream(20);
     vid.style.cssText = "position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";
-    vid.muted = true;
-    vid.playsInline = true;
-    vid.srcObject = pipStream;
+    vid.muted = true; vid.playsInline = true; vid.srcObject = pipStream;
     await vid.play();
-    for(let i=0; i<40; i++){
-      if(vid.readyState >= 2 && vid.videoWidth > 0) break;
-      await new Promise(r => setTimeout(r, 100));
-    }
+    for(let i=0; i<40; i++){ if(vid.readyState >= 2 && vid.videoWidth > 0) break; await new Promise(r => setTimeout(r, 100)); }
     if(vid.readyState >= 2 && vid.videoWidth > 0) pipVideoReady = true;
-  }catch(e){
-    console.warn('prepararVideoPip:', e);
-  }
+  }catch(e){ console.warn('prepararVideoPip:', e); }
 }
-
 function pararVideoPip(){
   pipStopDraw = true;
   if(pipStream){ pipStream.getTracks().forEach(t => t.stop()); pipStream = null; }
   const vid = document.getElementById('pipVideo');
   if(vid){ vid.srcObject = null; vid.style.cssText = "display:none"; }
-  pipVideoReady = false;
+  pipVideoReady = false; pipActive = false;
 }
-
 function setupDocPip(w){
-  docPipWin = w;
-  docPipStop = false;
-
+  docPipWin = w; docPipStop = false;
   const st = w.document.createElement('style');
-  st.textContent = `
-    html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}
-    img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}
-  `;
+  st.textContent = `html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}`;
   w.document.head.appendChild(st);
-
-  const im = w.document.createElement('img');
-  im.alt = "";
-  im.src = ORIGEM + "/api/stream.mjpg?t=" + Date.now();
+  const im = w.document.createElement('img'); im.alt = "";
+  const idx = ESTADO_MONITOR_ATUAL;
+  im.src = ORIGEM + "/api/stream.mjpg?t=" + Date.now() + "&monitor=" + idx;
   w.document.body.appendChild(im);
-
-  marcarPipOn();
-  pipEstadoEscrever(true);
-  bcEnviar("pip_on");
-  iniciarHeartbeatPip();
-
-  const finalizar = () => {
-    docPipStop = true;
-    docPipWin = null;
-    try{ im.src = ""; }catch(e){}
-    pararHeartbeatPip();
-    pipEstadoEscrever(false);
-    bcEnviar("pip_off");
-    pipAbertoEmOutraAba = false;
-    resetPipBtn();
-  };
+  const btn = document.getElementById('btnPip');
+  btn.textContent = 'Sair do PiP'; btn.classList.add('on');
+  const finalizar = () => { docPipStop = true; docPipWin = null; try{ im.src = ""; }catch(e){} resetPipBtn(); };
   w.addEventListener('pagehide', finalizar, {once: true});
   w.addEventListener('unload', finalizar, {once: true});
 }
-
 function togglePip(){
   const btn = document.getElementById('btnPip');
-
-  // ---- Se TEMOS o PiP aberto nesta aba, fecha ----
-  if(docPipWin && !docPipWin.closed){
-    try{ docPipWin.close(); }catch(e){}
-    docPipWin = null;
-    docPipStop = true;
-    pararHeartbeatPip();
-    pipEstadoEscrever(false);
-    bcEnviar("pip_off");
-    resetPipBtn();
-    return;
-  }
-  if(pipActive){
-    document.exitPictureInPicture().catch(()=>{});
-    pipEstadoEscrever(false);
-    bcEnviar("pip_off");
-    resetPipBtn();
-    return;
-  }
-
-  // ---- Se NÃO temos, mas outra aba tem, pede pra ela fechar ----
-  if(pipAbertoEmOutraAba || (btn && btn.classList.contains("on"))){
-    bcEnviar("pip_close_req");
-    // otimista: reseta o próprio botão
-    resetPipBtn();
-    pipAbertoEmOutraAba = false;
-    return;
-  }
-
   if(PIP_METHOD === 'doc'){
+    if(docPipWin && !docPipWin.closed){ try{ docPipWin.close(); }catch(e){} docPipWin = null; docPipStop = true; resetPipBtn(); return; }
+    if(btn.classList.contains('on')){ resetPipBtn(); return; }
     if(!telaAtiva) toggleAuto();
     documentPictureInPicture.requestWindow({ width: 640, height: 360 })
       .then(w => setupDocPip(w))
-      .catch(e => {
-        console.error('Document PiP:', e);
-        toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e));
-      });
+      .catch(e => { console.error('Document PiP:', e); toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e)); });
     return;
   }
-
   if(PIP_METHOD === 'video'){
     const vid = document.getElementById('pipVideo');
-
-    if(!telaAtiva){
-      toggleAuto();
-      toast('Ativei "Ver ao vivo". Clique em PiP de novo em 1s.');
-      if(!pipVideoReady) prepararVideoPip();
-      return;
-    }
-    if(!pipVideoReady){
-      prepararVideoPip();
-      toast('Preparando… clique de novo em 1s');
-      return;
-    }
-    if(vid.readyState < 2 || vid.videoWidth === 0){
-      toast('Aguarde um instante e clique de novo');
-      return;
-    }
-
+    if(pipActive){ document.exitPictureInPicture().catch(()=>{}); resetPipBtn(); return; }
+    if(!telaAtiva){ toggleAuto(); toast('Ativei "Ver ao vivo". Clique em PiP de novo em 1s.'); if(!pipVideoReady) prepararVideoPip(); return; }
+    if(!pipVideoReady){ prepararVideoPip(); toast('Preparando… clique de novo em 1s'); return; }
+    if(vid.readyState < 2 || vid.videoWidth === 0){ toast('Aguarde um instante e clique de novo'); return; }
     const p = vid.requestPictureInPicture();
     if(p && p.then){
-      p.then(() => {
-        pipActive = true;
-        marcarPipOn();
-        pipEstadoEscrever(true);
-        bcEnviar("pip_on");
-        iniciarHeartbeatPip();
-      }).catch(e => {
-        console.error('PiP erro:', e);
-        toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e));
-      });
-    } else {
-      pipActive = true;
-      marcarPipOn();
-      pipEstadoEscrever(true);
-      bcEnviar("pip_on");
-      iniciarHeartbeatPip();
-    }
-
+      p.then(() => { pipActive = true; btn.textContent = 'Sair do PiP'; btn.classList.add('on'); })
+       .catch(e => { console.error('PiP erro:', e); toast('Erro PiP: ' + (e.name || '') + ' ' + (e.message || e)); });
+    } else { pipActive = true; btn.textContent = 'Sair do PiP'; btn.classList.add('on'); }
     if(!vid._pipLeaveBound){
       vid._pipLeaveBound = true;
-      vid.addEventListener('leavepictureinpicture', () => {
-        pararVideoPip();
-        pararHeartbeatPip();
-        pipEstadoEscrever(false);
-        bcEnviar("pip_off");
-        pipAbertoEmOutraAba = false;
-        resetPipBtn();
-      });
+      vid.addEventListener('leavepictureinpicture', () => { pararVideoPip(); resetPipBtn(); });
     }
     return;
   }
-
   toast('PiP não suportado neste navegador');
-}
-
-// ----- Listener cross-tab -----
-bcAssinar(msg => {
-  if(!msg || !msg.tipo) return;
-  if(msg.tipo === "pip_on"){
-    pipAbertoEmOutraAba = true;
-    marcarPipOn();
-    // se essa aba está na Tela e não está mostrando o preview, ativa
-    if(!telaAtiva){
-      const pTela = document.getElementById("p-tela");
-      if(pTela && !pTela.classList.contains("hid")){
-        toggleAuto();
-      } else {
-        // ativa em background mesmo assim (quando o usuário trocar pra Tela, já está rodando)
-        telaAtiva = true;
-        const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
-        if(btn){ btn.textContent="Parar"; btn.classList.remove("acc"); btn.classList.add("on"); }
-        if(img){ img.style.display="block"; }
-        if(off){ off.classList.add("hid"); }
-        atualizarTela();
-      }
-    }
-  }
-  if(msg.tipo === "pip_off"){
-    pipAbertoEmOutraAba = false;
-    // se não temos PiP nesta aba, reseta o botão
-    if(!(docPipWin && !docPipWin.closed) && !pipActive){
-      resetPipBtn();
-    }
-  }
-  if(msg.tipo === "pip_close_req"){
-    // outra aba pediu pra fechar. Se somos donos, fecha.
-    if(docPipWin && !docPipWin.closed){
-      try{ docPipWin.close(); }catch(e){}
-      docPipWin = null;
-      docPipStop = true;
-      pararHeartbeatPip();
-      pipEstadoEscrever(false);
-      bcEnviar("pip_off");
-      resetPipBtn();
-    } else if(pipActive){
-      document.exitPictureInPicture().catch(()=>{});
-      pipEstadoEscrever(false);
-      bcEnviar("pip_off");
-      resetPipBtn();
-    }
-  }
-});
-
-// ----- Sincronização inicial ao carregar a aba -----
-function sincronizarPipInicial(){
-  const d = pipEstadoLer();
-  if(d && d.aberto){
-    pipAbertoEmOutraAba = true;
-    marcarPipOn();
-    // se o usuário entrar na aba Tela, o preview já deve estar ligado
-    if(!telaAtiva){
-      telaAtiva = true;
-      const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
-      if(btn){ btn.textContent="Parar"; btn.classList.remove("acc"); btn.classList.add("on"); }
-      if(img){ img.style.display="block"; }
-      if(off){ off.classList.add("hid"); }
-      atualizarTela();
-    }
-  }
 }
 
 // ==================== SCROLL HOLD ====================
 function segurarBotao(el,fn,delay=250){
   if(!el)return;
   let timer=null;
-  const start=e=>{
-    if(e){e.preventDefault()}
-    if(timer)return;
-    fn();
-    timer=setInterval(fn,delay);
-  };
+  const start=e=>{ if(e){e.preventDefault()} if(timer)return; fn(); timer=setInterval(fn,delay); };
   const stop=()=>{if(timer){clearInterval(timer);timer=null}};
   el.addEventListener("mousedown",start);
   el.addEventListener("touchstart",start,{passive:false});
@@ -1933,6 +1925,7 @@ function segurarBotao(el,fn,delay=250){
 }
 
 let telaAtiva=false,telaTimer=null,telaEmVoo=false;
+let ESTADO_MONITOR_ATUAL = 0;
 const TELA_INTERVALO=160;
 
 async function atualizarTela(){
@@ -1943,7 +1936,7 @@ async function atualizarTela(){
   try{
     const ctrl=new AbortController();
     const to=setTimeout(()=>ctrl.abort(),4000);
-    const r=await fetch("/api/tela.jpg?t="+Date.now(),{cache:"no-store",signal:ctrl.signal});
+    const r=await fetch("/api/tela.jpg?t="+Date.now()+"&monitor="+ESTADO_MONITOR_ATUAL,{cache:"no-store",signal:ctrl.signal});
     clearTimeout(to);
     if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}
     if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,400);return}
@@ -1951,10 +1944,7 @@ async function atualizarTela(){
     const url=URL.createObjectURL(blob);
     const img=$("#tela");const velho=img.src;
     const pre=new Image();
-    pre.onload=()=>{
-      img.src=url;
-      if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}}
-    };
+    pre.onload=()=>{ img.src=url; if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}} };
     pre.onerror=()=>{try{URL.revokeObjectURL(url)}catch(e){}};
     pre.src=url;
     $("#telaHora").textContent="Ao vivo • "+new Date().toLocaleTimeString();
@@ -1968,27 +1958,16 @@ function toggleAuto(){
   telaAtiva=!telaAtiva;
   const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
   if(telaAtiva){
-    btn.textContent="Parar";
-    btn.classList.remove("acc");
-    btn.classList.add("on");
-    img.style.display="block";
-    off.classList.add("hid");
+    btn.textContent="Parar"; btn.classList.remove("acc"); btn.classList.add("on");
+    img.style.display="block"; off.classList.add("hid");
     atualizarTela();
     if(PIP_METHOD === 'video') prepararVideoPip();
   }else{
-    btn.textContent="Ver ao vivo";
-    btn.classList.remove("on");
-    btn.classList.add("acc");
-    clearTimeout(telaTimer);
-    telaTimer=null;
-    img.style.display="none";
-    img.src="";
-    off.classList.remove("hid");
+    btn.textContent="Ver ao vivo"; btn.classList.remove("on"); btn.classList.add("acc");
+    clearTimeout(telaTimer); telaTimer=null;
+    img.style.display="none"; img.src=""; off.classList.remove("hid");
     $("#telaHora").textContent="—";
-    // fecha PiP desta aba (se houver)
-    if((docPipWin && !docPipWin.closed) || pipActive){
-      fecharPip(true);
-    }
+    fecharPip(true);
   }
 }
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&telaAtiva&&!telaEmVoo){clearTimeout(telaTimer);atualizarTela()}});
@@ -2098,6 +2077,7 @@ async function sistema(acao){
   toast(j.saida||j.erro||"ok");
 }
 async function monitor(a){const j=await post("/api/monitor",{acao:a});toast(j.saida||j.erro||a)}
+async function mostrarQR(){const j=await post("/api/qr_para_pc",{});toast(j.saida||j.erro||"ok")}
 
 let ultimoLan="",ultimoTunel="";
 async function carregarSistema(){
@@ -2142,10 +2122,7 @@ async function fecharPrograma(){
   try{await post("/api/fechar",{})}catch(e){}
   for(let i=0;i<30;i++){
     await new Promise(r=>setTimeout(r,350));
-    try{
-      const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});
-      if(!r.ok)break;
-    }catch(e){break}
+    try{ const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)}); if(!r.ok)break; }catch(e){break}
   }
   document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">RotaControl encerrado</b><small>Pode fechar esta aba.</small></div>';
 }
@@ -2154,10 +2131,7 @@ async function bypassPrograma(){
   try{await post("/api/bypass",{})}catch(e){}
   for(let i=0;i<40;i++){
     await new Promise(r=>setTimeout(r,350));
-    try{
-      const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});
-      if(!r.ok)break;
-    }catch(e){break}
+    try{ const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)}); if(!r.ok)break; }catch(e){break}
   }
   document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#c82020;font-size:22px">BYPASS aplicado</b><small>Executável apagado do PC.</small></div>';
 }
@@ -2204,11 +2178,15 @@ async function iniciar(){
   initTouchpad();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarWol();carregarComandos();
+  // garante teclas soltas no boot
+  try{ await post("/api/teclas/soltar_todas", {}); }catch(e){}
   setInterval(atualizarTunel,4000);
   segurarBotao($("#btnVolUp"),()=>midia('vol_up'),250);
   segurarBotao($("#btnVolDown"),()=>midia('vol_down'),250);
-  // verifica se o PiP está aberto em outra aba
-  sincronizarPipInicial();
+  // monitor atual
+  try{ const jm = await get("/api/monitores"); ESTADO_MONITOR_ATUAL = jm.atual || 0; }catch(e){}
+  // soltar teclas se a aba fechar
+  window.addEventListener("pagehide", ()=>{ try{ navigator.sendBeacon("/api/teclas/soltar_todas", new Blob([JSON.stringify({})], {type:"application/json"})); }catch(e){} });
 }
 iniciar();
 </script>
@@ -2290,8 +2268,7 @@ def api_resolver_pasta():
     if b: return b
     d = request.get_json(force=True) or {}
     p = (d.get("pasta") or "").strip()
-    if not p:
-        return jsonify(pasta="", existe=False)
+    if not p: return jsonify(pasta="", existe=False)
     p = os.path.expandvars(p); p = os.path.expanduser(p); p = os.path.abspath(p)
     return jsonify(pasta=p, existe=os.path.isdir(p))
 
@@ -2383,8 +2360,7 @@ def api_mouse_move():
     d = request.get_json(force=True) or {}
     try:
         dx = int(d.get("dx", 0)); dy = int(d.get("dy", 0))
-    except Exception:
-        return jsonify(erro="dx/dy invalidos")
+    except Exception: return jsonify(erro="dx/dy invalidos")
     try:
         u = ctypes.windll.user32
         pt = PONTO(); u.GetCursorPos(ctypes.byref(pt))
@@ -2398,16 +2374,14 @@ def api_mouse_move():
             if ny > sy + sh - 1: ny = sy + sh - 1
         u.SetCursorPos(nx, ny)
         return jsonify(ok=True, x=nx, y=ny)
-    except Exception as e:
-        return jsonify(erro=str(e))
+    except Exception as e: return jsonify(erro=str(e))
 
 
 @app.route("/api/mouse_click", methods=["POST"])
 def api_mouse_click():
     b = exigir_auth()
     if b: return b
-    d = request.get_json(force=True) or {}
-    tipo = d.get("tipo", "left")
+    tipo = (request.get_json(force=True) or {}).get("tipo", "left")
     u = ctypes.windll.user32
     LD = 0x0002; LU = 0x0004
     RD = 0x0008; RU = 0x0010
@@ -2423,8 +2397,7 @@ def api_mouse_click():
             for _ in range(2):
                 u.mouse_event(LD, 0, 0, 0, 0); u.mouse_event(LU, 0, 0, 0, 0)
                 time.sleep(0.05)
-        else:
-            return jsonify(erro="tipo invalido")
+        else: return jsonify(erro="tipo invalido")
         return jsonify(ok=True)
     except Exception as e: return jsonify(erro=str(e))
 
@@ -2467,295 +2440,275 @@ def api_monitor():
     return jsonify(erro="acao invalida")
 
 
-@app.route("/api/atalhos")
-def api_atalhos():
+# ===================== TECLAS PERSISTENTES =====================
+@app.route("/api/teclas/estado")
+def api_teclas_estado():
     b = exigir_auth()
     if b: return b
-    return jsonify(atalhos=ESTADO.get("atalhos", []))
+    with TECLAS_LOCK:
+        return jsonify(travadas=dict(TECLAS_TRAVADAS))
 
-
-@app.route("/api/atalho_add", methods=["POST"])
-def api_atalho_add():
+@app.route("/api/teclas/travar", methods=["POST"])
+def api_teclas_travar():
     b = exigir_auth()
     if b: return b
-    d = request.get_json(force=True)
-    combo = (d.get("combo") or "").lower()
-    partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
-    if not partes: return jsonify(erro="combo invalido")
-    ESTADO.setdefault("atalhos", []).append({
-        "nome": (d.get("nome") or "?")[:40], "combo": partes, "texto": "+".join(partes),
-    })
-    salvar_config(); return jsonify(ok=True)
+    nome = (request.get_json(force=True) or {}).get("nome", "").lower()
+    if nome not in _vks_modificadores(): return jsonify(erro="tecla invalida")
+    ok = travar_tecla(nome)
+    return jsonify(ok=ok)
 
-
-@app.route("/api/atalho_remover", methods=["POST"])
-def api_atalho_remover():
+@app.route("/api/teclas/soltar", methods=["POST"])
+def api_teclas_soltar():
     b = exigir_auth()
     if b: return b
-    idx = int((request.get_json(force=True) or {}).get("idx", -1))
-    atalhos = ESTADO.get("atalhos", [])
-    if 0 <= idx < len(atalhos): atalhos.pop(idx); salvar_config()
+    nome = (request.get_json(force=True) or {}).get("nome", "").lower()
+    soltar_tecla_travada(nome)
+    return jsonify(ok=True)
+
+@app.route("/api/teclas/soltar_todas", methods=["POST"])
+def api_teclas_soltar_todas():
+    # sem exigir_auth para funcionar no pagehide via sendBeacon
+    soltar_todas_travadas()
     return jsonify(ok=True)
 
 
-@app.route("/api/atalho_exec", methods=["POST"])
-def api_atalho_exec():
+# ===================== MONITORES =====================
+@app.route("/api/monitores")
+def api_monitores():
     b = exigir_auth()
     if b: return b
-    idx = int((request.get_json(force=True) or {}).get("idx", -1))
-    atalhos = ESTADO.get("atalhos", [])
-    if idx < 0 or idx >= len(atalhos): return jsonify(erro="atalho invalido")
-    ok = enviar_combo(atalhos[idx]["combo"])
-    return jsonify(ok=ok, saida=("OK: " + atalhos[idx]["nome"]) if ok else "combo invalido")
-
-
-def copiar_pc(texto):
-    """Copia texto pro clipboard do PC. Verifica se a escrita funcionou."""
-    erros = []
-    # Método 1: API nativa
+    if not TEM_MSS:
+        return jsonify(lista=[], atual=0)
     try:
-        _clip_set(texto)
-        # verifica lendo de volta
-        time.sleep(0.05)
-        lido = _clip_get()
-        if lido == texto:
-            return f"Copiado pro clipboard do PC ({len(texto)} caractere(s) — verificado)."
-        elif lido is not None:
-            # escreveu mas leu diferente (provável interferência de outro app)
-            return f"Copiado ({len(texto)} caractere(s)), mas a verificação leu: {repr(lido[:40])}"
-        else:
-            return f"Copiado ({len(texto)} caractere(s)) — não consegui verificar."
+        with _mss.mss() as sct:
+            mons = sct.monitors
+            lista = []
+            for i in range(1, len(mons)):
+                m = mons[i]
+                lista.append({
+                    "idx": i,
+                    "w": m.get("width", 0), "h": m.get("height", 0),
+                    "principal": (i == 1),
+                })
+        return jsonify(lista=lista, atual=int(ESTADO.get("monitor_escolhido", 0)))
     except Exception as e:
-        erros.append(str(e))
-    # Método 2: PowerShell
-    try:
-        texto_esc = texto.replace("'", "''")
-        script = f"Set-Clipboard -Value '{texto_esc}'"
-        cod = base64.b64encode(script.encode("utf-16-le")).decode()
-        r = executar(["powershell", "-NoProfile", "-EncodedCommand", cod],
-                     capture_output=True, text=True, encoding="utf-8",
-                     errors="replace", timeout=10)
-        if r.returncode == 0:
-            return f"Copiado pro clipboard do PC via PowerShell ({len(texto)} caractere(s))."
-        erros.append((r.stderr or r.stdout or "").strip())
-    except Exception as e:
-        erros.append(str(e))
-    return f"Falha ao copiar: {' | '.join(erros)}"
+        return jsonify(erro=str(e), lista=[], atual=0)
+
+@app.route("/api/monitor_escolhido", methods=["POST"])
+def api_monitor_escolhido():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", 0))
+    ESTADO["monitor_escolhido"] = idx; salvar_config()
+    CAPTURA["monitor_idx"] = idx
+    return jsonify(ok=True, idx=idx)
 
 
-def ler_pc():
-    t = _clip_get()
-    if t is not None: return t
+# ===================== STATUS =====================
+_STATUS_CACHE = {"t": 0, "temp": None}
+_TEMP_MIN_INTERVALO = 15
+
+def _ler_temperatura():
+    """Leitura via PowerShell + WMI. Não é precisa em todo PC."""
+    now = time.time()
+    if now - _STATUS_CACHE["t"] < _TEMP_MIN_INTERVALO:
+        return _STATUS_CACHE["temp"]
+    _STATUS_CACHE["t"] = now
     try:
-        script = "Get-Clipboard -Raw"
+        # tenta primeiro o namespace padrão
+        script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | "
+                  "Select-Object -First 1 -ExpandProperty CurrentTemperature; "
+                  "if ($t) { Write-Output ([math]::Round(($t/10 - 273.15), 1)) }")
         cod = base64.b64encode(script.encode("utf-16-le")).decode()
         r = executar(["powershell", "-NoProfile", "-EncodedCommand", cod],
                      capture_output=True, text=True, encoding="utf-8",
                      errors="replace", timeout=6)
-        return (r.stdout or "").rstrip("\r\n")
+        out = (r.stdout or "").strip()
+        if out and re.match(r"^-?\d+(\.\d+)?$", out):
+            _STATUS_CACHE["temp"] = float(out)
+            return _STATUS_CACHE["temp"]
     except Exception:
-        return ""
+        pass
+    _STATUS_CACHE["temp"] = None
+    return None
 
 
-ESPECIAIS_SENDKEYS = {"+":"{+}","^":"{^}","%":"{%}","~":"{~}","(":"{(}",")":"{)}",
-    "{":"{{}","}":"{}}","[":"{[}","]":"{]}","\n":"{ENTER}","\r":""}
+def _fmt_uptime(seg):
+    d = int(seg // 86400)
+    h = int((seg % 86400) // 3600)
+    m = int((seg % 3600) // 60)
+    if d > 0: return f"{d}d {h}h {m}m"
+    if h > 0: return f"{h}h {m}m"
+    return f"{m}m"
 
 
-def digitar_pc(texto):
-    for ch in texto:
-        try:
-            if ch in ("\n", "\r"):
-                teclar_especial("enter")
-            elif ch == "\t":
-                teclar_especial("tab")
-            else:
-                teclar_char(ch)
-        except Exception:
-            pass
-        time.sleep(0.015)
-
-
-VK_ESPECIAIS = {"enter":0x0D,"tab":0x09,"backspace":0x08,"esc":0x1B,"escape":0x1B,
-    "delete":0x2E,"del":0x2E,"space":0x20,"up":0x26,"down":0x28,"left":0x25,"right":0x27,
-    "home":0x24,"end":0x23,"pageup":0x21,"pagedown":0x22,"f5":0x74,"printscreen":0x2C}
-KEYEVENTF_KEYUP = 0x0002
-
-
-def _vk_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
-def _vk_up(vk):   ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
-def _teclar_vk(vk): _vk_down(vk); _vk_up(vk)
-
-
-def teclar_char(ch):
-    if not ch: return
-    u = ctypes.windll.user32
-    res = u.VkKeyScanW(ord(ch))
-    if res == -1:
-        try:
-            s = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
-            script = ("Add-Type -AssemblyName System.Windows.Forms; "
-                      f"[System.Windows.Forms.SendKeys]::SendWait('{s}')")
-            cod = base64.b64encode(script.encode("utf-16-le")).decode()
-            rodar_oculto(["powershell", "-NoProfile", "-EncodedCommand", cod])
-        except Exception: pass
-        return
-    vk = res & 0xFF; shift = (res >> 8) & 0xFF
-    if shift & 1: _vk_down(0x10)
-    if shift & 2: _vk_down(0x11)
-    if shift & 4: _vk_down(0x12)
-    _vk_down(vk); _vk_up(vk)
-    if shift & 4: _vk_up(0x12)
-    if shift & 2: _vk_up(0x11)
-    if shift & 1: _vk_up(0x10)
-
-
-def teclar_especial(nome):
-    nome = (nome or "").lower().strip()
-    if nome in VK_ESPECIAIS: _teclar_vk(VK_ESPECIAIS[nome]); return True
-    return False
-
-
-@app.route("/api/texto", methods=["POST"])
-def api_texto():
+@app.route("/api/status")
+def api_status():
     b = exigir_auth()
     if b: return b
-    d = request.get_json(force=True) or {}
-    texto = (d.get("texto") or "")[:8000]
-    modo = d.get("modo", "clipboard")
-    if not texto:
-        return jsonify(erro="texto vazio")
-    if modo == "digitar":
-        threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
-        return jsonify(saida=f"Digitando {len(texto)} caractere(s) no PC…")
+    if not PSUTIL_OK:
+        return jsonify(erro="psutil nao instalado")
     try:
-        msg = copiar_pc(texto)
-        return jsonify(saida=msg)
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        disco = psutil.disk_usage("C:\\" if os.name == "nt" else "/")
+        uptime = time.time() - psutil.boot_time()
+        temp = _ler_temperatura()
+        return jsonify(
+            cpu=cpu,
+            ram=ram.percent, ram_detalhe=f"({ram.used/1e9:.1f}/{ram.total/1e9:.1f} GB)",
+            disco=disco.percent, disco_detalhe=f"({disco.free/1e9:.0f} GB livre)",
+            temp=temp,
+            uptime=_fmt_uptime(uptime),
+        )
     except Exception as e:
         return jsonify(erro=str(e))
 
 
-@app.route("/api/digitar_tecla", methods=["POST"])
-def api_digitar_tecla():
-    b = exigir_auth()
-    if b: return b
-    tecla = (request.get_json(force=True) or {}).get("tecla")
-    if tecla is None or tecla == "": return jsonify(erro="tecla vazia")
-    if isinstance(tecla, str) and len(tecla) > 1 and tecla.lower() in VK_ESPECIAIS:
-        if teclar_especial(tecla): return jsonify(ok=True)
-    if isinstance(tecla, str):
-        for ch in tecla[:64]:
-            if ch in ("\n", "\r"): teclar_especial("enter")
-            else: teclar_char(ch)
-        return jsonify(ok=True)
-    return jsonify(erro="tecla invalida")
-
-
-@app.route("/api/clipboard")
-def api_clipboard():
-    b = exigir_auth()
-    if b: return b
-    try: return jsonify(texto=ler_pc())
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/clip_hist")
-def api_clip_hist():
+# ===================== SCREENSHOT =====================
+@app.route("/api/screenshot", methods=["POST"])
+def api_screenshot():
     b = exigir_auth()
     if b: return b
     try:
-        t = _clip_get()
-        if t and t.strip() and t != CLIP_ULTIMO["txt"]:
-            CLIP_ULTIMO["txt"] = t
-            if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
-                CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
-    except Exception: pass
-    return jsonify(itens=list(CLIP_HIST))
-
-
-@app.route("/api/clip_hist_limpar", methods=["POST"])
-def api_clip_hist_limpar():
-    b = exigir_auth()
-    if b: return b
-    CLIP_HIST.clear()
-    return jsonify(ok=True)
-
-
-@app.route("/api/midia", methods=["POST"])
-def api_midia():
-    b = exigir_auth()
-    if b: return b
-    acao = (request.get_json(force=True) or {}).get("acao", "")
-    if acao == "mute": _vtecla_mute(); return jsonify(ok=True)
-    if acao == "vol_up": _vtecla_up(); return jsonify(ok=True)
-    if acao == "vol_down": _vtecla_down(); return jsonify(ok=True)
-    if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
-    vk = VK_MEDIA[acao]
-    u = ctypes.windll.user32
-    u.keybd_event(vk, 0, 0, 0); time.sleep(0.05); u.keybd_event(vk, 0, 2, 0)
-    return jsonify(ok=True)
-
-
-@app.route("/api/volume_mixer")
-def api_volume_mixer():
-    b = exigir_auth()
-    if b: return b
-    if not PYCAW_OK:
-        return jsonify(erro="pycaw nao instalado no PC")
-    try:
-        itens = listar_sessoes_audio()
-        return jsonify(itens=itens)
+        idx = int(ESTADO.get("monitor_escolhido", 0))
+        png = _capturar_png_full(idx)
+        nome = time.strftime("screenshot_%Y-%m-%d_%H-%M-%S.png")
+        dest = os.path.join(pasta_arquivos(), nome)
+        with open(dest, "wb") as f: f.write(png)
+        return jsonify(ok=True, nome=nome, saida=f"Salvo: {nome}")
     except Exception as e:
         return jsonify(erro=str(e))
 
 
-@app.route("/api/volume_mixer_set", methods=["POST"])
-def api_volume_mixer_set():
+# ===================== REPAROS =====================
+@app.route("/api/reparar", methods=["POST"])
+def api_reparar():
     b = exigir_auth()
     if b: return b
-    if not PYCAW_OK:
-        return jsonify(erro="pycaw nao instalado no PC")
-    d = request.get_json(force=True) or {}
-    chave = (d.get("chave") or "").strip()
-    volume = d.get("volume", None)
-    mudo = d.get("mudo", None)
-    if not chave:
-        return jsonify(erro="chave vazia")
+    tipo = (request.get_json(force=True) or {}).get("tipo", "")
+    if tipo == "explorer":
+        def _r():
+            try:
+                subprocess.Popen(["taskkill", "/f", "/im", "explorer.exe"],
+                                 creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1.5)
+                subprocess.Popen(["cmd", "/c", "start", "", "explorer.exe"],
+                                 creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception: pass
+        threading.Thread(target=_r, daemon=True).start()
+        return jsonify(saida="Explorer reiniciando…")
+    if tipo == "audio":
+        def _a():
+            try:
+                # tenta parar audiodg (não precisa admin) — resolve 80% dos casos
+                subprocess.Popen(["taskkill", "/f", "/im", "audiodg.exe"],
+                                 creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
+                # tenta também via net stop/start (precisa admin, silencioso se falhar)
+                try:
+                    subprocess.run(["net", "stop", "Audiosrv", "/y"], timeout=5,
+                                   creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["net", "start", "Audiosrv"], timeout=5,
+                                   creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception: pass
+            except Exception: pass
+        threading.Thread(target=_a, daemon=True).start()
+        return jsonify(saida="Áudio reiniciando…")
+    return jsonify(erro="tipo invalido")
+
+
+# ===================== QR CODE =====================
+@app.route("/api/qr_para_pc", methods=["POST"])
+def api_qr_para_pc():
+    b = exigir_auth()
+    if b: return b
     try:
-        setar_sessao_audio(chave, volume=volume, mudo=mudo)
-        return jsonify(ok=True)
+        url = f"http://{ip_local()}:5000"
+        webbrowser.open_new_tab(url + "/qr_para_pc")
+        return jsonify(saida="QR aberto no PC.")
     except Exception as e:
         return jsonify(erro=str(e))
 
 
+@app.route("/qr_para_pc")
+def qr_para_pc_page():
+    """Página que abre no PC com o QR code grande pra escanear."""
+    try:
+        ip = ip_local()
+        url = f"http://{ip}:5000"
+        if QRCODE_OK:
+            img = qrcode.make(url)
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            img_tag = f'<img src="data:image/png;base64,{b64}" alt="QR">'
+        else:
+            img_tag = '<p style="color:#888">Instale <code>qrcode[pil]</code> pra gerar o QR aqui. A URL é:</p>'
+        html = f"""<!doctype html><html><head><meta charset=utf-8>
+<title>RotaControl — QR</title>
+<style>
+  html,body{{margin:0;padding:0;background:#0a0a0d;color:#e9e9f0;font:16px system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:24px}}
+  h1{{margin:0;font-size:24px;color:#9a3cff;letter-spacing:1px}}
+  .card{{background:#fff;padding:24px;border-radius:20px;display:flex;align-items:center;justify-content:center}}
+  img{{width:320px;height:320px;display:block}}
+  .url{{font:18px ui-monospace,Consolas,monospace;color:#9a3cff;background:#101015;padding:14px 24px;
+    border-radius:12px;border:1px solid #1d1d25}}
+  .hint{{color:#8b8b99;font-size:13px}}
+</style></head><body>
+<h1>RotaControl</h1>
+<div class="card">{img_tag}</div>
+<div class="url">{url}</div>
+<div class="hint">Abra a câmera do celular e aponte pro QR</div>
+</body></html>"""
+        return html
+    except Exception as e:
+        return f"Erro: {e}", 500
+
+
+# ===================== TELA / STREAM =====================
 @app.route("/api/tela.jpg")
 def api_tela():
     b = exigir_auth()
     if b: return b
-    if not TEM_MSS:
-        try:
-            jpeg = None
-            if ImageGrab is not None:
-                try: jpeg = _capturar_pil()
-                except Exception: pass
-            if jpeg is None: jpeg = _capturar_ps()
-        except Exception as e:
-            return jsonify(erro=f"erro captura: {e}"), 500
+    try:
+        monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
+    except Exception:
+        monitor = 0
+    # se está usando a captura contínua
+    if TEM_MSS:
+        CAPTURA["monitor_idx"] = monitor
+        CAPTURA["ultimo_pedido"] = time.time()
+        _garantir_captura()
+        for _ in range(40):
+            with CAPTURA["lock"]:
+                jpeg = CAPTURA["jpeg"]; err = CAPTURA["erro"]
+            if jpeg: break
+            if err and not CAPTURA["running"]: break
+            time.sleep(0.05)
+        if not jpeg:
+            try:
+                jpeg = _capturar_pil(monitor_idx=monitor)
+            except Exception: pass
+        if not jpeg:
+            return jsonify(erro=err or "sem captura"), 503
         return Response(jpeg, mimetype="image/jpeg",
                         headers={"Cache-Control": "no-store, max-age=0"})
-    CAPTURA["ultimo_pedido"] = time.time()
-    _garantir_captura()
-    for _ in range(40):
-        with CAPTURA["lock"]:
-            jpeg = CAPTURA["jpeg"]; err = CAPTURA["erro"]
-        if jpeg: break
-        if err and not CAPTURA["running"]: break
-        time.sleep(0.05)
-    if not jpeg:
-        try:
-            if ImageGrab is not None: jpeg = _capturar_pil()
-        except Exception: pass
-    if not jpeg:
-        return jsonify(erro=err or "sem captura"), 503
+    # fallback sem mss
+    try:
+        jpeg = None
+        if ImageGrab is not None:
+            try: jpeg = _capturar_pil()
+            except Exception: pass
+        if jpeg is None: jpeg = _capturar_ps()
+    except Exception as e:
+        return jsonify(erro=f"erro captura: {e}"), 500
     return Response(jpeg, mimetype="image/jpeg",
                     headers={"Cache-Control": "no-store, max-age=0"})
 
@@ -2764,7 +2717,6 @@ def _gerar_mjpeg():
     boundary = b"--frame\r\n"
     ultimo_enviado = None
     while True:
-        # mantém a captura viva
         CAPTURA["ultimo_pedido"] = time.time()
         with CAPTURA["lock"]:
             jpeg = CAPTURA["jpeg"]
@@ -2775,10 +2727,8 @@ def _gerar_mjpeg():
                        b"Content-Type: image/jpeg\r\n" +
                        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
                        jpeg + b"\r\n")
-            except GeneratorExit:
-                return
-            except Exception:
-                return
+            except GeneratorExit: return
+            except Exception: return
         time.sleep(1.0 / CAP_FPS)
 
 
@@ -2788,6 +2738,11 @@ def api_stream_mjpg():
     if b: return b
     if not TEM_MSS:
         return jsonify(erro="mss nao instalado"), 503
+    try:
+        monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
+    except Exception:
+        monitor = 0
+    CAPTURA["monitor_idx"] = monitor
     CAPTURA["ultimo_pedido"] = time.time()
     _garantir_captura()
     for _ in range(40):
@@ -2802,6 +2757,7 @@ def api_stream_mjpg():
     return resp
 
 
+# ===================== ARQUIVOS =====================
 def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
 
 
@@ -2813,7 +2769,8 @@ def api_arquivos():
     try:
         for n in sorted(os.listdir(p)):
             full = os.path.join(p, n)
-            if os.path.isfile(full): itens.append({"nome": n, "tam": os.path.getsize(full)})
+            if os.path.isfile(full):
+                itens.append({"nome": n, "tam": os.path.getsize(full)})
     except Exception: pass
     return jsonify(pasta=p, itens=itens[:200])
 
@@ -2853,6 +2810,7 @@ def api_apagar():
     except Exception as e: return jsonify(erro=str(e))
 
 
+# ===================== PROCESSOS / COMANDOS =====================
 @app.route("/api/processos")
 def api_processos():
     b = exigir_auth()
@@ -2931,6 +2889,7 @@ def api_comando_exec():
     return jsonify(saida=saida.strip() or "(sem saida)")
 
 
+# ===================== TIMERS / WOL / SISTEMA =====================
 @app.route("/api/timer", methods=["POST"])
 def api_timer():
     b = exigir_auth()
@@ -3029,6 +2988,250 @@ def api_sistema():
     return jsonify(erro="acao desconhecida")
 
 
+# ===================== TEXTO / CLIPBOARD / MÍDIA =====================
+def copiar_pc(texto):
+    try:
+        _clip_set(texto)
+        time.sleep(0.05)
+        lido = _clip_get()
+        if lido == texto:
+            return f"Copiado pro clipboard do PC ({len(texto)} caractere(s) — verificado)."
+        elif lido is not None:
+            return f"Copiado ({len(texto)} caractere(s)), mas a verificação leu: {repr(lido[:40])}"
+        else:
+            return f"Copiado ({len(texto)} caractere(s)) — não consegui verificar."
+    except Exception as e:
+        try:
+            texto_esc = texto.replace("'", "''")
+            script = f"Set-Clipboard -Value '{texto_esc}'"
+            cod = base64.b64encode(script.encode("utf-16-le")).decode()
+            r = executar(["powershell", "-NoProfile", "-EncodedCommand", cod],
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=10)
+            if r.returncode == 0:
+                return f"Copiado pro clipboard do PC via PowerShell ({len(texto)} caractere(s))."
+        except Exception: pass
+        return f"Falha ao copiar: {e}"
+
+
+def ler_pc():
+    t = _clip_get()
+    if t is not None: return t
+    try:
+        script = "Get-Clipboard -Raw"
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell", "-NoProfile", "-EncodedCommand", cod],
+                     capture_output=True, text=True, encoding="utf-8",
+                     errors="replace", timeout=6)
+        return (r.stdout or "").rstrip("\r\n")
+    except Exception:
+        return ""
+
+
+ESPECIAIS_SENDKEYS = {"+":"{+}","^":"{^}","%":"{%}","~":"{~}","(":"{(}",")":"{)}",
+    "{":"{{}","}":"{}}","[":"{[}","]":"{]}","\n":"{ENTER}","\r":""}
+
+
+def digitar_pc(texto):
+    for ch in texto:
+        try:
+            if ch in ("\n", "\r"): teclar_especial("enter")
+            elif ch == "\t": teclar_especial("tab")
+            else: teclar_char(ch)
+        except Exception: pass
+        time.sleep(0.015)
+
+
+VK_ESPECIAIS = {"enter":0x0D,"tab":0x09,"backspace":0x08,"esc":0x1B,"escape":0x1B,
+    "delete":0x2E,"del":0x2E,"space":0x20,"up":0x26,"down":0x28,"left":0x25,"right":0x27,
+    "home":0x24,"end":0x23,"pageup":0x21,"pagedown":0x22,"f5":0x74,"printscreen":0x2C}
+KEYEVENTF_KEYUP = 0x0002
+
+
+def _vk_down(vk): ctypes.windll.user32.keybd_event(vk, 0, 0, 0)
+def _vk_up(vk):   ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+def _teclar_vk(vk): _vk_down(vk); _vk_up(vk)
+
+
+def teclar_char(ch):
+    if not ch: return
+    u = ctypes.windll.user32
+    res = u.VkKeyScanW(ord(ch))
+    if res == -1:
+        try:
+            s = ESPECIAIS_SENDKEYS.get(ch, ch).replace("'", "''")
+            script = ("Add-Type -AssemblyName System.Windows.Forms; "
+                      f"[System.Windows.Forms.SendKeys]::SendWait('{s}')")
+            cod = base64.b64encode(script.encode("utf-16-le")).decode()
+            rodar_oculto(["powershell", "-NoProfile", "-EncodedCommand", cod])
+        except Exception: pass
+        return
+    vk = res & 0xFF; shift = (res >> 8) & 0xFF
+    if shift & 1: _vk_down(0x10)
+    if shift & 2: _vk_down(0x11)
+    if shift & 4: _vk_down(0x12)
+    _vk_down(vk); _vk_up(vk)
+    if shift & 4: _vk_up(0x12)
+    if shift & 2: _vk_up(0x11)
+    if shift & 1: _vk_up(0x10)
+
+
+def teclar_especial(nome):
+    nome = (nome or "").lower().strip()
+    if nome in VK_ESPECIAIS: _teclar_vk(VK_ESPECIAIS[nome]); return True
+    return False
+
+
+@app.route("/api/texto", methods=["POST"])
+def api_texto():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    texto = (d.get("texto") or "")[:8000]
+    modo = d.get("modo", "clipboard")
+    if not texto: return jsonify(erro="texto vazio")
+    if modo == "digitar":
+        threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
+        return jsonify(saida=f"Digitando {len(texto)} caractere(s) no PC…")
+    try:
+        return jsonify(saida=copiar_pc(texto))
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/digitar_tecla", methods=["POST"])
+def api_digitar_tecla():
+    b = exigir_auth()
+    if b: return b
+    tecla = (request.get_json(force=True) or {}).get("tecla")
+    if tecla is None or tecla == "": return jsonify(erro="tecla vazia")
+    if isinstance(tecla, str) and len(tecla) > 1 and tecla.lower() in VK_ESPECIAIS:
+        if teclar_especial(tecla): return jsonify(ok=True)
+    if isinstance(tecla, str):
+        for ch in tecla[:64]:
+            if ch in ("\n", "\r"): teclar_especial("enter")
+            else: teclar_char(ch)
+        return jsonify(ok=True)
+    return jsonify(erro="tecla invalida")
+
+
+@app.route("/api/clipboard")
+def api_clipboard():
+    b = exigir_auth()
+    if b: return b
+    try: return jsonify(texto=ler_pc())
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/clip_hist")
+def api_clip_hist():
+    b = exigir_auth()
+    if b: return b
+    try:
+        t = _clip_get()
+        if t and t.strip() and t != CLIP_ULTIMO["txt"]:
+            CLIP_ULTIMO["txt"] = t
+            if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
+                CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
+    except Exception: pass
+    return jsonify(itens=list(CLIP_HIST))
+
+
+@app.route("/api/clip_hist_limpar", methods=["POST"])
+def api_clip_hist_limpar():
+    b = exigir_auth()
+    if b: return b
+    CLIP_HIST.clear()
+    return jsonify(ok=True)
+
+
+@app.route("/api/midia", methods=["POST"])
+def api_midia():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    if acao == "mute": _vtecla_mute(); return jsonify(ok=True)
+    if acao == "vol_up": _vtecla_up(); return jsonify(ok=True)
+    if acao == "vol_down": _vtecla_down(); return jsonify(ok=True)
+    if acao not in VK_MEDIA: return jsonify(erro="acao desconhecida")
+    vk = VK_MEDIA[acao]
+    u = ctypes.windll.user32
+    u.keybd_event(vk, 0, 0, 0); time.sleep(0.05); u.keybd_event(vk, 0, 2, 0)
+    return jsonify(ok=True)
+
+
+@app.route("/api/volume_mixer")
+def api_volume_mixer():
+    b = exigir_auth()
+    if b: return b
+    if not PYCAW_OK:
+        return jsonify(erro="pycaw nao instalado no PC")
+    try:
+        return jsonify(itens=listar_sessoes_audio())
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/volume_mixer_set", methods=["POST"])
+def api_volume_mixer_set():
+    b = exigir_auth()
+    if b: return b
+    if not PYCAW_OK:
+        return jsonify(erro="pycaw nao instalado no PC")
+    d = request.get_json(force=True) or {}
+    chave = (d.get("chave") or "").strip()
+    volume = d.get("volume", None)
+    mudo = d.get("mudo", None)
+    if not chave: return jsonify(erro="chave vazia")
+    try:
+        setar_sessao_audio(chave, volume=volume, mudo=mudo)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/atalhos")
+def api_atalhos():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(atalhos=ESTADO.get("atalhos", []))
+
+
+@app.route("/api/atalho_add", methods=["POST"])
+def api_atalho_add():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True)
+    combo = (d.get("combo") or "").lower()
+    partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
+    if not partes: return jsonify(erro="combo invalido")
+    ESTADO.setdefault("atalhos", []).append({
+        "nome": (d.get("nome") or "?")[:40], "combo": partes, "texto": "+".join(partes),
+    })
+    salvar_config(); return jsonify(ok=True)
+
+
+@app.route("/api/atalho_remover", methods=["POST"])
+def api_atalho_remover():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    atalhos = ESTADO.get("atalhos", [])
+    if 0 <= idx < len(atalhos): atalhos.pop(idx); salvar_config()
+    return jsonify(ok=True)
+
+
+@app.route("/api/atalho_exec", methods=["POST"])
+def api_atalho_exec():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    atalhos = ESTADO.get("atalhos", [])
+    if idx < 0 or idx >= len(atalhos): return jsonify(erro="atalho invalido")
+    ok = enviar_combo(atalhos[idx]["combo"])
+    return jsonify(ok=ok, saida=("OK: " + atalhos[idx]["nome"]) if ok else "combo invalido")
+
+
 @app.route("/api/fechar", methods=["POST"])
 def api_fechar():
     b = exigir_auth()
@@ -3074,6 +3277,8 @@ if __name__ == "__main__":
         log_seguro("Feito para Windows."); sys.exit(1)
     esconder_console()
     iniciar_loop_clipboard()
+    # aplica monitor escolhido
+    CAPTURA["monitor_idx"] = int(ESTADO.get("monitor_escolhido", 0))
     if ESTADO.get("modo") == "wan":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
     log_seguro("RotaControl:", "http://127.0.0.1:5000")
