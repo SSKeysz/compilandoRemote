@@ -1,11 +1,11 @@
 """
-RotaControl v2.2 (só Groq)
+RotaControl v2.4
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests sensorwatch
 Compilar:
-    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk piloto.py
+    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk --collect-all sensorwatch --add-data "hwinfo64.exe;." --add-data "HWiNFO64.INI;." painel.py
 """
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv, asyncio
-import logging, tempfile, threading, subprocess, webbrowser, urllib.request
+import logging, tempfile, threading, subprocess, webbrowser, urllib.request, shutil
 from collections import deque
 
 try: import winreg
@@ -29,22 +29,19 @@ try:
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     PYCAW_OK = True
 except Exception:
-    comtypes = None
-    PYCAW_OK = False
+    comtypes = None; PYCAW_OK = False
 
 try:
     import psutil
     PSUTIL_OK = True
 except Exception:
-    psutil = None
-    PSUTIL_OK = False
+    psutil = None; PSUTIL_OK = False
 
 try:
     import qrcode
     QRCODE_OK = True
 except Exception:
-    qrcode = None
-    QRCODE_OK = False
+    qrcode = None; QRCODE_OK = False
 
 try:
     from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as _SMTC_Mgr
@@ -52,21 +49,16 @@ try:
         from winsdk.windows.storage.streams import DataReader as _DataReader
         SMTC_STREAMS_OK = True
     except Exception:
-        _DataReader = None
-        SMTC_STREAMS_OK = False
+        _DataReader = None; SMTC_STREAMS_OK = False
     SMTC_OK = True
 except Exception:
-    _SMTC_Mgr = None
-    _DataReader = None
-    SMTC_OK = False
-    SMTC_STREAMS_OK = False
+    _SMTC_Mgr = None; _DataReader = None; SMTC_OK = False; SMTC_STREAMS_OK = False
 
 try:
     import requests as _req
     REQ_OK = True
 except Exception:
-    _req = None
-    REQ_OK = False
+    _req = None; REQ_OK = False
 
 
 # =====================================================================
@@ -84,6 +76,7 @@ QR_LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAABOYAAATmCAYAAACF/K4qAAAQAElEQVR4Aez9y44sS
 
 
 ABRIR_NAVEGADOR_NO_PC = False
+ABRIR_HWINFO_NO_BOOT = True
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
@@ -136,9 +129,72 @@ def pasta_base():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def pasta_bundle():
+    """Onde os arquivos embutidos estão: _MEIPASS se compilado, senão a pasta do script."""
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def fmt_gib(b): return b / (1024 ** 3)
 
 
+# ===================== HWiNFO64 (embutido) =====================
+_HWINFO_PROC = {"proc": None, "pasta": None}
+
+
+def iniciar_hwinfo():
+    """Extrai o hwinfo64.exe embutido e roda em background."""
+    if not ABRIR_HWINFO_NO_BOOT: return False
+    try:
+        # Já está rodando?
+        if PSUTIL_OK:
+            for p in psutil.process_iter(["name"]):
+                try:
+                    nome = (p.info["name"] or "").lower()
+                    if "hwinfo" in nome:
+                        log_seguro("HWiNFO já rodando.")
+                        return True
+                except Exception: pass
+
+        exe_src = os.path.join(pasta_bundle(), "hwinfo64.exe")
+        ini_src = os.path.join(pasta_bundle(), "HWiNFO64.INI")
+        if not os.path.exists(exe_src):
+            log_seguro("hwinfo64.exe não encontrado no bundle.")
+            return False
+
+        # Pasta temp pra rodar (não pode rodar direto do _MEIPASS que é read-only em alguns casos)
+        pasta = os.path.join(tempfile.gettempdir(), "RotaControl_HWiNFO")
+        os.makedirs(pasta, exist_ok=True)
+        _HWINFO_PROC["pasta"] = pasta
+
+        exe_dest = os.path.join(pasta, "hwinfo64.exe")
+        ini_dest = os.path.join(pasta, "HWiNFO64.INI")
+
+        # Copia se ainda não tem
+        try:
+            if not os.path.exists(exe_dest) or os.path.getsize(exe_dest) != os.path.getsize(exe_src):
+                shutil.copy2(exe_src, exe_dest)
+            if os.path.exists(ini_src) and not os.path.exists(ini_dest):
+                shutil.copy2(ini_src, ini_dest)
+        except Exception as e:
+            log_seguro("erro copiando hwinfo:", e)
+
+        # Roda
+        p = subprocess.Popen([exe_dest], cwd=pasta,
+                             creationflags=CREATE_NO_WINDOW,
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        _HWINFO_PROC["proc"] = p
+        log_seguro("HWiNFO iniciado, PID", p.pid)
+        return True
+    except Exception as e:
+        log_seguro("erro ao iniciar HWiNFO:", e)
+        return False
+
+
+# ===================== CONFIG =====================
 ARQ_CONFIG = os.path.join(pasta_base(), "rotacontrol_config.json")
 
 ACOES_PADRAO = [
@@ -168,11 +224,14 @@ CONFIG_PADRAO = {
     "tutorial_visto": False,
     "ia_model_groq": "openai/gpt-oss-120b",
     "ia_system": (
-        "Você é o assistente do RotaControl, um controle remoto de PC. "
-        "Você PODE executar ações no PC usando as funções disponíveis: "
-        "abrir_youtube, abrir_site, abrir_programa, criar_atalho, desligar_pc, tirar_print, status_pc. "
-        "Se o usuário pedir para abrir algo, criar algo ou executar algo, CHAME a função correspondente. "
-        "Se for só uma pergunta, responda normalmente em português do Brasil, curto e direto."
+        "Você é o RotaControl, o assistente pessoal do usuário. Fale em português do Brasil, "
+        "de forma natural, simpática e direta — como um amigo prestativo. NUNCA responda com "
+        "nomes técnicos de funções. Quando executar uma ação, responda como se você mesmo "
+        "tivesse feito: 'Ok, abrindo o YouTube pra você! 🎬'. "
+        "Você PODE executar ações no PC: abrir_youtube, abrir_site, abrir_programa, criar_atalho, "
+        "desligar_pc, tirar_print, status_pc, get_weather. "
+        "Use get_weather quando o usuário perguntar temperatura/tempo de alguma cidade. "
+        "Se for só uma pergunta, responda normalmente com simpatia e clareza."
     ),
 }
 
@@ -206,10 +265,8 @@ def pasta_arquivos():
     if "%USERPROFILE%" in p:
         userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
         p = p.replace("%USERPROFILE%", userprofile)
-    p = os.path.expandvars(p)
-    p = os.path.expanduser(p)
-    if not p or not os.path.isdir(p):
-        p = os.path.expanduser("~")
+    p = os.path.expandvars(p); p = os.path.expanduser(p)
+    if not p or not os.path.isdir(p): p = os.path.expanduser("~")
     return p
 
 
@@ -219,8 +276,6 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
 
 
 def autenticado(): return not ESTADO.get("pin") or session.get("ok") is True
-
-
 def exigir_auth():
     if not autenticado(): return jsonify(erro="nao autenticado"), 401
     return None
@@ -245,30 +300,121 @@ def _com_init():
     except Exception: pass
 
 
-# ===================== CPU CACHE =====
+# ===================== CPU =====================
 _CPU_CACHE = {"v": 0.0, "lock": threading.Lock()}
+_CPU_MODEL_CACHE = {"v": None}
 
 
 def _loop_cpu():
     while True:
         try:
             v = psutil.cpu_percent(interval=1.0)
-            with _CPU_CACHE["lock"]:
-                _CPU_CACHE["v"] = v
+            with _CPU_CACHE["lock"]: _CPU_CACHE["v"] = v
+        except Exception: time.sleep(1)
+
+
+def _ler_cpu_model():
+    if _CPU_MODEL_CACHE["v"]: return _CPU_MODEL_CACHE["v"]
+    try:
+        script = "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                     capture_output=True, text=True, encoding="utf-8",
+                     errors="replace", timeout=6)
+        out = (r.stdout or "").strip()
+        if out:
+            _CPU_MODEL_CACHE["v"] = out; return out
+    except Exception: pass
+    try:
+        import platform
+        v = platform.processor()
+        if v: _CPU_MODEL_CACHE["v"] = v; return v
+    except Exception: pass
+    return None
+
+
+# ===================== REDE =====================
+_NET_CACHE = {"t": 0, "sent": 0, "recv": 0, "down_mbps": 0.0, "up_mbps": 0.0, "lock": threading.Lock()}
+
+
+def _loop_net():
+    ant_t = time.time()
+    try:
+        io = psutil.net_io_counters()
+        ant_sent, ant_recv = io.bytes_sent, io.bytes_recv
+    except Exception:
+        ant_sent = ant_recv = 0
+    while True:
+        try:
+            time.sleep(1)
+            io = psutil.net_io_counters()
+            agora = time.time()
+            dt = agora - ant_t
+            if dt <= 0: dt = 1
+            down = (io.bytes_recv - ant_recv) / dt
+            up = (io.bytes_sent - ant_sent) / dt
+            with _NET_CACHE["lock"]:
+                _NET_CACHE["t"] = agora
+                _NET_CACHE["sent"] = io.bytes_sent
+                _NET_CACHE["recv"] = io.bytes_recv
+                _NET_CACHE["down_mbps"] = round(down * 8 / 1_000_000, 2)
+                _NET_CACHE["up_mbps"] = round(up * 8 / 1_000_000, 2)
+            ant_t = agora
+            ant_sent, ant_recv = io.bytes_sent, io.bytes_recv
         except Exception:
             time.sleep(1)
 
 
-# ===================== FUNÇÕES QUE A IA PODE CHAMAR =====================
+# ===================== PING =====================
+_PING_CACHE = {"t": 0, "v": None}
+
+def _ping_google():
+    now = time.time()
+    if now - _PING_CACHE["t"] < 15 and _PING_CACHE["v"] is not None:
+        return _PING_CACHE["v"]
+    _PING_CACHE["t"] = now
+    try:
+        r = executar(["ping","-n","1","-w","1500","8.8.8.8"],
+                     capture_output=True, text=True, timeout=4)
+        out = (r.stdout or "") + (r.stderr or "")
+        m = re.search(r"[Tt]ime[=<](\d+)ms|[Tt]empo[=<](\d+)ms", out)
+        if m:
+            v = int(m.group(1) or m.group(2))
+            _PING_CACHE["v"] = v
+            return v
+    except Exception: pass
+    return _PING_CACHE["v"]
+
+
+# ===================== TOP PROCESSOS =====================
+def _top_processos(n=5):
+    if not PSUTIL_OK: return []
+    procs = []
+    for p in psutil.process_iter(["pid","name","memory_info","cpu_percent"]):
+        try:
+            info = p.info
+            mi = info.get("memory_info")
+            mem_mb = (mi.rss / (1024**2)) if mi else 0
+            procs.append({
+                "pid": info["pid"],
+                "nome": info["name"] or "?",
+                "mem_mb": round(mem_mb, 1),
+                "cpu": round(info.get("cpu_percent") or 0, 1),
+            })
+        except Exception: continue
+    procs.sort(key=lambda x: x["mem_mb"], reverse=True)
+    return procs[:n]
+
+
+# ===================== FUNÇÕES DA IA =====================
 def _criar_atalho_interno(nome, combo):
     partes = [p.strip() for p in re.split(r"[+\s]+", combo) if p.strip()]
-    if not partes:
-        return "Combo inválido"
+    if not partes: return "❌ Combo inválido."
     ESTADO.setdefault("atalhos", []).append({
         "nome": nome[:40], "combo": partes, "texto": "+".join(partes),
     })
     salvar_config()
-    return f"Atalho '{nome}' criado."
+    return f"✅ Atalho '{nome}' criado! Aparece na aba Ações → Atalhos."
 
 
 def _executar_print_ia():
@@ -277,52 +423,71 @@ def _executar_print_ia():
     nome = time.strftime("print_ia_%Y-%m-%d_%H-%M-%S.png")
     with open(os.path.join(pasta_arquivos(), nome), "wb") as f:
         f.write(png)
-    return f"Print salvo: {nome}"
+    return f"📸 Print tirado! Salvei como `{nome}`."
 
 
 def _status_pc_ia():
-    with _CPU_CACHE["lock"]:
-        cpu = _CPU_CACHE["v"]
+    with _CPU_CACHE["lock"]: cpu = _CPU_CACHE["v"]
     ram = psutil.virtual_memory()
     discos = _listar_discos()
-    linhas = [f"CPU: {cpu:.0f}%", f"RAM: {ram.percent:.0f}%"]
-    for d in discos:
-        linhas.append(f"{d['letra']}: {d['percent']}% usado")
-    return " | ".join(linhas)
+    with _NET_CACHE["lock"]:
+        down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
+    linhas = [f"CPU em {cpu:.0f}%", f"RAM em {ram.percent:.0f}%",
+              f"Rede: ↓{down} Mbps ↑{up} Mbps"]
+    for d in discos[:3]:
+        linhas.append(f"{d['letra']} com {d['percent']}% usado")
+    return "🖥️ " + " • ".join(linhas)
+
+
+def _weather(cidade):
+    if not REQ_OK: return "❌ requests não instalado."
+    try:
+        from urllib.parse import quote
+        url = f"https://wttr.in/{quote(cidade)}?format=j1&lang=pt"
+        r = _req.get(url, timeout=10)
+        if r.status_code != 200:
+            return f"❌ Não consegui consultar o tempo de {cidade}."
+        d = r.json()
+        cc = d["current_condition"][0]
+        temp = cc["temp_C"]
+        sens = cc["FeelsLikeC"]
+        desc = cc["lang_pt"][0]["value"] if cc.get("lang_pt") else cc["weatherDesc"][0]["value"]
+        umid = cc["humidity"]
+        vento = cc["windspeedKmph"]
+        return f"🌡️ Em {cidade}: {temp}°C (sensação {sens}°C), {desc.lower()}. Umidade {umid}%, vento {vento} km/h."
+    except Exception as e:
+        return f"❌ Erro ao consultar tempo: {e}"
 
 
 FUNCOES_IA = {
     "abrir_youtube": {
         "descricao": "Abre o YouTube no navegador do PC",
         "parametros": {},
-        "executar": lambda: webbrowser.open_new_tab("https://youtube.com") or "YouTube aberto.",
+        "executar": lambda: (webbrowser.open_new_tab("https://youtube.com"),
+                             "Ok, abrindo o YouTube pra você! 🎬")[1],
     },
     "abrir_site": {
         "descricao": "Abre um site qualquer no navegador do PC",
-        "parametros": {
-            "url": {"type": "string", "description": "URL completa (ex: https://google.com)"}
-        },
-        "executar": lambda url: webbrowser.open_new_tab(url) or f"Aberto: {url}",
+        "parametros": {"url": {"type": "string", "description": "URL completa"}},
+        "executar": lambda url: (webbrowser.open_new_tab(url),
+                                 f"Ok, abrindo {url} no navegador! 🌐")[1],
     },
     "abrir_programa": {
         "descricao": "Abre um programa no PC (notepad, calc, explorer, etc.)",
-        "parametros": {
-            "nome": {"type": "string", "description": "Nome do executável (ex: notepad.exe)"}
-        },
-        "executar": lambda nome: rodar_oculto(["cmd", "/c", "start", "", nome]) or f"Abrindo {nome}...",
+        "parametros": {"nome": {"type": "string", "description": "Nome do executável"}},
+        "executar": lambda nome: (rodar_oculto(["cmd","/c","start","",nome]),
+                                  f"Beleza, abrindo {nome}... 🚀")[1],
     },
     "criar_atalho": {
         "descricao": "Cria um atalho salvo no RotaControl",
-        "parametros": {
-            "nome": {"type": "string", "description": "Nome do botão"},
-            "combo": {"type": "string", "description": "Teclas (ex: ctrl+s)"}
-        },
+        "parametros": {"nome": {"type": "string"}, "combo": {"type": "string"}},
         "executar": lambda nome, combo: _criar_atalho_interno(nome, combo),
     },
     "desligar_pc": {
         "descricao": "Desliga o PC em 3 segundos",
         "parametros": {},
-        "executar": lambda: (_shutdown(restart=False, delay=3), "PC desligando em 3s.")[1],
+        "executar": lambda: (_shutdown(restart=False, delay=3),
+                             "Ok, desligando o PC em 3 segundos. Até logo! 👋")[1],
     },
     "tirar_print": {
         "descricao": "Tira um print da tela do PC e salva",
@@ -330,13 +495,19 @@ FUNCOES_IA = {
         "executar": lambda: _executar_print_ia(),
     },
     "status_pc": {
-        "descricao": "Retorna o status atual do PC (CPU, RAM, discos)",
+        "descricao": "Retorna status do PC (CPU, RAM, rede, discos)",
         "parametros": {},
         "executar": lambda: _status_pc_ia(),
+    },
+    "get_weather": {
+        "descricao": "Consulta a temperatura e condição do tempo em uma cidade",
+        "parametros": {"cidade": {"type": "string", "description": "Nome da cidade"}},
+        "executar": lambda cidade: _weather(cidade),
     },
 }
 
 
+# ===================== AUTOSTART =====================
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_NOME = "RotaControl"
 
@@ -368,6 +539,7 @@ def set_autostart(ativo):
         log_seguro("erro autostart:", e); return False
 
 
+# ===================== TÚNEL =====================
 TUNEL = {"proc": None, "url": None, "thread": None, "ativo": False}
 CF_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
@@ -417,8 +589,7 @@ def parar_tunel():
 
 def matar_processo_atual():
     try:
-        ctypes.windll.kernel32.TerminateProcess(
-            ctypes.windll.kernel32.GetCurrentProcess(), 0)
+        ctypes.windll.kernel32.TerminateProcess(ctypes.windll.kernel32.GetCurrentProcess(), 0)
     except Exception: pass
     os._exit(0)
 
@@ -612,8 +783,7 @@ def _clip_set(texto):
         h = k.GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, len(buf))
         if not h: raise Exception("GlobalAlloc falhou")
         p = k.GlobalLock(h)
-        if not p:
-            k.GlobalFree(h); raise Exception("GlobalLock falhou")
+        if not p: k.GlobalFree(h); raise Exception("GlobalLock falhou")
         try: ctypes.memmove(p, buf, len(buf))
         finally: k.GlobalUnlock(h)
         if not u.SetClipboardData(CF_UNICODETEXT, h):
@@ -627,8 +797,7 @@ def _clip_set(texto):
 def _clip_set_imagem_png(png_bytes):
     from PIL import Image
     img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    out = io.BytesIO()
-    img.save(out, "BMP")
+    out = io.BytesIO(); img.save(out, "BMP")
     data = out.getvalue()[14:]
     u = _user32; k = _kernel32
     ok = False
@@ -641,8 +810,7 @@ def _clip_set_imagem_png(png_bytes):
         h = k.GlobalAlloc(GMEM_MOVEABLE, len(data))
         if not h: raise Exception("GlobalAlloc falhou")
         p = k.GlobalLock(h)
-        if not p:
-            k.GlobalFree(h); raise Exception("GlobalLock falhou")
+        if not p: k.GlobalFree(h); raise Exception("GlobalLock falhou")
         try: ctypes.memmove(p, data, len(data))
         finally: k.GlobalUnlock(h)
         if not u.SetClipboardData(CF_DIB, h):
@@ -673,7 +841,7 @@ def iniciar_loop_clipboard():
     threading.Thread(target=_loop_clipboard, daemon=True).start()
 
 
-# ===================== VOLUME / MÍDIA =====================
+# ===================== VOLUME =====================
 VK_VOL_UP = 0xAF; VK_VOL_DOWN = 0xAE; VK_VOL_MUTE = 0xAD
 def _vtecla_up(): _teclar_vk(VK_VOL_UP)
 def _vtecla_down(): _teclar_vk(VK_VOL_DOWN)
@@ -743,7 +911,7 @@ def travar_tecla(nome):
         _agendar_destrava_auto(nome); return True
 
 
-# ===================== VOLUME MIXER =====================
+# ===================== MIXER =====================
 def listar_sessoes_audio():
     if not PYCAW_OK: raise Exception("pycaw nao instalado")
     _com_init()
@@ -759,8 +927,7 @@ def listar_sessoes_audio():
             if chave in resultado: continue
             vol = s.SimpleAudioVolume
             v = float(vol.GetMasterVolume()); m = bool(vol.GetMute())
-            resultado[chave] = {"chave": chave, "nome": nome,
-                                "volume": int(round(v * 100)), "mudo": m}
+            resultado[chave] = {"chave": chave, "nome": nome, "volume": int(round(v * 100)), "mudo": m}
         except Exception: continue
     itens = list(resultado.values()); itens.sort(key=lambda x: x["nome"].lower())
     return itens
@@ -779,8 +946,7 @@ def setar_sessao_audio(chave_alvo, volume=None, mudo=None):
             if not nome: continue
             if ("p:" + nome.lower()) != chave_alvo: continue
             vol = s.SimpleAudioVolume
-            if volume is not None:
-                vol.SetMasterVolume(max(0.0, min(1.0, float(volume) / 100.0)), None)
+            if volume is not None: vol.SetMasterVolume(max(0.0, min(1.0, float(volume) / 100.0)), None)
             if mudo is not None: vol.SetMute(bool(mudo), None)
             achou = True
         except Exception: continue
@@ -796,8 +962,7 @@ async def _smtc_thumb_b64(thumb_ref):
         if size <= 0 or size > 3_000_000: return None
         reader = _DataReader(stream)
         await reader.load_async(size)
-        buf = bytearray(size)
-        reader.read_bytes(buf)
+        buf = bytearray(size); reader.read_bytes(buf)
         return base64.b64encode(bytes(buf)).decode()
     except Exception: return None
 
@@ -820,14 +985,9 @@ async def _smtc_info():
     try: capa = await _smtc_thumb_b64(info.thumbnail)
     except Exception: capa = None
     return {
-        "titulo": info.title or "",
-        "artista": info.artist or "",
-        "album": info.album_title or "",
-        "app": sess.source_app_user_model_id or "",
-        "status": status,
-        "shuffle": shuffle,
-        "repeat": repeat,
-        "capa_b64": capa,
+        "titulo": info.title or "", "artista": info.artist or "",
+        "album": info.album_title or "", "app": sess.source_app_user_model_id or "",
+        "status": status, "shuffle": shuffle, "repeat": repeat, "capa_b64": capa,
     }
 
 
@@ -854,11 +1014,9 @@ def smtc_acao(acao):
 
 
 # ===================== CAPTURA =====================
-CAPTURA = {
-    "running": False, "thread": None, "jpeg": None,
-    "lock": threading.Lock(), "ultimo_pedido": 0.0,
-    "erro": None, "monitor_idx": 0,
-}
+CAPTURA = {"running": False, "thread": None, "jpeg": None,
+           "lock": threading.Lock(), "ultimo_pedido": 0.0,
+           "erro": None, "monitor_idx": 0}
 CAP_Q = 28; CAP_W = 1100; CAP_FPS = 15; CAP_IDLE = 60
 
 
@@ -875,10 +1033,8 @@ def _loop_captura():
                     if idx < 0 or idx >= len(sct.monitors): idx = 0
                     shot = sct.grab(sct.monitors[idx])
                     pil = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-                    if pil.width > CAP_W:
-                        pil = pil.resize((CAP_W, round(pil.height * CAP_W / pil.width)))
-                    buf = io.BytesIO()
-                    pil.save(buf, "JPEG", quality=CAP_Q, optimize=False)
+                    if pil.width > CAP_W: pil = pil.resize((CAP_W, round(pil.height * CAP_W / pil.width)))
+                    buf = io.BytesIO(); pil.save(buf, "JPEG", quality=CAP_Q, optimize=False)
                     with CAPTURA["lock"]:
                         CAPTURA["jpeg"] = buf.getvalue(); CAPTURA["erro"] = None
                 except Exception as e:
@@ -1005,8 +1161,8 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .lockbox input{text-align:center;font-size:20px;letter-spacing:8px;margin:12px 0}
 .toast{position:fixed;left:50%;bottom:78px;transform:translateX(-50%);background:#23232f;color:#fff;padding:10px 16px;border-radius:22px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:40;max-width:90%}
 .toast.on{opacity:1}
-#txtArquivos,#listaProcs,#listaClip,#gridComandos,#gridWol,#listaMixer{display:grid;gap:6px}
-#txtArquivos,#listaProcs,#listaClip,#listaMixer{max-height:420px;overflow:auto}
+#txtArquivos,#listaProcs,#listaClip,#gridComandos,#gridWol,#listaMixer,#listaTopProcs{display:grid;gap:6px}
+#txtArquivos,#listaProcs,#listaClip,#listaMixer,#listaTopProcs{max-height:420px;overflow:auto}
 .arq{display:flex;justify-content:space-between;align-items:center;background:#0d0d14;padding:11px 12px;border-radius:8px;font-size:13px;gap:6px}
 .arq .nome{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;display:flex;align-items:center;gap:6px}
 .arq .tam{color:var(--mut);font-size:11px;flex:none}
@@ -1035,7 +1191,7 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .statBox{background:#0d0d14;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px;min-width:0}
 .statLbl{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
 .statVal{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.statVal.peq{font-size:13px}
+.statVal.peq{font-size:12px;font-weight:600;color:var(--mut)}
 .statBar{height:6px;background:#1f1f2a;border-radius:3px;overflow:hidden;margin-top:4px}
 .statBarIn{height:100%;background:linear-gradient(90deg,var(--acc2),var(--acc));transition:width .3s;border-radius:3px}
 .statBarIn.warn{background:linear-gradient(90deg,#f0a020,#e06010)}
@@ -1045,8 +1201,8 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .teclasPers button.travada{background:var(--green);color:#04120b;box-shadow:0 0 0 2px rgba(35,209,96,.35),0 0 14px rgba(35,209,96,.45)}
 .emerg{background:var(--red);color:#fff;font-weight:700;padding:14px;font-size:15px;margin-top:10px}
 .vozWrap{position:relative}
-.vozWrap textarea{padding-right:56px}
-.vozBtn{position:absolute;right:8px;top:8px;width:40px;height:40px;border-radius:50%;background:var(--acc);color:#fff;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(124,0,240,.4)}
+.vozWrap textarea,.vozWrap input{padding-right:56px}
+.vozBtn{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:40px;height:40px;border-radius:50%;background:var(--acc);color:#fff;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(124,0,240,.4)}
 .vozBtn.on{background:var(--red);animation:pu 1s infinite}
 .musicaBox{background:#0d0d14;border-radius:10px;padding:12px;display:flex;gap:12px;align-items:center;overflow:hidden}
 .musicaCapa{width:64px;height:64px;border-radius:10px;background:#1f1f2a;flex:0 0 64px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#4a4a5a;overflow:hidden}
@@ -1076,19 +1232,14 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .tutorialBox li b{color:var(--fg)}
 body[data-modo="iniciante"] .avancado{display:none!important}
 @media(max-width:500px){
-  main{padding:0 8px 12px}
-  .panel{padding:12px}
-  .btn{padding:11px 8px;font-size:13px}
+  main{padding:0 8px 12px}.panel{padding:12px}.btn{padding:11px 8px;font-size:13px}
   .grid.g3,.grid.g4{grid-template-columns:1fr 1fr}
   nav button{min-width:50px;font-size:9px;padding:6px 2px}
-  header{padding:6px 10px 4px}
-  header .logo{height:22px}
-  header .logoFb{font-size:14px}
+  header{padding:6px 10px 4px}header .logo{height:22px}header .logoFb{font-size:14px}
   .modoToggle button{padding:5px 8px;font-size:10px}
   h1,h2{font-size:12px}
   .musicaCapa{width:54px;height:54px;flex:0 0 54px;font-size:18px}
-  .musicaTit{font-size:13px}
-  .statVal{font-size:16px}
+  .musicaTit{font-size:13px}.statVal{font-size:16px}
   .arq{flex-wrap:wrap;row-gap:6px}
   .arq .nome{flex:1 0 100%;font-size:12px;white-space:normal;word-break:break-all;overflow:visible;text-overflow:clip}
   .arq .tam{flex:0 0 auto;margin-right:auto}
@@ -1110,7 +1261,6 @@ body[data-modo="iniciante"] .avancado{display:none!important}
 </header>
 
 <main>
-
   <section id="p-acoes" class="page">
     <div class="panel">
       <h2>Ações rápidas</h2>
@@ -1284,7 +1434,6 @@ body[data-modo="iniciante"] .avancado{display:none!important}
       <button class="btn acc block" style="margin-top:8px" onclick="fazerUpload()">Enviar arquivo(s)</button>
       <div class="hint">Os arquivos vão pra pasta padrão (configurável em Sistema).</div>
     </div>
-
     <div class="panel avancado">
       <h2>Navegador de arquivos</h2>
       <div class="breadcrumb" id="breadcrumb"></div>
@@ -1301,9 +1450,10 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-pc" class="page hid">
     <div class="panel">
       <h2>Status do PC</h2>
-      <div class="statGrid" id="statGrid">
+      <div class="statGrid">
         <div class="statBox">
           <span class="statLbl">CPU</span>
+          <span class="statVal peq" id="stCpuModel">—</span>
           <span class="statVal" id="stCpu">—</span>
           <div class="statBar"><div class="statBarIn" id="stCpuBar" style="width:0%"></div></div>
         </div>
@@ -1318,6 +1468,14 @@ body[data-modo="iniciante"] .avancado{display:none!important}
           <div class="statBar"><div class="statBarIn" id="stGpuBar" style="width:0%"></div></div>
         </div>
         <div class="statBox">
+          <span class="statLbl">Rede</span>
+          <span class="statVal peq" id="stRede">—</span>
+        </div>
+        <div class="statBox">
+          <span class="statLbl">Ping</span>
+          <span class="statVal" id="stPing">—</span>
+        </div>
+        <div class="statBox">
           <span class="statLbl">Temperatura</span>
           <span class="statVal" id="stTemp">—</span>
         </div>
@@ -1328,6 +1486,11 @@ body[data-modo="iniciante"] .avancado{display:none!important}
       </div>
       <h2 style="margin-top:14px">Discos</h2>
       <div class="discosGrid" id="listaDiscos"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Top 5 (RAM)</h2>
+      <div id="listaTopProcs"></div>
     </div>
 
     <div class="panel avancado">
@@ -1365,12 +1528,14 @@ body[data-modo="iniciante"] .avancado{display:none!important}
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações como <b>"abre o YouTube"</b> ou <b>"tira um print"</b>.</div>
+      <div class="hint" style="margin-bottom:8px">⚡ Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"tira um print"</b>, <b>"qual a temperatura em Americana?"</b></div>
       <div class="iaChat" id="iaChat"></div>
-      <div class="termInput" style="margin-top:10px">
-        <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off" onkeydown="if(event.key==='Enter')iaEnviar()">
-        <button class="btn acc" style="width:auto;padding:12px 16px" onclick="iaEnviar()">➤</button>
+      <div class="vozWrap" style="margin-top:10px">
+        <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off"
+               onkeydown="if(event.key==='Enter')iaEnviar()">
+        <button class="vozBtn" id="btnVozIA" onclick="toggleVozIA()" title="Falar">🎤</button>
       </div>
+      <button class="btn acc block" style="margin-top:8px" onclick="iaEnviar()">Enviar</button>
       <div class="hint" id="iaStatus">Chave embutida no programa.</div>
       <button class="btn ghost block mini" style="margin-top:8px" onclick="document.getElementById('iaChat').innerHTML=''">Limpar conversa</button>
     </div>
@@ -1434,7 +1599,7 @@ body[data-modo="iniciante"] .avancado{display:none!important}
 
     <div class="panel">
       <h2>Aplicativo (PWA)</h2>
-      <div class="hint">Instale o RotaControl como app no celular — fica com ícone próprio e abre em tela cheia.</div>
+      <div class="hint">Instale o RotaControl como app no celular.</div>
       <button class="btn acc block hid" id="btnInstalarPWA" onclick="instalarPWA()" style="margin-top:10px">📱 Instalar app</button>
       <div class="hint" id="pwaStatus">Disponível quando o navegador permitir (HTTPS ou localhost).</div>
     </div>
@@ -1530,103 +1695,31 @@ body[data-modo="iniciante"] .avancado{display:none!important}
 
 <script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
-const ORIGEM = window.location.origin;
+const ORIGEM=window.location.origin;
 function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove("on"),1400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 
-if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('/sw.js').catch(()=>{});
-}
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 
-// ============ MODO UI ============
-let modoUI = "iniciante";
-function aplicarModoUI(m){
-  modoUI = m;
-  document.body.setAttribute("data-modo", m);
-  $$("#modoToggle button").forEach(b=>b.classList.toggle("on", b.dataset.m===m));
-}
-$$("#modoToggle button").forEach(b=>{
-  b.onclick = async () => {
-    const m = b.dataset.m;
-    if(m === modoUI) return;
-    aplicarModoUI(m);
-    await post("/api/modo_ui", {modo: m});
-    toast(m==="iniciante" ? "Modo Iniciante" : "Modo Avançado");
-  };
-});
-async function carregarModoUI(){
-  try{
-    const j = await get("/api/state");
-    if(j.modo_ui) aplicarModoUI(j.modo_ui);
-  }catch(e){}
-}
+let modoUI="iniciante";
+function aplicarModoUI(m){modoUI=m;document.body.setAttribute("data-modo",m);$$("#modoToggle button").forEach(b=>b.classList.toggle("on",b.dataset.m===m))}
+$$("#modoToggle button").forEach(b=>{b.onclick=async()=>{const m=b.dataset.m;if(m===modoUI)return;aplicarModoUI(m);await post("/api/modo_ui",{modo:m});toast(m==="iniciante"?"Modo Iniciante":"Modo Avançado")}});
+async function carregarModoUI(){try{const j=await get("/api/state");if(j.modo_ui)aplicarModoUI(j.modo_ui)}catch(e){}}
 
-// ============ TUTORIAL ============
-const TUTORIAL_INICIANTE = `
-  <h3>👋 Bem-vindo ao RotaControl!</h3>
-  <p>Você está no <b>modo Iniciante</b>. Aqui tem só o essencial, sem risco de bagunçar nada.</p>
-  <ul>
-    <li><b>⚡ Ações</b> — abre apps e pastas no PC com 1 toque</li>
-    <li><b>⌨️ Texto</b> — digita no PC (inclusive por voz 🎤)</li>
-    <li><b>🎵 Mídia</b> — play/pause, próximo, volume, apps</li>
-    <li><b>🖱️ Mouse</b> — touchpad do PC no celular</li>
-    <li><b>🖥️ Tela</b> — vê a tela ao vivo e tira print</li>
-    <li><b>📁 Arquivos</b> — envia arquivos do celular pro PC</li>
-    <li><b>📊 PC</b> — status (CPU/RAM/GPU/discos) e processos</li>
-    <li><b>🤖 IA</b> — chat com o assistente (pode pedir ações!)</li>
-    <li><b>⚙️ Sistema</b> — QR Code, LAN/WAN, PIN, pasta padrão</li>
-    <li><b>✨ Extras</b> — timer pra desligar/dormir</li>
-  </ul>
-  <p>Quer liberar <b>navegador de arquivos, terminal, WOL e mais</b>? Toque em <b>Avançado</b> no topo.</p>
-  <div class="grid g2" style="margin-top:14px">
-    <button class="btn ghost" onclick="fecharTutorial()">Pular tutorial</button>
-    <button class="btn acc" onclick="marcarTutorialVisto()">Entendi ✓</button>
-  </div>
-`;
-
-const TUTORIAL_AVANCADO = `
-  <h3>🚀 Modo Avançado</h3>
-  <p>Agora você tem acesso a tudo. O que ficou novo:</p>
-  <ul>
-    <li><b>📁 Arquivos</b> — navega, baixa, sobe, cria e apaga arquivos no PC</li>
-    <li><b>💻 PC → Terminal Rápido</b> — roda comandos soltos (não persiste nada)</li>
-    <li><b>💻 PC → Comandos</b> — atalhos de comandos salvos</li>
-    <li><b>✨ Extras → Wake-on-LAN</b> — liga outros PCs da rede</li>
-  </ul>
-  <p>⚠️ Cuidado só com <b>Fechar programa</b> e <b>BYPASS</b> no Sistema. O resto é tranquilo.</p>
-  <div class="grid g2" style="margin-top:14px">
-    <button class="btn ghost" onclick="fecharTutorial()">Pular tutorial</button>
-    <button class="btn acc" onclick="marcarTutorialVisto()">Entendi ✓</button>
-  </div>
-`;
+const TUTORIAL_INICIANTE=`<h3>👋 Bem-vindo!</h3><p>Modo <b>Iniciante</b>. Só o essencial.</p><ul><li><b>⚡ Ações</b> — abre apps</li><li><b>⌨️ Texto</b> — digita (voz 🎤)</li><li><b>🎵 Mídia</b> — play/pause, volume</li><li><b>🖱️ Mouse</b> — touchpad</li><li><b>🖥️ Tela</b> — vê e tira print</li><li><b>📁 Arquivos</b> — envio</li><li><b>📊 PC</b> — CPU/RAM/GPU/rede</li><li><b>🤖 IA</b> — assistente com ações</li><li><b>⚙️ Sistema</b> — QR, LAN/WAN, PIN</li></ul><div class="grid g2" style="margin-top:14px"><button class="btn ghost" onclick="fecharTutorial()">Pular</button><button class="btn acc" onclick="marcarTutorialVisto()">Entendi ✓</button></div>`;
+const TUTORIAL_AVANCADO=`<h3>🚀 Avançado</h3><p>Liberou:</p><ul><li><b>📁 Arquivos</b> — navegador completo</li><li><b>💻 PC → Terminal/Comandos</b></li><li><b>✨ Extras → Wake-on-LAN</b></li></ul><div class="grid g2" style="margin-top:14px"><button class="btn ghost" onclick="fecharTutorial()">Pular</button><button class="btn acc" onclick="marcarTutorialVisto()">Entendi ✓</button></div>`;
 
 function abrirTutorial(forcar){
-  const jaViu = localStorage.getItem("rotacontrol_tutorial_visto") === "1";
-  if(jaViu && !forcar) return;
-  const html = `
-    <h3>📖 Tutorial do RotaControl</h3>
-    <p>Escolha qual tutorial você quer ver:</p>
-    <div class="grid" style="gap:10px;margin-top:14px">
-      <button class="btn acc" onclick="mostrarTutorialModo('iniciante')">Ver tutorial Iniciante</button>
-      <button class="btn" onclick="mostrarTutorialModo('avancado')">Ver tutorial Avançado</button>
-      <button class="btn ghost" onclick="fecharTutorial()">Pular tutorial</button>
-    </div>
-  `;
-  $("#tutorialConteudo").innerHTML = html;
+  const jaViu=localStorage.getItem("rotacontrol_tutorial_visto")==="1";
+  if(jaViu&&!forcar)return;
+  $("#tutorialConteudo").innerHTML=`<h3>📖 Tutorial</h3><p>Escolha:</p><div class="grid" style="gap:10px;margin-top:14px"><button class="btn acc" onclick="mostrarTutorialModo('iniciante')">Iniciante</button><button class="btn" onclick="mostrarTutorialModo('avancado')">Avançado</button><button class="btn ghost" onclick="fecharTutorial()">Pular</button></div>`;
   $("#tutorialModal").classList.remove("hid");
 }
-function mostrarTutorialModo(m){
-  $("#tutorialConteudo").innerHTML = (m==="avancado" ? TUTORIAL_AVANCADO : TUTORIAL_INICIANTE);
-}
-function fecharTutorial(){
-  $("#tutorialModal").classList.add("hid");
-  localStorage.setItem("rotacontrol_tutorial_visto", "1");
-  post("/api/tutorial_visto", {});
-}
-function marcarTutorialVisto(){ fecharTutorial(); toast("Boa! Bom uso 🚀"); }
+function mostrarTutorialModo(m){$("#tutorialConteudo").innerHTML=(m==="avancado"?TUTORIAL_AVANCADO:TUTORIAL_INICIANTE)}
+function fecharTutorial(){$("#tutorialModal").classList.add("hid");localStorage.setItem("rotacontrol_tutorial_visto","1");post("/api/tutorial_visto",{})}
+function marcarTutorialVisto(){fecharTutorial();toast("Bom uso 🚀")}
 
-// ============ POLLS ============
-let clipHistPoll=null, mixerTimer=null, mixerUltimaInteracao=0, statTimer=null, smtcTimer=null;
+let clipHistPoll=null,mixerTimer=null,mixerUltimaInteracao=0,statTimer=null,smtcTimer=null,topProcTimer=null;
 function iniciarPollClipHist(){pararPollClipHist();clipHistPoll=setInterval(()=>{if(!document.hidden)carregarClipHist()},2500)}
 function pararPollClipHist(){if(clipHistPoll){clearInterval(clipHistPoll);clipHistPoll=null}}
 function iniciarPollMixer(){pararPollMixer();mixerTimer=setInterval(()=>{if(document.hidden)return;if(Date.now()-mixerUltimaInteracao<4000)return;carregarMixer(true)},4000)}
@@ -1635,6 +1728,8 @@ function iniciarPollStatus(){pararPollStatus();atualizarStatus();statTimer=setIn
 function pararPollStatus(){if(statTimer){clearInterval(statTimer);statTimer=null}}
 function iniciarPollSmtc(){pararPollSmtc();atualizarSmtc();smtcTimer=setInterval(()=>{if(!document.hidden)atualizarSmtc()},3000)}
 function pararPollSmtc(){if(smtcTimer){clearInterval(smtcTimer);smtcTimer=null}}
+function iniciarPollTopProcs(){pararPollTopProcs();carregarTopProcs();topProcTimer=setInterval(()=>{if(!document.hidden)carregarTopProcs()},4000)}
+function pararPollTopProcs(){if(topProcTimer){clearInterval(topProcTimer);topProcTimer=null}}
 
 function show(nome){
   $$(".page").forEach(p=>p.classList.toggle("hid",p.id!=="p-"+nome));
@@ -1644,78 +1739,31 @@ function show(nome){
   if(nome==="sistema")carregarSistema();
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarWol();carregarTimers()}
-  if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos()}else{pararPollStatus()}
+  if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos();iniciarPollTopProcs()}else{pararPollStatus();pararPollTopProcs()}
   if(nome==="mouse")initTouchpad();
   if(nome==="midia"){carregarMixer();iniciarPollMixer();iniciarPollSmtc()}else{pararPollMixer();pararPollSmtc()}
   if(nome==="texto"){carregarClipHist();iniciarPollClipHist();carregarTeclasPersistentes()}else{pararPollClipHist()}
-  if(nome==="ia")carregarIAConfig();
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
 
-async function post(url,d){
-  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d||{})});
-  if(r.status===401){mostrarLock();return{erro:"auth"}}
-  return r.json().catch(()=>({}));
-}
-async function get(url){
-  const r=await fetch(url,{cache:"no-store"});
-  if(r.status===401){mostrarLock();return{erro:"auth"}}
-  return r.json().catch(()=>({}));
-}
+async function post(url,d){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d||{})});if(r.status===401){mostrarLock();return{erro:"auth"}}return r.json().catch(()=>({}))}
+async function get(url){const r=await fetch(url,{cache:"no-store"});if(r.status===401){mostrarLock();return{erro:"auth"}}return r.json().catch(()=>({}))}
 function copiarTextoLegacy(t){const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.select();try{document.execCommand("copy")}catch(e){}document.body.removeChild(ta)}
 async function copiar(txt,label){if(!txt){toast("Nada pra copiar");return}try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(txt);toast("Copiado: "+label);return}}catch(e){}copiarTextoLegacy(txt);toast("Copiado: "+label)}
 
-// ============ AÇÕES / ATALHOS ============
-async function carregarAcoes(){
-  const j=await get("/api/acoes");const g=$("#gridAcoes");g.innerHTML="";
-  (j.acoes||[]).forEach((a,i)=>{
-    const b=document.createElement("button");b.className="btn";b.textContent=a.nome;
-    b.onclick=()=>executarAcao(i);
-    b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAcao(i)};
-    g.appendChild(b);
-  });
-}
+async function carregarAcoes(){const j=await get("/api/acoes");const g=$("#gridAcoes");g.innerHTML="";(j.acoes||[]).forEach((a,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=a.nome;b.onclick=()=>executarAcao(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAcao(i)};g.appendChild(b)})}
 async function executarAcao(i){const j=await post("/api/acao",{idx:i});toast(j.saida||j.erro||"ok")}
 async function removerAcao(i){await post("/api/acao_remover",{idx:i});carregarAcoes()}
-function abrirNovaAcao(){
-  const nome=prompt("Nome do botão:");if(!nome)return;
-  const tipo=(prompt("Tipo: abrir / pasta / url / comando","abrir")||"").toLowerCase();
-  if(!["abrir","pasta","url","comando"].includes(tipo)){alert("Inválido");return}
-  const valor=prompt("Valor:");if(!valor)return;
-  post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes);
-}
+function abrirNovaAcao(){const nome=prompt("Nome:");if(!nome)return;const tipo=(prompt("Tipo: abrir/pasta/url/comando","abrir")||"").toLowerCase();if(!["abrir","pasta","url","comando"].includes(tipo)){alert("Inválido");return}const valor=prompt("Valor:");if(!valor)return;post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes)}
 async function nav(a){const j=await post("/api/nav",{acao:a});toast(j.saida||j.erro||a)}
-async function carregarAtalhos(){
-  const j=await get("/api/atalhos");const g=$("#gridAtalhos");g.innerHTML="";
-  (j.atalhos||[]).forEach((a,i)=>{
-    const b=document.createElement("button");b.className="btn";b.textContent=a.nome;
-    b.onclick=()=>executarAtalho(i);
-    b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAtalho(i)};
-    g.appendChild(b);
-  });
-}
+async function carregarAtalhos(){const j=await get("/api/atalhos");const g=$("#gridAtalhos");g.innerHTML="";(j.atalhos||[]).forEach((a,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=a.nome;b.onclick=()=>executarAtalho(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAtalho(i)};g.appendChild(b)})}
 async function executarAtalho(i){const j=await post("/api/atalho_exec",{idx:i});toast(j.saida||j.erro||"ok")}
 async function removerAtalho(i){await post("/api/atalho_remover",{idx:i});carregarAtalhos()}
-function abrirNovoAtalho(){
-  const nome=prompt("Nome:");if(!nome)return;
-  const combo=prompt("Teclas (ex: ctrl+s):","ctrl+s");if(!combo)return;
-  post("/api/atalho_add",{nome,combo}).then(carregarAtalhos);
-}
+function abrirNovoAtalho(){const nome=prompt("Nome:");if(!nome)return;const combo=prompt("Teclas (ex: ctrl+s):","ctrl+s");if(!combo)return;post("/api/atalho_add",{nome,combo}).then(carregarAtalhos)}
 
-// ============ TEXTO / VOZ ============
 let liveTyping=false;
-function toggleLive(){
-  liveTyping=!liveTyping;
-  $("#btnLive").classList.toggle("on",liveTyping);
-  $("#liveLabel").textContent=liveTyping?"Digitação ao vivo ATIVA — toque para parar":"Ativar digitação ao vivo";
-  if(liveTyping)$("#txtEnv").focus();
-}
-async function enviarTexto(modo){
-  const txt=$("#txtEnv").value;if(!txt){toast("Digite algo");return}
-  toast("Enviando…");
-  const j=await post("/api/texto",{texto:txt,modo});
-  toast(j.saida||j.erro||"ok");
-}
+function toggleLive(){liveTyping=!liveTyping;$("#btnLive").classList.toggle("on",liveTyping);$("#liveLabel").textContent=liveTyping?"Digitação ao vivo ATIVA — toque para parar":"Ativar digitação ao vivo";if(liveTyping)$("#txtEnv").focus()}
+async function enviarTexto(modo){const txt=$("#txtEnv").value;if(!txt){toast("Digite algo");return}toast("Enviando…");const j=await post("/api/texto",{texto:txt,modo});toast(j.saida||j.erro||"ok")}
 async function tecla(nome){await post("/api/digitar_tecla",{tecla:nome});toast(nome);if(navigator.vibrate)navigator.vibrate(15)}
 async function enviarChar(ch){try{await fetch("/api/digitar_tecla",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tecla:ch})})}catch(e){}}
 function limparCampo(id){const el=$("#"+id);if(!el)return;el.value="";toast("Limpo");if(id==="txtEnv")el.focus()}
@@ -1728,494 +1776,182 @@ $("#txtEnv").addEventListener("keydown",e=>{
   if(k.length===1)enviarChar(k);
 });
 
-let recVoz=null, vozAtiva=false;
+let recVoz=null,vozAtiva=false;
 function toggleVoz(){
-  if(!window.isSecureContext){
-    $("#vozStatus").innerHTML="⚠️ Voz exige HTTPS. Use o <b>modo WAN (Cloudflare)</b> pra ter HTTPS. Ou abra via <code>http://127.0.0.1:5000</code> no próprio PC.";
-    toast("Precisa HTTPS (use WAN)");
-    return;
-  }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SR){ $("#vozStatus").textContent="Navegador não suporta voz (use Chrome/Edge)."; return; }
-  if(vozAtiva){ try{ recVoz.stop(); }catch(e){} return; }
-  recVoz = new SR();
-  recVoz.lang = "pt-BR"; recVoz.continuous = true; recVoz.interimResults = true;
-  let textoBase = $("#txtEnv").value;
-  recVoz.onstart = () => { vozAtiva=true; $("#btnVoz").classList.add("on"); $("#vozStatus").textContent="🎤 Ouvindo… toque de novo pra parar"; };
-  recVoz.onend = () => { vozAtiva=false; $("#btnVoz").classList.remove("on"); $("#vozStatus").textContent=""; };
-  recVoz.onerror = (e) => { vozAtiva=false; $("#btnVoz").classList.remove("on"); $("#vozStatus").textContent="Erro voz: "+(e.error||"?"); };
-  recVoz.onresult = (ev) => {
-    let finalTxt="", interim="";
-    for(let i=ev.resultIndex;i<ev.results.length;i++){
-      const r=ev.results[i];
-      if(r.isFinal) finalTxt += r[0].transcript;
-      else interim += r[0].transcript;
-    }
-    if(finalTxt){
-      textoBase = (textoBase?textoBase+" ":"")+finalTxt.trim();
-      $("#txtEnv").value = textoBase;
-      if(liveTyping){ for(const ch of finalTxt){ if(ch==="\n"||ch==="\r")enviarChar("enter"); else enviarChar(ch); } }
-    } else {
-      $("#txtEnv").value = (textoBase?textoBase+" ":"")+interim;
-    }
+  if(!window.isSecureContext){$("#vozStatus").innerHTML="⚠️ Voz exige HTTPS.";toast("Precisa HTTPS");return}
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){$("#vozStatus").textContent="Navegador não suporta voz.";return}
+  if(vozAtiva){try{recVoz.stop()}catch(e){}return}
+  recVoz=new SR();recVoz.lang="pt-BR";recVoz.continuous=true;recVoz.interimResults=true;
+  let textoBase=$("#txtEnv").value;
+  recVoz.onstart=()=>{vozAtiva=true;$("#btnVoz").classList.add("on");$("#vozStatus").textContent="🎤 Ouvindo…"};
+  recVoz.onend=()=>{vozAtiva=false;$("#btnVoz").classList.remove("on");$("#vozStatus").textContent=""};
+  recVoz.onerror=(e)=>{vozAtiva=false;$("#btnVoz").classList.remove("on");$("#vozStatus").textContent="Erro: "+(e.error||"?")};
+  recVoz.onresult=(ev)=>{
+    let f="",i="";
+    for(let k=ev.resultIndex;k<ev.results.length;k++){const r=ev.results[k];if(r.isFinal)f+=r[0].transcript;else i+=r[0].transcript}
+    if(f){textoBase=(textoBase?textoBase+" ":"")+f.trim();$("#txtEnv").value=textoBase;if(liveTyping){for(const ch of f){if(ch==="\n"||ch==="\r")enviarChar("enter");else enviarChar(ch)}}}
+    else{$("#txtEnv").value=(textoBase?textoBase+" ":"")+i}
   };
-  try{ recVoz.start(); }catch(e){ toast("Erro ao iniciar voz"); }
+  try{recVoz.start()}catch(e){toast("Erro ao iniciar voz")}
 }
 
-// ============ TECLAS PERSISTENTES ============
-const TECLAS_DISP = [{id:"shift",lbl:"Shift"},{id:"ctrl",lbl:"Ctrl"},{id:"alt",lbl:"Alt"},{id:"win",lbl:"Win"}];
-async function carregarTeclasPersistentes(){
-  const j=await get("/api/teclas/estado");const box=$("#teclasPers");if(!box)return;
-  const trav=j.travadas||{};box.innerHTML="";
-  TECLAS_DISP.forEach(t=>{
-    const b=document.createElement("button");
-    b.className="btn"+(trav[t.id]?" travada":"");b.textContent=t.lbl;
-    b.onclick=()=>{if(trav[t.id])soltarTecla(t.id);else travarTecla(t.id)};
-    box.appendChild(b);
-  });
+// Voz na IA — SÓ preenche o input (não envia)
+let recVozIA=null,vozIAAtiva=false;
+function toggleVozIA(){
+  if(!window.isSecureContext){toast("Voz exige HTTPS (use modo WAN)");return}
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){toast("Navegador não suporta voz");return}
+  if(vozIAAtiva){try{recVozIA.stop()}catch(e){}return}
+  recVozIA=new SR();recVozIA.lang="pt-BR";recVozIA.continuous=false;recVozIA.interimResults=true;
+  let base=$("#iaInput").value;
+  recVozIA.onstart=()=>{vozIAAtiva=true;$("#btnVozIA").classList.add("on");toast("🎤 Ouvindo…")};
+  recVozIA.onend=()=>{vozIAAtiva=false;$("#btnVozIA").classList.remove("on")};
+  recVozIA.onerror=()=>{vozIAAtiva=false;$("#btnVozIA").classList.remove("on")};
+  recVozIA.onresult=(ev)=>{
+    let f="",i="";
+    for(let k=ev.resultIndex;k<ev.results.length;k++){const r=ev.results[k];if(r.isFinal)f+=r[0].transcript;else i+=r[0].transcript}
+    if(f){$("#iaInput").value=(base?base+" ":"")+f.trim();$("#iaInput").focus()}
+    else{$("#iaInput").value=(base?base+" ":"")+i}
+  };
+  try{recVozIA.start()}catch(e){toast("Erro ao iniciar voz")}
 }
+
+const TECLAS_DISP=[{id:"shift",lbl:"Shift"},{id:"ctrl",lbl:"Ctrl"},{id:"alt",lbl:"Alt"},{id:"win",lbl:"Win"}];
+async function carregarTeclasPersistentes(){const j=await get("/api/teclas/estado");const box=$("#teclasPers");if(!box)return;const trav=j.travadas||{};box.innerHTML="";TECLAS_DISP.forEach(t=>{const b=document.createElement("button");b.className="btn"+(trav[t.id]?" travada":"");b.textContent=t.lbl;b.onclick=()=>{if(trav[t.id])soltarTecla(t.id);else travarTecla(t.id)};box.appendChild(b)})}
 async function travarTecla(nome){const j=await post("/api/teclas/travar",{nome});if(j.erro){toast(j.erro);return}toast("🔒 "+nome);carregarTeclasPersistentes()}
 async function soltarTecla(nome){await post("/api/teclas/soltar",{nome});toast("🔓 "+nome);carregarTeclasPersistentes()}
 async function soltarTodas(){await post("/api/teclas/soltar_todas",{});toast("🔓 todas soltas");carregarTeclasPersistentes();if(navigator.vibrate)navigator.vibrate(30)}
 
-// ============ CLIPBOARD ============
 async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";toast("Lido")}
 function copiarTextoRec(){const t=$("#txtRec");copiar(t.value||"","clipboard")}
-async function carregarClipHist(){
-  const j=await get("/api/clip_hist");const box=$("#listaClip");box.innerHTML="";
-  (j.itens||[]).forEach(it=>{
-    const hora=new Date(it.hora*1000).toLocaleTimeString();
-    const d=document.createElement("div");d.className="arq";d.style.alignItems="flex-start";
-    d.innerHTML=`<span class="nome" style="white-space:pre-wrap;word-break:break-all;font-size:12px">${esc(it.texto)}</span><span class="tam">${hora}</span>`;
-    const b=document.createElement("button");b.textContent="Usar";b.onclick=()=>usarClip(it.texto);d.appendChild(b);
-    box.appendChild(d);
-  });
-  if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>';
-}
+async function carregarClipHist(){const j=await get("/api/clip_hist");const box=$("#listaClip");box.innerHTML="";(j.itens||[]).forEach(it=>{const hora=new Date(it.hora*1000).toLocaleTimeString();const d=document.createElement("div");d.className="arq";d.style.alignItems="flex-start";d.innerHTML=`<span class="nome" style="white-space:pre-wrap;word-break:break-all;font-size:12px">${esc(it.texto)}</span><span class="tam">${hora}</span>`;const b=document.createElement("button");b.textContent="Usar";b.onclick=()=>usarClip(it.texto);d.appendChild(b);box.appendChild(d)});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
 async function usarClip(t){await post("/api/texto",{texto:t,modo:"clipboard"});toast("Copiado de novo")}
 async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await post("/api/clip_hist_limpar",{});carregarClipHist()}
 
-// ============ MÍDIA ============
 async function midia(a){await post("/api/midia",{acao:a});if(navigator.vibrate)navigator.vibrate(10)}
-async function atualizarSmtc(){
-  const j=await get("/api/midia_info");
-  const capa=$("#musicaCapa");
-  if(!capa)return;
-  if(j.erro){ $("#musicaTit").textContent="(winsdk não instalado)"; $("#musicaArt").textContent="—"; $("#musicaApp").textContent="—"; capa.innerHTML="🎵"; return; }
-  if(!j.titulo && !j.artista){ $("#musicaTit").textContent="(nada tocando)"; $("#musicaArt").textContent="—"; $("#musicaApp").textContent="—"; capa.innerHTML="🎵"; return; }
-  $("#musicaTit").textContent = j.titulo || "(sem título)";
-  $("#musicaArt").textContent = (j.artista || "—") + (j.album ? " • " + j.album : "");
-  $("#musicaApp").textContent = (j.app || "").split("!")[0] + (j.status ? " • " + j.status : "");
-  if(j.capa_b64){
-    capa.innerHTML = `<img src="data:image/png;base64,${j.capa_b64}" alt="">`;
-  } else {
-    capa.innerHTML = "🎵";
-  }
-}
+async function atualizarSmtc(){const j=await get("/api/midia_info");const capa=$("#musicaCapa");if(!capa)return;if(j.erro){$("#musicaTit").textContent="(winsdk não instalado)";$("#musicaArt").textContent="—";$("#musicaApp").textContent="—";capa.innerHTML="🎵";return}if(!j.titulo&&!j.artista){$("#musicaTit").textContent="(nada tocando)";$("#musicaArt").textContent="—";$("#musicaApp").textContent="—";capa.innerHTML="🎵";return}$("#musicaTit").textContent=j.titulo||"(sem título)";$("#musicaArt").textContent=(j.artista||"—")+(j.album?" • "+j.album:"");$("#musicaApp").textContent=(j.app||"").split("!")[0]+(j.status?" • "+j.status:"");if(j.capa_b64){capa.innerHTML=`<img src="data:image/png;base64,${j.capa_b64}" alt="">`}else{capa.innerHTML="🎵"}}
 async function smtcAcao(a){const j=await post("/api/midia_smtc",{acao:a});toast(j.ok?"ok":(j.erro||"erro"));setTimeout(atualizarSmtc,300)}
 
-async function carregarMixer(silencioso){
-  const j=await get("/api/volume_mixer");const box=$("#listaMixer");if(!box)return;
-  if(j.erro){box.innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}
-  const itens=j.itens||[];
-  if(!itens.length){box.innerHTML='<div class="hint">(nenhum app com áudio)</div>';return}
-  box.innerHTML="";
-  itens.forEach(s=>{
-    const d=document.createElement("div");d.className="mix";
-    const n=document.createElement("div");n.className="mixNome";n.textContent=s.nome;d.appendChild(n);
-    const linha=document.createElement("div");linha.className="mixLinha";
-    const sl=document.createElement("input");sl.type="range";sl.min="0";sl.max="100";sl.value=String(s.volume);
-    const v=document.createElement("span");v.className="mixVal";v.textContent=s.volume+"%";
-    sl.oninput=()=>{mixerUltimaInteracao=Date.now();v.textContent=sl.value+"%"};
-    sl.onpointerdown=()=>{mixerUltimaInteracao=Date.now()};
-    sl.onchange=()=>{mixerUltimaInteracao=Date.now();mixerSet(s.chave,parseInt(sl.value,10),null)};
-    linha.appendChild(sl);linha.appendChild(v);
-    const bm=document.createElement("button");bm.className="btn mini"+(s.mudo?" on":"");bm.textContent=s.mudo?"🔇":"🔊";
-    bm.onclick=()=>{const nv=!s.mudo;s.mudo=nv;bm.textContent=nv?"🔇":"🔊";bm.classList.toggle("on",nv);mixerUltimaInteracao=Date.now();mixerSet(s.chave,null,nv)};
-    linha.appendChild(bm);d.appendChild(linha);box.appendChild(d);
-  });
-}
-async function mixerSet(chave,volume,mudo){
-  const body={chave};if(volume!==null&&volume!==undefined)body.volume=volume;if(mudo!==null&&mudo!==undefined)body.mudo=mudo;
-  const j=await post("/api/volume_mixer_set",body);if(j.erro)toast("Erro: "+j.erro);
-}
+async function carregarMixer(silencioso){const j=await get("/api/volume_mixer");const box=$("#listaMixer");if(!box)return;if(j.erro){box.innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}const itens=j.itens||[];if(!itens.length){box.innerHTML='<div class="hint">(nenhum app com áudio)</div>';return}box.innerHTML="";itens.forEach(s=>{const d=document.createElement("div");d.className="mix";const n=document.createElement("div");n.className="mixNome";n.textContent=s.nome;d.appendChild(n);const linha=document.createElement("div");linha.className="mixLinha";const sl=document.createElement("input");sl.type="range";sl.min="0";sl.max="100";sl.value=String(s.volume);const v=document.createElement("span");v.className="mixVal";v.textContent=s.volume+"%";sl.oninput=()=>{mixerUltimaInteracao=Date.now();v.textContent=sl.value+"%"};sl.onpointerdown=()=>{mixerUltimaInteracao=Date.now()};sl.onchange=()=>{mixerUltimaInteracao=Date.now();mixerSet(s.chave,parseInt(sl.value,10),null)};linha.appendChild(sl);linha.appendChild(v);const bm=document.createElement("button");bm.className="btn mini"+(s.mudo?" on":"");bm.textContent=s.mudo?"🔇":"🔊";bm.onclick=()=>{const nv=!s.mudo;s.mudo=nv;bm.textContent=nv?"🔇":"🔊";bm.classList.toggle("on",nv);mixerUltimaInteracao=Date.now();mixerSet(s.chave,null,nv)};linha.appendChild(bm);d.appendChild(linha);box.appendChild(d)})}
+async function mixerSet(chave,volume,mudo){const body={chave};if(volume!==null&&volume!==undefined)body.volume=volume;if(mudo!==null&&mudo!==undefined)body.mudo=mudo;const j=await post("/api/volume_mixer_set",body);if(j.erro)toast("Erro: "+j.erro)}
 
-// ============ TOUCHPAD ============
 const TP={el:null,lastX:0,lastY:0,startX:0,startY:0,startT:0,moved:false,fingers:0,lastTap:0,drag:false,pending:{dx:0,dy:0},sendTimer:null,inited:false,canvas:null,ctx:null,points:[],trailRaf:null};
-function initTouchpad(){
-  const el=document.getElementById('touchpad');if(!el||TP.inited)return;TP.inited=true;TP.el=el;
-  const cv=document.getElementById('tpCanvas');
-  if(cv){TP.canvas=cv;TP.ctx=cv.getContext('2d');
-    const resize=()=>{const r=el.getBoundingClientRect();const dpr=window.devicePixelRatio||1;cv.width=Math.max(1,Math.round(r.width*dpr));cv.height=Math.max(1,Math.round(r.height*dpr));TP.ctx.setTransform(dpr,0,0,dpr,0,0)};
-    resize();window.addEventListener('resize',resize);if(window.ResizeObserver)new ResizeObserver(resize).observe(el);trailLoop();
-  }
-  el.addEventListener('touchstart',tpStart,{passive:false});
-  el.addEventListener('touchmove',tpMove,{passive:false});
-  el.addEventListener('touchend',tpEnd,{passive:false});
-  el.addEventListener('touchcancel',tpEnd,{passive:false});
-  el.addEventListener('mousedown',ev=>{ev.preventDefault();TP.fingers=1;TP.moved=false;TP.startX=ev.clientX;TP.startY=ev.clientY;TP.lastX=ev.clientX;TP.lastY=ev.clientY;TP.startT=Date.now();addTrailPoint(ev.clientX,ev.clientY)});
-  el.addEventListener('mousemove',ev=>{if(ev.buttons!==1)return;ev.preventDefault();tpProcessMove(ev.clientX,ev.clientY);addTrailPoint(ev.clientX,ev.clientY)});
-  el.addEventListener('mouseup',ev=>{ev.preventDefault();tpProcessEnd()});
-}
+function initTouchpad(){const el=document.getElementById('touchpad');if(!el||TP.inited)return;TP.inited=true;TP.el=el;const cv=document.getElementById('tpCanvas');if(cv){TP.canvas=cv;TP.ctx=cv.getContext('2d');const resize=()=>{const r=el.getBoundingClientRect();const dpr=window.devicePixelRatio||1;cv.width=Math.max(1,Math.round(r.width*dpr));cv.height=Math.max(1,Math.round(r.height*dpr));TP.ctx.setTransform(dpr,0,0,dpr,0,0)};resize();window.addEventListener('resize',resize);if(window.ResizeObserver)new ResizeObserver(resize).observe(el);trailLoop()}el.addEventListener('touchstart',tpStart,{passive:false});el.addEventListener('touchmove',tpMove,{passive:false});el.addEventListener('touchend',tpEnd,{passive:false});el.addEventListener('touchcancel',tpEnd,{passive:false});el.addEventListener('mousedown',ev=>{ev.preventDefault();TP.fingers=1;TP.moved=false;TP.startX=ev.clientX;TP.startY=ev.clientY;TP.lastX=ev.clientX;TP.lastY=ev.clientY;TP.startT=Date.now();addTrailPoint(ev.clientX,ev.clientY)});el.addEventListener('mousemove',ev=>{if(ev.buttons!==1)return;ev.preventDefault();tpProcessMove(ev.clientX,ev.clientY);addTrailPoint(ev.clientX,ev.clientY)});el.addEventListener('mouseup',ev=>{ev.preventDefault();tpProcessEnd()})}
 const TRAIL_MS=650,TRAIL_MAX=80;
 function addTrailPoint(cx,cy){if(!TP.canvas||!TP.el)return;const r=TP.el.getBoundingClientRect();TP.points.push({x:cx-r.left,y:cy-r.top,t:performance.now()});if(TP.points.length>TRAIL_MAX)TP.points.shift()}
-function trailLoop(){
-  const cv=TP.canvas,ctx=TP.ctx;if(!cv||!ctx){TP.trailRaf=requestAnimationFrame(trailLoop);return}
-  const now=performance.now();while(TP.points.length&&now-TP.points[0].t>TRAIL_MS)TP.points.shift();
-  const r=TP.el.getBoundingClientRect();ctx.clearRect(0,0,r.width,r.height);
-  if(TP.points.length>1){
-    ctx.lineCap='round';ctx.lineJoin='round';
-    for(let i=1;i<TP.points.length;i++){
-      const a=TP.points[i-1],b=TP.points[i];const age=(now-b.t)/TRAIL_MS;const alpha=Math.max(0,1-age);
-      if(alpha<=0)continue;ctx.strokeStyle=`rgba(154,60,255,${alpha*0.95})`;ctx.lineWidth=1+5*alpha;ctx.shadowColor=`rgba(124,0,240,${alpha})`;ctx.shadowBlur=14*alpha;
-      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
-    }
-    const last=TP.points[TP.points.length-1];const lastAge=(now-last.t)/TRAIL_MS;
-    if(lastAge<1){const a=Math.max(0,1-lastAge);const grad=ctx.createRadialGradient(last.x,last.y,0,last.x,last.y,26);grad.addColorStop(0,`rgba(200,140,255,${0.65*a})`);grad.addColorStop(1,'rgba(154,60,255,0)');ctx.fillStyle=grad;ctx.beginPath();ctx.arc(last.x,last.y,26,0,Math.PI*2);ctx.fill()}
-    ctx.shadowBlur=0;
-  }
-  TP.trailRaf=requestAnimationFrame(trailLoop);
-}
+function trailLoop(){const cv=TP.canvas,ctx=TP.ctx;if(!cv||!ctx){TP.trailRaf=requestAnimationFrame(trailLoop);return}const now=performance.now();while(TP.points.length&&now-TP.points[0].t>TRAIL_MS)TP.points.shift();const r=TP.el.getBoundingClientRect();ctx.clearRect(0,0,r.width,r.height);if(TP.points.length>1){ctx.lineCap='round';ctx.lineJoin='round';for(let i=1;i<TP.points.length;i++){const a=TP.points[i-1],b=TP.points[i];const age=(now-b.t)/TRAIL_MS;const alpha=Math.max(0,1-age);if(alpha<=0)continue;ctx.strokeStyle=`rgba(154,60,255,${alpha*0.95})`;ctx.lineWidth=1+5*alpha;ctx.shadowColor=`rgba(124,0,240,${alpha})`;ctx.shadowBlur=14*alpha;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}const last=TP.points[TP.points.length-1];const lastAge=(now-last.t)/TRAIL_MS;if(lastAge<1){const a=Math.max(0,1-lastAge);const grad=ctx.createRadialGradient(last.x,last.y,0,last.x,last.y,26);grad.addColorStop(0,`rgba(200,140,255,${0.65*a})`);grad.addColorStop(1,'rgba(154,60,255,0)');ctx.fillStyle=grad;ctx.beginPath();ctx.arc(last.x,last.y,26,0,Math.PI*2);ctx.fill()}ctx.shadowBlur=0}TP.trailRaf=requestAnimationFrame(trailLoop)}
 function tpStart(ev){ev.preventDefault();const n=ev.touches.length;TP.fingers=n;TP.moved=false;const t=ev.touches[0];TP.lastX=t.clientX;TP.lastY=t.clientY;TP.startX=t.clientX;TP.startY=t.clientY;TP.startT=Date.now();TP.el.classList.toggle('two',n>=2);addTrailPoint(t.clientX,t.clientY);if(n>=2){const t1=ev.touches[1];addTrailPoint(t1.clientX,t1.clientY)}}
 function tpMove(ev){ev.preventDefault();const n=ev.touches.length;if(n===1){const t=ev.touches[0];tpProcessMove(t.clientX,t.clientY);addTrailPoint(t.clientX,t.clientY)}else if(n>=2){const t0=ev.touches[0],t1=ev.touches[1];const my=(t0.clientY+t1.clientY)/2;const dy=TP.lastY-my;if(Math.abs(dy)>2){TP.moved=true;mouseScroll(Math.round(dy*4))}TP.lastX=(t0.clientX+t1.clientX)/2;TP.lastY=my;addTrailPoint(t0.clientX,t0.clientY);addTrailPoint(t1.clientX,t1.clientY)}}
-function tpProcessMove(x,y){
-  const rect=TP.el.getBoundingClientRect();const dx=x-TP.lastX,dy=y-TP.lastY;
-  if(Math.abs(dx)+Math.abs(dy)>3)TP.moved=true;if(!TP.moved)return;
-  const sw=window.screen?window.screen.width:1920,sh=window.screen?window.screen.height:1080;
-  const fx=(sw*1.8)/rect.width,fy=(sh*1.8)/rect.height;const vel=Math.hypot(dx,dy);const multi=1+Math.min(vel/8,1.8);
-  TP.pending.dx+=dx*fx*multi;TP.pending.dy+=dy*fy*multi;if(!TP.sendTimer)TP.sendTimer=setTimeout(tpFlush,25);TP.lastX=x;TP.lastY=y;
-}
+function tpProcessMove(x,y){const rect=TP.el.getBoundingClientRect();const dx=x-TP.lastX,dy=y-TP.lastY;if(Math.abs(dx)+Math.abs(dy)>3)TP.moved=true;if(!TP.moved)return;const sw=window.screen?window.screen.width:1920,sh=window.screen?window.screen.height:1080;const fx=(sw*1.8)/rect.width,fy=(sh*1.8)/rect.height;const vel=Math.hypot(dx,dy);const multi=1+Math.min(vel/8,1.8);TP.pending.dx+=dx*fx*multi;TP.pending.dy+=dy*fy*multi;if(!TP.sendTimer)TP.sendTimer=setTimeout(tpFlush,25);TP.lastX=x;TP.lastY=y}
 async function tpFlush(){TP.sendTimer=null;const dx=Math.round(TP.pending.dx),dy=Math.round(TP.pending.dy);TP.pending.dx=0;TP.pending.dy=0;if(dx===0&&dy===0)return;try{await fetch('/api/mouse_move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dx,dy})})}catch(e){}}
-function tpProcessEnd(){
-  const dur=Date.now()-TP.startT;TP.el.classList.remove('two');
-  if(TP.fingers>=3&&!TP.moved&&dur<350){mouseClick('right');TP.fingers=0;return}
-  if(TP.fingers===1&&!TP.moved&&dur<300){const now=Date.now();if(now-TP.lastTap<300){mouseClick('double');TP.lastTap=0}else{TP.lastTap=now;setTimeout(()=>{if(TP.lastTap===now){mouseClick('left');TP.lastTap=0}},260)}}
-  TP.fingers=0;
-}
+function tpProcessEnd(){const dur=Date.now()-TP.startT;TP.el.classList.remove('two');if(TP.fingers>=3&&!TP.moved&&dur<350){mouseClick('right');TP.fingers=0;return}if(TP.fingers===1&&!TP.moved&&dur<300){const now=Date.now();if(now-TP.lastTap<300){mouseClick('double');TP.lastTap=0}else{TP.lastTap=now;setTimeout(()=>{if(TP.lastTap===now){mouseClick('left');TP.lastTap=0}},260)}}TP.fingers=0}
 function tpEnd(ev){ev.preventDefault();tpProcessEnd()}
 async function mouseClick(t){try{await fetch('/api/mouse_click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tipo:t})});if(navigator.vibrate)navigator.vibrate(8)}catch(e){}}
 async function mouseScroll(dy){try{await fetch('/api/mouse_scroll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dy})})}catch(e){}}
 async function toggleDrag(){TP.drag=!TP.drag;const b=document.getElementById('btnDragToggle');b.classList.toggle('on',TP.drag);b.textContent=TP.drag?'✓ Soltar':'Arrastar';try{await fetch('/api/mouse_drag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tipo:TP.drag?'drag_down':'drag_up'})})}catch(e){}}
 
-// ============ TELA ============
-let ESTADO_MONITOR_ATUAL = 0;
-async function carregarMonitores(){
-  const j=await get("/api/monitores");const sel=$("#selMonitor");if(!sel)return;
-  ESTADO_MONITOR_ATUAL = j.atual || 0;
-  sel.innerHTML="";
-  const o0=document.createElement("option");o0.value="0";o0.textContent="Todas as telas juntas";sel.appendChild(o0);
-  (j.lista||[]).forEach(m=>{
-    const o=document.createElement("option");o.value=String(m.idx);
-    o.textContent=`Monitor ${m.idx} — ${m.w}x${m.h}${m.principal?" (principal)":""}`;
-    sel.appendChild(o);
-  });
-  sel.value=String(ESTADO_MONITOR_ATUAL);
-}
-async function trocarMonitor(v){
-  const idx=parseInt(v,10)||0;
-  await post("/api/monitor_escolhido",{idx});
-  ESTADO_MONITOR_ATUAL=idx;
-  toast("Monitor trocado");
-  if(telaAtiva){
-    clearTimeout(telaTimer); telaEmVoo=false;
-    atualizarTela();
-  }
-}
-async function tirarScreenshot(){
-  toast("📸 Tirando print...");
-  const j=await post("/api/screenshot",{});
-  if(j.erro){toast("Erro: "+j.erro);return}
-  toast("Salvo: "+j.nome);
-}
-async function screenshotClip(){
-  toast("📋 Copiando print...");
-  const j=await post("/api/screenshot_clip",{});
-  toast(j.saida||j.erro||"ok");
-}
-async function screenshotBaixar(){
-  toast("📸 Preparando...");
-  const j=await post("/api/screenshot",{});
-  if(j.erro){toast("Erro: "+j.erro);return}
-  window.open("/api/download?nome="+encodeURIComponent(j.nome),"_blank");
-}
+let ESTADO_MONITOR_ATUAL=0;
+async function carregarMonitores(){const j=await get("/api/monitores");const sel=$("#selMonitor");if(!sel)return;ESTADO_MONITOR_ATUAL=j.atual||0;sel.innerHTML="";const o0=document.createElement("option");o0.value="0";o0.textContent="Todas as telas juntas";sel.appendChild(o0);(j.lista||[]).forEach(m=>{const o=document.createElement("option");o.value=String(m.idx);o.textContent=`Monitor ${m.idx} — ${m.w}x${m.h}${m.principal?" (principal)":""}`;sel.appendChild(o)});sel.value=String(ESTADO_MONITOR_ATUAL)}
+async function trocarMonitor(v){const idx=parseInt(v,10)||0;await post("/api/monitor_escolhido",{idx});ESTADO_MONITOR_ATUAL=idx;toast("Monitor trocado");if(telaAtiva){clearTimeout(telaTimer);telaEmVoo=false;atualizarTela()}}
+async function tirarScreenshot(){toast("📸 Tirando print...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}toast("Salvo: "+j.nome)}
+async function screenshotClip(){toast("📋 Copiando print...");const j=await post("/api/screenshot_clip",{});toast(j.saida||j.erro||"ok")}
+async function screenshotBaixar(){toast("📸 Preparando...");const j=await post("/api/screenshot",{});if(j.erro){toast("Erro: "+j.erro);return}window.open("/api/download?nome="+encodeURIComponent(j.nome),"_blank")}
 
-// ============ ARQUIVOS ============
-let CAMINHO_ATUAL = null;
-async function carregarArquivos(path){
-  const url = "/api/arquivos" + (path ? ("?path="+encodeURIComponent(path)) : "");
-  const j = await get(url);
-  if(j.erro){ $("#txtArquivos").innerHTML = '<div class="hint">Erro: '+esc(j.erro)+'</div>'; return; }
-  CAMINHO_ATUAL = j.pasta;
-  const bc = $("#breadcrumb"); bc.innerHTML = "";
-  (j.partes || []).forEach((p, i) => {
-    const s = document.createElement("span");
-    s.textContent = p.nome;
-    if(i === j.partes.length - 1) s.classList.add("atual");
-    s.onclick = () => carregarArquivos(p.path);
-    bc.appendChild(s);
-    if(i < j.partes.length - 1){
-      const sep = document.createElement("span");
-      sep.textContent = "›"; sep.style.background = "transparent"; sep.style.cursor = "default";
-      sep.onclick = () => {};
-      bc.appendChild(sep);
-    }
-  });
-  const box = $("#txtArquivos"); box.innerHTML = "";
-  (j.itens || []).forEach(a => {
-    const d = document.createElement("div");
-    d.className = "arq" + (a.tipo === "pasta" ? " pasta" : "");
-    if(a.tipo === "pasta"){
-      d.innerHTML = `<span class="nome"><span class="icoTipo">📁</span>${esc(a.nome)}</span>
-        <button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;
-      d.onclick = () => carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,"")) + "\\" + a.nome);
-    } else {
-      d.innerHTML = `<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span>
-        <span class="tam">${fmtTam(a.tam)}</span>
-        <button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button>
-        <button class="del" onclick="event.stopPropagation();apagar('${encodeURIComponent(a.nome)}')">x</button>`;
-    }
-    box.appendChild(d);
-  });
-  if(!(j.itens || []).length) box.innerHTML = '<div class="hint">(vazio)</div>';
-}
-function irPai(){
-  if(!CAMINHO_ATUAL) return;
-  const p = CAMINHO_ATUAL.replace(/[\\\/]+$/,"");
-  const ultimo = p.lastIndexOf("\\");
-  if(ultimo > 2) carregarArquivos(p.slice(0, ultimo) || p.slice(0, 3));
-}
-function copiarCaminhoAtual(){
-  if(!CAMINHO_ATUAL){ toast("Abra uma pasta primeiro"); return; }
-  copiar(CAMINHO_ATUAL, "caminho da pasta");
-}
-async function novaPasta(){
-  const nome = prompt("Nome da pasta:");
-  if(!nome) return;
-  const j = await post("/api/nova_pasta", {path: CAMINHO_ATUAL, nome});
-  toast(j.erro ? ("Erro: " + j.erro) : "Pasta criada");
-  carregarArquivos(CAMINHO_ATUAL);
-}
-async function apagarPasta(nomeEnc){
-  if(!confirm("Apagar pasta (só se estiver vazia)?")) return;
-  const nome = decodeURIComponent(nomeEnc);
-  const j = await post("/api/apagar_pasta", {path: CAMINHO_ATUAL, nome});
-  toast(j.erro ? ("Erro: " + j.erro) : "Apagada");
-  carregarArquivos(CAMINHO_ATUAL);
-}
+let CAMINHO_ATUAL=null;
+async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+encodeURIComponent(path)):"");const j=await get(url);if(j.erro){$("#txtArquivos").innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}CAMINHO_ATUAL=j.pasta;const bc=$("#breadcrumb");bc.innerHTML="";(j.partes||[]).forEach((p,i)=>{const s=document.createElement("span");s.textContent=p.nome;if(i===j.partes.length-1)s.classList.add("atual");s.onclick=()=>carregarArquivos(p.path);bc.appendChild(s);if(i<j.partes.length-1){const sep=document.createElement("span");sep.textContent="›";sep.style.background="transparent";sep.style.cursor="default";sep.onclick=()=>{};bc.appendChild(sep)}});const box=$("#txtArquivos");box.innerHTML="";(j.itens||[]).forEach(a=>{const d=document.createElement("div");d.className="arq"+(a.tipo==="pasta"?" pasta":"");if(a.tipo==="pasta"){d.innerHTML=`<span class="nome"><span class="icoTipo">📁</span>${esc(a.nome)}</span><button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome)}else{d.innerHTML=`<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span><span class="tam">${fmtTam(a.tam)}</span><button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button><button class="del" onclick="event.stopPropagation();apagar('${encodeURIComponent(a.nome)}')">x</button>`}box.appendChild(d)});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
+function irPai(){if(!CAMINHO_ATUAL)return;const p=CAMINHO_ATUAL.replace(/[\\\/]+$/,"");const ultimo=p.lastIndexOf("\\");if(ultimo>2)carregarArquivos(p.slice(0,ultimo)||p.slice(0,3))}
+function copiarCaminhoAtual(){if(!CAMINHO_ATUAL){toast("Abra uma pasta primeiro");return}copiar(CAMINHO_ATUAL,"caminho")}
+async function novaPasta(){const nome=prompt("Nome da pasta:");if(!nome)return;const j=await post("/api/nova_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Pasta criada");carregarArquivos(CAMINHO_ATUAL)}
+async function apagarPasta(nomeEnc){if(!confirm("Apagar pasta (só se estiver vazia)?"))return;const nome=decodeURIComponent(nomeEnc);const j=await post("/api/apagar_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Apagada");carregarArquivos(CAMINHO_ATUAL)}
 function fmtTam(b){if(b<1024)return b+" B";if(b<1024*1024)return (b/1024).toFixed(1)+" KB";if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+" MB";return (b/1024/1024/1024).toFixed(2)+" GB"}
 function baixar(n){window.open("/api/download?nome="+n+"&path="+encodeURIComponent(CAMINHO_ATUAL||""),"_blank")}
 async function apagar(n){if(!confirm("Apagar?"))return;await post("/api/apagar",{nome:decodeURIComponent(n),path:CAMINHO_ATUAL});carregarArquivos(CAMINHO_ATUAL)}
-async function fazerUpload(){
-  const inp=$("#upFile");if(!inp.files.length){toast("Escolha arquivo(s)");return}
-  const fd=new FormData();
-  for(const f of inp.files)fd.append("arquivos",f,f.name);
-  if(CAMINHO_ATUAL) fd.append("path", CAMINHO_ATUAL);
-  toast("Enviando…");
-  const r=await fetch("/api/upload",{method:"POST",body:fd});
-  if(r.status===401){mostrarLock();return}
-  const j=await r.json().catch(()=>({}));toast(j.saida||j.erro||"enviado");inp.value="";carregarArquivos(CAMINHO_ATUAL);
-}
+async function fazerUpload(){const inp=$("#upFile");if(!inp.files.length){toast("Escolha arquivo(s)");return}const fd=new FormData();for(const f of inp.files)fd.append("arquivos",f,f.name);if(CAMINHO_ATUAL)fd.append("path",CAMINHO_ATUAL);toast("Enviando…");const r=await fetch("/api/upload",{method:"POST",body:fd});if(r.status===401){mostrarLock();return}const j=await r.json().catch(()=>({}));toast(j.saida||j.erro||"enviado");inp.value="";carregarArquivos(CAMINHO_ATUAL)}
 
-// ============ STATUS PC ============
 async function atualizarStatus(){
   const j=await get("/api/status");if(j.erro)return;
   const cpu=j.cpu||0,ram=j.ram||0;
   $("#stCpu").textContent=cpu.toFixed(0)+"%";
+  const cm=$("#stCpuModel");if(cm){cm.textContent=j.cpu_model||"CPU";cm.title=j.cpu_model||""}
   $("#stRam").textContent=ram.toFixed(0)+"%"+(j.ram_detalhe?" "+j.ram_detalhe:"");
   const setBar=(id,val)=>{const el=$("#"+id);if(!el)return;el.style.width=Math.min(100,Math.max(0,val))+"%";el.classList.toggle("warn",val>=70&&val<90);el.classList.toggle("crit",val>=90)};
   setBar("stCpuBar",cpu);setBar("stRamBar",ram);
   const g=j.gpu||{};
   const stGpu=$("#stGpu");
   if(g.nome){
-    let txt = g.nome;
-    if(g.uso!==null && g.uso!==undefined) txt = g.nome.split(" ").slice(-2).join(" ") + " • " + g.uso + "%";
-    stGpu.textContent = txt;
-    stGpu.title = g.nome + (g.mem_usada ? ` | ${g.mem_usada}/${g.mem_total} MB` : "");
-    if(g.uso!==null && g.uso!==undefined) setBar("stGpuBar", g.uso);
-    else setBar("stGpuBar", 0);
-  } else {
-    stGpu.textContent = "N/D";
-    setBar("stGpuBar", 0);
-  }
-  const stTemp = $("#stTemp");
-  if(j.temp !== null && j.temp !== undefined){
-    stTemp.textContent = j.temp.toFixed(0)+"°C";
-    stTemp.title = "";
-  } else {
-    stTemp.textContent = "N/D";
-    stTemp.title = "Rode o HWiNFO64 com Shared Memory ativo, ou rode o RotaControl como admin.";
-  }
-  $("#stUptime").textContent = j.uptime || "—";
-  const ld = $("#listaDiscos"); if(ld){
-    ld.innerHTML = "";
+    let txt=g.nome;
+    if(g.uso!==null&&g.uso!==undefined)txt=g.nome.split(" ").slice(-2).join(" ")+" • "+g.uso+"%";
+    stGpu.textContent=txt;
+    stGpu.title=g.nome+(g.mem_usada?` | ${g.mem_usada}/${g.mem_total} MB`:"");
+    if(g.uso!==null&&g.uso!==undefined)setBar("stGpuBar",g.uso);else setBar("stGpuBar",0);
+  } else {stGpu.textContent="N/D";setBar("stGpuBar",0)}
+  const rd=j.rede||{};
+  $("#stRede").textContent = `↓ ${(rd.down_mbps||0).toFixed(2)} ↑ ${(rd.up_mbps||0).toFixed(2)} Mbps`;
+  const pg=j.ping;
+  $("#stPing").textContent = (pg!==null&&pg!==undefined) ? (pg+" ms") : "—";
+  const stTemp=$("#stTemp");
+  if(j.temp!==null&&j.temp!==undefined){stTemp.textContent=j.temp.toFixed(0)+"°C";stTemp.title=""}
+  else{stTemp.textContent="N/D";stTemp.title="Abra o HWiNFO64 (embutido) ou rode como admin."}
+  $("#stUptime").textContent=j.uptime||"—";
+  const ld=$("#listaDiscos");
+  if(ld){
+    ld.innerHTML="";
     (j.discos||[]).forEach(d=>{
-      const el = document.createElement("div"); el.className="disco";
-      const barClass = d.percent>=90 ? "crit" : d.percent>=70 ? "warn" : "";
-      el.innerHTML = `
-        <div class="discoTop">
-          <span class="discoNome">💾 ${esc(d.letra)}</span>
-          <span class="discoDet">${d.percent}% usado</span>
-        </div>
-        <div class="statBar"><div class="statBarIn ${barClass}" style="width:${d.percent}%"></div></div>
-        <div class="discoDet" style="margin-top:6px">${d.livre_gb} GB livres de ${d.total_gb} GB (${esc(d.fs)})</div>
-      `;
+      const el=document.createElement("div");el.className="disco";
+      const barClass=d.percent>=90?"crit":d.percent>=70?"warn":"";
+      el.innerHTML=`<div class="discoTop"><span class="discoNome">💾 ${esc(d.letra)}</span><span class="discoDet">${d.percent}% usado</span></div><div class="statBar"><div class="statBarIn ${barClass}" style="width:${d.percent}%"></div></div><div class="discoDet" style="margin-top:6px">${d.livre_gb} GB livres de ${d.total_gb} GB (${esc(d.fs)})</div>`;
       ld.appendChild(el);
     });
-    if(!(j.discos||[]).length) ld.innerHTML = '<div class="hint">(nenhum disco detectado)</div>';
+    if(!(j.discos||[]).length)ld.innerHTML='<div class="hint">(nenhum disco detectado)</div>';
   }
+}
+
+async function carregarTopProcs(){
+  const j=await get("/api/top_processos");const box=$("#listaTopProcs");if(!box)return;
+  const procs=j.processos||[];
+  if(!procs.length){box.innerHTML='<div class="hint">(nada)</div>';return}
+  box.innerHTML="";
+  procs.forEach(p=>{
+    const d=document.createElement("div");d.className="arq";
+    d.innerHTML=`<span class="nome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span><span class="tam">${p.mem_mb} MB${p.cpu?(" • "+p.cpu+"%"):""}</span>`;
+    box.appendChild(d);
+  });
 }
 
 async function reparar(tipo){toast("Executando…");const j=await post("/api/reparar",{tipo});toast(j.saida||j.erro||"ok")}
 
-// ============ TERMINAL RÁPIDO ============
-let termEvtSource = null;
-function termRun(){
-  const cmd = $("#termCmd").value.trim();
-  if(!cmd) return;
-  const pre = $("#termPre");
-  pre.textContent += "\n$ " + cmd + "\n";
-  pre.scrollTop = pre.scrollHeight;
-  if(termEvtSource){ try{termEvtSource.close()}catch(e){} termEvtSource=null; }
-  termEvtSource = new EventSource("/api/terminal?cmd=" + encodeURIComponent(cmd));
-  termEvtSource.onmessage = (e) => {
-    try{ const d = JSON.parse(e.data); pre.textContent += d; pre.scrollTop = pre.scrollHeight; }catch(err){}
-  };
-  termEvtSource.addEventListener("end", () => { try{termEvtSource.close()}catch(e){} termEvtSource=null; });
-  termEvtSource.onerror = () => { try{termEvtSource.close()}catch(e){} termEvtSource=null; };
-  $("#termCmd").value = "";
-}
+let termEvtSource=null;
+function termRun(){const cmd=$("#termCmd").value.trim();if(!cmd)return;const pre=$("#termPre");pre.textContent+="\n$ "+cmd+"\n";pre.scrollTop=pre.scrollHeight;if(termEvtSource){try{termEvtSource.close()}catch(e){}termEvtSource=null}termEvtSource=new EventSource("/api/terminal?cmd="+encodeURIComponent(cmd));termEvtSource.onmessage=(e)=>{try{const d=JSON.parse(e.data);pre.textContent+=d;pre.scrollTop=pre.scrollHeight}catch(err){}};termEvtSource.addEventListener("end",()=>{try{termEvtSource.close()}catch(e){}termEvtSource=null});termEvtSource.onerror=()=>{try{termEvtSource.close()}catch(e){}termEvtSource=null};$("#termCmd").value=""}
 
-// ============ IA ============
-let iaHistorico = [];
-function iaAddMsg(tipo, texto){
-  const box = $("#iaChat");
-  const d = document.createElement("div");
-  d.className = "iaMsg " + tipo;
-  d.textContent = texto;
-  box.appendChild(d);
-  box.scrollTop = box.scrollHeight;
-}
-async function iaEnviar(){
-  const inp = $("#iaInput"); const txt = inp.value.trim();
-  if(!txt) return;
-  inp.value = "";
-  iaAddMsg("user", txt);
-  iaHistorico.push({role:"user", content: txt});
-  iaAddMsg("sys", "pensando…");
-  const last = $("#iaChat").lastChild;
-  const j = await post("/api/ia", {mensagens: iaHistorico});
-  try{ last.remove(); }catch(e){}
-  if(j.erro){ iaAddMsg("sys", "Erro: " + j.erro); return; }
-  const resp = j.resposta || "(vazio)";
-  iaHistorico.push({role:"assistant", content: resp});
-  iaAddMsg("bot", resp);
-}
-async function carregarIAConfig(){
-  const j = await get("/api/ia_config");
-  if(j.erro) return;
-  const ativo = j.tem_chave;
-  $("#iaStatus").textContent = ativo ? "IA pronta ✓ (Groq)" : "⚠️ Sem chave da Groq — configure no código";
-}
+let iaHistorico=[];
+function iaAddMsg(tipo,texto){const box=$("#iaChat");const d=document.createElement("div");d.className="iaMsg "+tipo;d.textContent=texto;box.appendChild(d);box.scrollTop=box.scrollHeight}
+async function iaEnviar(){const inp=$("#iaInput");const txt=inp.value.trim();if(!txt)return;inp.value="";iaAddMsg("user",txt);iaHistorico.push({role:"user",content:txt});iaAddMsg("sys","pensando…");const last=$("#iaChat").lastChild;const j=await post("/api/ia",{mensagens:iaHistorico});try{last.remove()}catch(e){}if(j.erro){iaAddMsg("sys","Erro: "+j.erro);return}const resp=j.resposta||"(vazio)";iaHistorico.push({role:"assistant",content:resp});iaAddMsg("bot",resp)}
+async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta ✓ (Groq)":"⚠️ Sem chave da Groq"}
 
-// ============ PIP ============
 let pipActive=false,pipStream=null,pipVideoReady=false,pipStopDraw=false,docPipWin=null,docPipStop=false;
-const PIP_METHOD = ('documentPictureInPicture' in window) ? 'doc' : (document.pictureInPictureEnabled ? 'video' : 'none');
+const PIP_METHOD=('documentPictureInPicture' in window)?'doc':(document.pictureInPictureEnabled?'video':'none');
 function resetPipBtn(){const bp=document.getElementById('btnPip');if(!bp)return;bp.textContent='Picture-in-Picture';bp.classList.remove('on')}
 function fecharPip(comBtnReset){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true}if(pipActive){document.exitPictureInPicture().catch(()=>{});pipActive=false}pararVideoPip();if(comBtnReset!==false)resetPipBtn()}
 async function prepararVideoPip(){if(pipVideoReady)return;const vid=document.getElementById('pipVideo'),cvs=document.getElementById('pipCanvas');if(!vid||!cvs)return;const img=document.getElementById('tela');for(let i=0;i<50&&(!img.src||!img.complete||img.naturalWidth===0);i++){await new Promise(r=>setTimeout(r,100))}if(!img.src||!img.complete||img.naturalWidth===0)return;cvs.width=640;cvs.height=360;const ctx=cvs.getContext('2d');pipStopDraw=false;const draw=()=>{if(pipStopDraw)return;const im=document.getElementById('tela');if(im&&im.complete&&im.naturalWidth>0){try{ctx.drawImage(im,0,0,640,360)}catch(e){}}setTimeout(draw,60)};draw();await new Promise(r=>setTimeout(r,200));try{pipStream=cvs.captureStream(20);vid.style.cssText="position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";vid.muted=true;vid.playsInline=true;vid.srcObject=pipStream;await vid.play();for(let i=0;i<40;i++){if(vid.readyState>=2&&vid.videoWidth>0)break;await new Promise(r=>setTimeout(r,100))}if(vid.readyState>=2&&vid.videoWidth>0)pipVideoReady=true}catch(e){}}
 function pararVideoPip(){pipStopDraw=true;if(pipStream){pipStream.getTracks().forEach(t=>t.stop());pipStream=null}const vid=document.getElementById('pipVideo');if(vid){vid.srcObject=null;vid.style.cssText="display:none"}pipVideoReady=false;pipActive=false}
-function setupDocPip(w){
-  docPipWin=w;docPipStop=false;
-  const st=w.document.createElement('style');
-  st.textContent='html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}';
-  w.document.head.appendChild(st);
-  const im=w.document.createElement('img');im.alt="";
-  im.src=ORIGEM+"/api/stream.mjpg?monitor="+ESTADO_MONITOR_ATUAL;
-  w.document.body.appendChild(im);
-  const btn=document.getElementById('btnPip');btn.textContent='Sair do PiP';btn.classList.add('on');
-  const f=()=>{docPipStop=true;docPipWin=null;try{im.src=""}catch(e){}resetPipBtn()};
-  w.addEventListener('pagehide',f,{once:true});w.addEventListener('unload',f,{once:true});
-}
-function togglePip(){
-  const btn=document.getElementById('btnPip');
-  if(PIP_METHOD==='doc'){
-    if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true;resetPipBtn();return}
-    if(btn.classList.contains('on')){resetPipBtn();return}
-    if(!telaAtiva)toggleAuto();
-    documentPictureInPicture.requestWindow({width:640,height:360}).then(w=>setupDocPip(w)).catch(e=>toast('Erro PiP: '+(e.name||'')+' '+(e.message||e)));
-    return;
-  }
-  if(PIP_METHOD==='video'){
-    const vid=document.getElementById('pipVideo');
-    if(pipActive){document.exitPictureInPicture().catch(()=>{});resetPipBtn();return}
-    if(!telaAtiva){toggleAuto();toast('Ativei "Ver ao vivo". Clique de novo.');if(!pipVideoReady)prepararVideoPip();return}
-    if(!pipVideoReady){prepararVideoPip();toast('Preparando… clique de novo');return}
-    if(vid.readyState<2||vid.videoWidth===0){toast('Aguarde um instante');return}
-    const p=vid.requestPictureInPicture();
-    if(p&&p.then){p.then(()=>{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}).catch(e=>toast('Erro PiP: '+(e.name||'')))}else{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}
-    if(!vid._pipLeaveBound){vid._pipLeaveBound=true;vid.addEventListener('leavepictureinpicture',()=>{pararVideoPip();resetPipBtn()})}
-    return;
-  }
-  toast('PiP não suportado');
-}
+function setupDocPip(w){docPipWin=w;docPipStop=false;const st=w.document.createElement('style');st.textContent='html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}';w.document.head.appendChild(st);const im=w.document.createElement('img');im.alt="";im.src=ORIGEM+"/api/stream.mjpg?monitor="+ESTADO_MONITOR_ATUAL;w.document.body.appendChild(im);const btn=document.getElementById('btnPip');btn.textContent='Sair do PiP';btn.classList.add('on');const f=()=>{docPipStop=true;docPipWin=null;try{im.src=""}catch(e){}resetPipBtn()};w.addEventListener('pagehide',f,{once:true});w.addEventListener('unload',f,{once:true})}
+function togglePip(){const btn=document.getElementById('btnPip');if(PIP_METHOD==='doc'){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true;resetPipBtn();return}if(btn.classList.contains('on')){resetPipBtn();return}if(!telaAtiva)toggleAuto();documentPictureInPicture.requestWindow({width:640,height:360}).then(w=>setupDocPip(w)).catch(e=>toast('Erro PiP: '+(e.name||'')+' '+(e.message||e)));return}if(PIP_METHOD==='video'){const vid=document.getElementById('pipVideo');if(pipActive){document.exitPictureInPicture().catch(()=>{});resetPipBtn();return}if(!telaAtiva){toggleAuto();toast('Ativei "Ver ao vivo". Clique de novo.');if(!pipVideoReady)prepararVideoPip();return}if(!pipVideoReady){prepararVideoPip();toast('Preparando… clique de novo');return}if(vid.readyState<2||vid.videoWidth===0){toast('Aguarde um instante');return}const p=vid.requestPictureInPicture();if(p&&p.then){p.then(()=>{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}).catch(e=>toast('Erro PiP: '+(e.name||'')))}else{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on')}if(!vid._pipLeaveBound){vid._pipLeaveBound=true;vid.addEventListener('leavepictureinpicture',()=>{pararVideoPip();resetPipBtn()})}return}toast('PiP não suportado')}
 
-// ============ TELA AO VIVO ============
 function segurarBotao(el,fn,delay=250){if(!el)return;let timer=null;const start=e=>{if(e){e.preventDefault()}if(timer)return;fn();timer=setInterval(fn,delay)};const stop=()=>{if(timer){clearInterval(timer);timer=null}};el.addEventListener("mousedown",start);el.addEventListener("touchstart",start,{passive:false});el.addEventListener("mouseup",stop);el.addEventListener("mouseleave",stop);el.addEventListener("touchend",stop);el.addEventListener("touchcancel",stop);el.addEventListener("blur",stop)}
 let telaAtiva=false,telaTimer=null,telaEmVoo=false;
 const TELA_INTERVALO=160;
-async function atualizarTela(){
-  if(!telaAtiva||telaEmVoo)return;
-  if(document.hidden){telaTimer=setTimeout(atualizarTela,500);return}
-  telaEmVoo=true;const t0=performance.now();
-  try{
-    const ctrl=new AbortController();const to=setTimeout(()=>ctrl.abort(),4000);
-    const r=await fetch("/api/tela.jpg?t="+Date.now()+"&monitor="+ESTADO_MONITOR_ATUAL,{cache:"no-store",signal:ctrl.signal});
-    clearTimeout(to);
-    if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}
-    if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,400);return}
-    const blob=await r.blob();const url=URL.createObjectURL(blob);const img=$("#tela");const velho=img.src;
-    const pre=new Image();
-    pre.onload=()=>{img.src=url;if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}}};
-    pre.onerror=()=>{try{URL.revokeObjectURL(url)}catch(e){}};
-    pre.src=url;$("#telaHora").textContent="Ao vivo • "+new Date().toLocaleTimeString();
-  }catch(e){}
-  const dt=performance.now()-t0;telaEmVoo=false;
-  telaTimer=setTimeout(atualizarTela,Math.max(30,TELA_INTERVALO-dt));
-}
-function toggleAuto(){
-  telaAtiva=!telaAtiva;const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");
-  if(telaAtiva){btn.textContent="Parar";btn.classList.remove("acc");btn.classList.add("on");img.style.display="block";off.classList.add("hid");atualizarTela();if(PIP_METHOD==='video')prepararVideoPip()}
-  else{btn.textContent="Ver ao vivo";btn.classList.remove("on");btn.classList.add("acc");clearTimeout(telaTimer);telaTimer=null;img.style.display="none";img.src="";off.classList.remove("hid");$("#telaHora").textContent="—";fecharPip(true)}
-}
+async function atualizarTela(){if(!telaAtiva||telaEmVoo)return;if(document.hidden){telaTimer=setTimeout(atualizarTela,500);return}telaEmVoo=true;const t0=performance.now();try{const ctrl=new AbortController();const to=setTimeout(()=>ctrl.abort(),4000);const r=await fetch("/api/tela.jpg?t="+Date.now()+"&monitor="+ESTADO_MONITOR_ATUAL,{cache:"no-store",signal:ctrl.signal});clearTimeout(to);if(r.status===401){mostrarLock();telaAtiva=false;telaEmVoo=false;return}if(!r.ok){telaEmVoo=false;telaTimer=setTimeout(atualizarTela,400);return}const blob=await r.blob();const url=URL.createObjectURL(blob);const img=$("#tela");const velho=img.src;const pre=new Image();pre.onload=()=>{img.src=url;if(velho&&velho.startsWith("blob:")){try{URL.revokeObjectURL(velho)}catch(e){}}};pre.onerror=()=>{try{URL.revokeObjectURL(url)}catch(e){}};pre.src=url;$("#telaHora").textContent="Ao vivo • "+new Date().toLocaleTimeString()}catch(e){}const dt=performance.now()-t0;telaEmVoo=false;telaTimer=setTimeout(atualizarTela,Math.max(30,TELA_INTERVALO-dt))}
+function toggleAuto(){telaAtiva=!telaAtiva;const btn=$("#btnAuto"),img=$("#tela"),off=$("#telaOff");if(telaAtiva){btn.textContent="Parar";btn.classList.remove("acc");btn.classList.add("on");img.style.display="block";off.classList.add("hid");atualizarTela();if(PIP_METHOD==='video')prepararVideoPip()}else{btn.textContent="Ver ao vivo";btn.classList.remove("on");btn.classList.add("acc");clearTimeout(telaTimer);telaTimer=null;img.style.display="none";img.src="";off.classList.remove("hid");$("#telaHora").textContent="—";fecharPip(true)}}
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&telaAtiva&&!telaEmVoo){clearTimeout(telaTimer);atualizarTela()}});
 
-// ============ PROCESSOS / COMANDOS ============
-async function carregarProcessos(){
-  const j=await get("/api/processos");const box=$("#listaProcs");box.innerHTML="";
-  if(j.erro){box.innerHTML=`<div class="hint">Erro: ${esc(j.erro)}</div>`;return}
-  (j.processos||[]).forEach(p=>{
-    const mem=p.mem_kb<1024?p.mem_kb+" KB":(p.mem_kb/1024).toFixed(1)+" MB";
-    const d=document.createElement("div");d.className="arq";
-    d.innerHTML=`<span class="nome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span><span class="tam">${mem}</span><button class="del" onclick="matarProc(${p.pid},'${esc(p.nome)}')">Matar</button>`;
-    box.appendChild(d);
-  });
-  if(!(j.processos||[]).length)box.innerHTML='<div class="hint">(vazio)</div>';
-}
+async function carregarProcessos(){const j=await get("/api/processos");const box=$("#listaProcs");box.innerHTML="";if(j.erro){box.innerHTML=`<div class="hint">Erro: ${esc(j.erro)}</div>`;return}(j.processos||[]).forEach(p=>{const mem=p.mem_kb<1024?p.mem_kb+" KB":(p.mem_kb/1024).toFixed(1)+" MB";const d=document.createElement("div");d.className="arq";d.innerHTML=`<span class="nome">${esc(p.nome)} <small style="color:#8b8b99">#${p.pid}</small></span><span class="tam">${mem}</span><button class="del" onclick="matarProc(${p.pid},'${esc(p.nome)}')">Matar</button>`;box.appendChild(d)});if(!(j.processos||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
 async function matarProc(pid,nome){if(!confirm(`Matar "${nome}"?`))return;const j=await post("/api/matar_processo",{pid});toast(j.saida||j.erro||"ok");carregarProcessos()}
-async function carregarComandos(){
-  const j=await get("/api/comandos");const g=$("#gridComandos");g.innerHTML="";
-  (j.comandos||[]).forEach((c,i)=>{
-    const b=document.createElement("button");b.className="btn";b.textContent=c.nome;
-    b.onclick=()=>execComando(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${c.nome}"?`))removerComando(i)};
-    g.appendChild(b);
-  });
-  if(!(j.comandos||[]).length)g.innerHTML='<div class="hint">(vazio)</div>';
-}
+async function carregarComandos(){const j=await get("/api/comandos");const g=$("#gridComandos");g.innerHTML="";(j.comandos||[]).forEach((c,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=c.nome;b.onclick=()=>execComando(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${c.nome}"?`))removerComando(i)};g.appendChild(b)});if(!(j.comandos||[]).length)g.innerHTML='<div class="hint">(vazio)</div>'}
 async function execComando(i){toast("Executando…");const j=await post("/api/comando_exec",{idx:i});alert(j.erro?("ERRO: "+j.erro):(j.saida||"(sem saída)"))}
 async function removerComando(i){await post("/api/comando_remover",{idx:i});carregarComandos()}
 function abrirNovoComando(){const nome=prompt("Nome:");if(!nome)return;const cmd=prompt("Comando CMD:");if(!cmd)return;post("/api/comando_add",{nome,cmd}).then(carregarComandos)}
 
-// ============ TIMERS / WOL / SISTEMA ============
 async function agendarTimer(){const min=parseInt($("#timerMin").value)||30;const acao=$("#timerAcao").value;const j=await post("/api/timer",{minutos:min,acao});toast(j.saida||j.erro||"ok");carregarTimers()}
 async function timerRapido(m){$("#timerMin").value=m;agendarTimer()}
 async function carregarTimers(){const j=await get("/api/timers");const t=j.timers||[];if(!t.length){$("#timerInfo").textContent="Nenhum timer ativo."}else{const agora=Date.now()/1000;$("#timerInfo").textContent=t.map(x=>`${x.acao} em ${Math.max(0,Math.round(x.quando-agora))}s`).join(" • ")}}
@@ -2228,63 +1964,20 @@ async function sistema(a){if(["desligar","reiniciar","dormir"].includes(a)){if(!
 async function monitor(a){const j=await post("/api/monitor",{acao:a});toast(j.saida||j.erro||a)}
 async function mostrarQR(){const j=await post("/api/qr_para_pc",{});toast(j.saida||j.erro||"ok")}
 
-// ============ SISTEMA / CONFIG ============
 let ultimoLan="",ultimoTunel="";
-async function carregarSistema(){
-  const j=await get("/api/state");
-  ultimoLan="http://"+j.ip+":"+j.porta;
-  $("#ipShow").textContent=ultimoLan;
-  $("#pastaIn").value=j.pasta_arquivos||"";
-  $("#pinWarn").classList.toggle("hid",j.pin_set);
-  if(j.modo==="wan")atualizarModoUI();
-  await atualizarTunel();
-  await carregarIAConfig();
-}
+async function carregarSistema(){const j=await get("/api/state");ultimoLan="http://"+j.ip+":"+j.porta;$("#ipShow").textContent=ultimoLan;$("#pastaIn").value=j.pasta_arquivos||"";$("#pinWarn").classList.toggle("hid",j.pin_set);if(j.modo==="wan")atualizarModoUI();await atualizarTunel();await carregarIAConfig()}
 async function atualizarTunel(){try{const r=await fetch("/api/config");const j=await r.json();ultimoTunel=j.tunel_url||"";if(ultimoTunel&&ultimoTunel.startsWith("http"))$("#tunelBox2").textContent=ultimoTunel;else if(ultimoTunel)$("#tunelBox2").textContent=ultimoTunel;else $("#tunelBox2").textContent="desativado"}catch(e){}}
 function copiarIP(){copiar(ultimoLan,"LAN")}
 function copiarTunel(){if(!ultimoTunel||!ultimoTunel.startsWith("http")){toast("Túnel inativo");return}copiar(ultimoTunel,"WAN")}
 
-// Predefinições de pasta
-function setPastaSelect(v){
-  if(!v) { $("#pastaIn").value = ""; return; }
-  fetch("/api/state").then(r=>r.json()).then(j=>{
-    const userprofile = j.userprofile || "C:\\Users\\Voce";
-    const map = {
-      desktop:   "Desktop",
-      documents: "Documents",
-      downloads: "Downloads",
-      pictures:  "Pictures",
-      videos:    "Videos",
-      music:     "Music",
-      home:      "",
-    };
-    const sub = map[v] || "";
-    $("#pastaIn").value = sub ? `${userprofile}\\${sub}` : userprofile;
-  });
-}
-async function salvarPasta(){
-  const v=$("#pastaIn").value.trim();
-  if(!v){toast("Escolha uma pasta no menu");return}
-  const j=await post("/api/pasta",{pasta:v});
-  toast("Salvo");
-  if(j.pasta) $("#pastaIn").value=j.pasta;
-}
+function setPastaSelect(v){if(!v){$("#pastaIn").value="";return}fetch("/api/state").then(r=>r.json()).then(j=>{const up=j.userprofile||"C:\\Users\\Voce";const map={desktop:"Desktop",documents:"Documents",downloads:"Downloads",pictures:"Pictures",videos:"Videos",music:"Music",home:""};const sub=map[v]||"";$("#pastaIn").value=sub?`${up}\\${sub}`:up})}
+async function salvarPasta(){const v=$("#pastaIn").value.trim();if(!v){toast("Escolha uma pasta no menu");return}const j=await post("/api/pasta",{pasta:v});toast("Salvo");if(j.pasta)$("#pastaIn").value=j.pasta}
 
 async function definirPin(){const p=$("#pinIn").value.trim();if(p.length<4){alert("Mínimo 4");return}await post("/api/pin",{pin:p});$("#pinIn").value="";toast("PIN definido");carregarSistema()}
 async function removerPin(){if(!confirm("Remover PIN?"))return;await post("/api/pin",{pin:""});toast("PIN removido");carregarSistema()}
 
-async function fecharPrograma(){
-  if(!confirm("Fechar o programa no PC?"))return;toast("Fechando…");
-  try{await post("/api/fechar",{})}catch(e){}
-  for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}
-  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">RotaControl encerrado</b></div>';
-}
-async function bypassPrograma(){
-  if(!confirm("BYPASS: apaga o .exe. Continuar?"))return;toast("Aplicando…");
-  try{await post("/api/bypass",{})}catch(e){}
-  for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}
-  document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#c82020;font-size:22px">BYPASS aplicado</b></div>';
-}
+async function fecharPrograma(){if(!confirm("Fechar o programa no PC?"))return;toast("Fechando…");try{await post("/api/fechar",{})}catch(e){}for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">RotaControl encerrado</b></div>'}
+async function bypassPrograma(){if(!confirm("BYPASS: apaga o .exe. Continuar?"))return;toast("Aplicando…");try{await post("/api/bypass",{})}catch(e){}for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#c82020;font-size:22px">BYPASS aplicado</b></div>'}
 
 let modoAtual="lan",tunelUrl=null,tunelPoll=null;
 async function carregarModo(){try{const r=await fetch("/api/config");const j=await r.json();modoAtual=j.modo||"lan";tunelUrl=j.tunel_url||null;atualizarModoUI();if(modoAtual==="wan"&&(!tunelUrl||!tunelUrl.startsWith("http")))iniciarPollTunel()}catch(e){}}
@@ -2297,36 +1990,14 @@ async function carregarAutostart(){try{const r=await fetch("/api/autostart");con
 function atualizarBotaoAuto(){const b=$("#btnAuto2");if(!b)return;if(autoAtivo){b.innerHTML="✓ Iniciar com Windows: <b>ATIVADO</b>";b.classList.remove("ghost");b.classList.add("on")}else{b.innerHTML="Iniciar com Windows: DESATIVADO";b.classList.add("ghost");b.classList.remove("on")}}
 async function toggleAutostart(){const novo=!autoAtivo;const r=await fetch("/api/autostart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ativo:novo})});if(r.ok){autoAtivo=novo;atualizarBotaoAuto();toast(novo?"Autostart ON":"Autostart OFF")}}
 
-// PWA
-let deferredPrompt = null;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault(); deferredPrompt = e;
-  const btn = document.getElementById('btnInstalarPWA');
-  if (btn) btn.classList.remove('hid');
-  const st = document.getElementById('pwaStatus');
-  if (st) st.textContent = 'Pronto pra instalar! Toque no botão acima.';
-});
-window.addEventListener('appinstalled', () => {
-  deferredPrompt = null;
-  const btn = document.getElementById('btnInstalarPWA');
-  if (btn) btn.classList.add('hid');
-  const st = document.getElementById('pwaStatus');
-  if (st) st.textContent = 'App instalado ✓';
-  toast("App instalado ✓");
-});
-async function instalarPWA(){
-  if(!deferredPrompt){ toast("Não disponível — use HTTPS ou localhost"); return; }
-  deferredPrompt.prompt();
-  const { outcome } = await deferredPrompt.userChoice;
-  if(outcome === "accepted") toast("Instalando...");
-  deferredPrompt = null;
-}
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',(e)=>{e.preventDefault();deferredPrompt=e;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.remove('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='Pronto pra instalar!'});
+window.addEventListener('appinstalled',()=>{deferredPrompt=null;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.add('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='App instalado ✓';toast("App instalado ✓")});
+async function instalarPWA(){if(!deferredPrompt){toast("Não disponível");return}deferredPrompt.prompt();const{outcome}=await deferredPrompt.userChoice;if(outcome==="accepted")toast("Instalando...");deferredPrompt=null}
 
-// ============ LOCK ============
 function mostrarLock(){$("#lockScreen").classList.remove("hid")}
 async function entrarPin(){const pin=$("#lockPin").value;const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(r.ok){$("#lockScreen").classList.add("hid");$("#lockPin").value="";iniciar()}else toast("PIN incorreto")}
 
-// ============ INIT ============
 async function iniciar(){
   const j=await get("/api/state");
   if(j.pin_set&&!j.autenticado){mostrarLock();return}
@@ -2335,13 +2006,13 @@ async function iniciar(){
   carregarModoUI();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarWol();carregarComandos();
-  try{ await post("/api/teclas/soltar_todas",{}); }catch(e){}
+  try{await post("/api/teclas/soltar_todas",{})}catch(e){}
   setInterval(atualizarTunel,4000);
   segurarBotao($("#btnVolUp"),()=>midia('vol_up'),250);
   segurarBotao($("#btnVolDown"),()=>midia('vol_down'),250);
-  try{ const jm=await get("/api/monitores"); ESTADO_MONITOR_ATUAL=jm.atual||0; }catch(e){}
+  try{const jm=await get("/api/monitores");ESTADO_MONITOR_ATUAL=jm.atual||0}catch(e){}
   window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/teclas/soltar_todas",new Blob([JSON.stringify({})],{type:"application/json"}))}catch(e){}});
-  setTimeout(()=>abrirTutorial(false), 400);
+  setTimeout(()=>abrirTutorial(false),400);
 }
 iniciar();
 </script>
@@ -2361,12 +2032,9 @@ def home(): return PAGINA
 @app.route("/manifest.json")
 def manifest():
     return jsonify({
-        "name": "RotaControl",
-        "short_name": "RotaControl",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#0a0a0d",
-        "theme_color": "#0a0a0d",
+        "name": "RotaControl", "short_name": "RotaControl",
+        "start_url": "/", "display": "standalone",
+        "background_color": "#0a0a0d", "theme_color": "#0a0a0d",
         "icons": [
             {"src": "/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
             {"src": "/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
@@ -2686,13 +2354,11 @@ def _ler_temperatura():
     _STATUS_TEMP_CACHE["t"] = now
     _STATUS_TEMP_CACHE["v"] = None
 
-    # Tentativa 1: sensorwatch (HWiNFO64 shared memory, sem admin)
+    # 1) sensorwatch (HWiNFO64 shared memory)
     try:
-        r = executar(
-            [sys.executable, "-m", "sensorwatch", "snapshot",
-             "--include", "CPU", "--json"],
-            capture_output=True, text=True, timeout=5
-        )
+        r = executar([sys.executable, "-m", "sensorwatch", "snapshot",
+                      "--include", "CPU", "--json"],
+                     capture_output=True, text=True, timeout=5)
         out = (r.stdout or "").strip()
         if out:
             data = json.loads(out)
@@ -2702,22 +2368,18 @@ def _ler_temperatura():
                 if "temp" in stype or "temp" in reading:
                     v = float(sensor.get("value", 0))
                     if 0 < v < 200:
-                        _STATUS_TEMP_CACHE["v"] = v
-                        return v
-    except Exception:
-        pass
+                        _STATUS_TEMP_CACHE["v"] = v; return v
+    except Exception: pass
 
-    # Tentativa 2: WinTmp (admin)
+    # 2) WinTmp (admin)
     try:
         import WinTmp
         v = WinTmp.CPU_Temp()
         if v and 0 < v < 200:
-            _STATUS_TEMP_CACHE["v"] = v
-            return v
-    except Exception:
-        pass
+            _STATUS_TEMP_CACHE["v"] = v; return v
+    except Exception: pass
 
-    # Tentativa 3: WMI MSAcpi
+    # 3) WMI MSAcpi
     try:
         script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
                   "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
@@ -2730,16 +2392,22 @@ def _ler_temperatura():
         if out and re.match(r"^-?\d+(\.\d+)?$", out):
             v = float(out)
             if -50 < v < 200:
-                _STATUS_TEMP_CACHE["v"] = v
-                return v
-    except Exception:
-        pass
-
+                _STATUS_TEMP_CACHE["v"] = v; return v
+    except Exception: pass
     return None
 
 
+_GPU_CACHE = {"t": 0, "v": None}
+_GPU_INTERVALO = 8
+
 def _ler_gpu():
+    now = time.time()
+    if now - _GPU_CACHE["t"] < _GPU_INTERVALO and _GPU_CACHE["v"]:
+        return _GPU_CACHE["v"]
+    _GPU_CACHE["t"] = now
     info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
+
+    # NVIDIA
     try:
         r = executar(["nvidia-smi",
                       "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -2750,37 +2418,55 @@ def _ler_gpu():
             parts = [p.strip() for p in out.split("\n")[0].split(",")]
             if len(parts) >= 5:
                 info["nome"] = parts[0]
-                for i, key in enumerate(["uso", "mem_usada", "mem_total", "temp"], start=1):
+                for i, key in enumerate(["uso","mem_usada","mem_total","temp"], start=1):
                     try: info[key] = int(float(parts[i]))
-                    except Exception: pass
-                return info
+                    except: pass
+                _GPU_CACHE["v"] = info; return info
     except Exception: pass
-    try:
-        script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
-        cod = base64.b64encode(script.encode("utf-16-le")).decode()
-        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
-        out = (r.stdout or "").strip()
-        if out: info["nome"] = out
-    except Exception: pass
+
+    # Nome via WMI
+    if not info["nome"]:
+        try:
+            script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
+            cod = base64.b64encode(script.encode("utf-16-le")).decode()
+            r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
+            out = (r.stdout or "").strip()
+            if out: info["nome"] = out
+        except Exception: pass
+
+    # Uso via GPU Engine counter (AMD/Intel/NVIDIA Win10+)
+    if info["uso"] is None:
+        try:
+            script = ("$c = Get-Counter -Counter '\\GPU Engine(*)\\Utilization Percentage' "
+                      "-ErrorAction SilentlyContinue -MaxSamples 1; "
+                      "if ($c) { $soma = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum; "
+                      "Write-Output ([math]::Min(100, [math]::Round($soma, 0))) }")
+            cod = base64.b64encode(script.encode("utf-16-le")).decode()
+            r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
+            out = (r.stdout or "").strip()
+            if out and re.match(r"^\d+$", out):
+                v = int(out)
+                if 0 <= v <= 100: info["uso"] = v
+        except Exception: pass
+
+    _GPU_CACHE["v"] = info
     return info
 
 
 def _listar_discos():
     discos = []
     if not PSUTIL_OK: return discos
-    try:
-        parts = psutil.disk_partitions(all=False)
-    except Exception:
-        return discos
+    try: parts = psutil.disk_partitions(all=False)
+    except Exception: return discos
     vistos = set()
     for p in parts:
         mp = p.mountpoint
         if mp in vistos: continue
         opts = (p.opts or "")
         if "cdrom" in opts: continue
-        if not p.fstype and "removable" not in opts:
-            continue
+        if not p.fstype and "removable" not in opts: continue
         try:
             u = psutil.disk_usage(mp)
             vistos.add(mp)
@@ -2793,8 +2479,7 @@ def _listar_discos():
                 "percent": int(u.percent),
                 "fs": p.fstype or "?",
             })
-        except Exception:
-            continue
+        except Exception: continue
     discos.sort(key=lambda d: d["letra"])
     return discos
 
@@ -2812,23 +2497,35 @@ def api_status():
     if b: return b
     if not PSUTIL_OK: return jsonify(erro="psutil nao instalado")
     try:
-        with _CPU_CACHE["lock"]:
-            cpu = _CPU_CACHE["v"]
+        with _CPU_CACHE["lock"]: cpu = _CPU_CACHE["v"]
         ram = psutil.virtual_memory()
         uptime = time.time() - psutil.boot_time()
         temp = _ler_temperatura()
         gpu = _ler_gpu()
         discos = _listar_discos()
+        with _NET_CACHE["lock"]:
+            down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
+        ping = _ping_google()
         return jsonify(
             cpu=cpu,
+            cpu_model=_ler_cpu_model(),
             ram=ram.percent,
             ram_detalhe=f"({fmt_gib(ram.used):.1f}/{fmt_gib(ram.total):.1f} GiB)",
             temp=temp,
             uptime=_fmt_uptime(uptime),
             gpu=gpu,
             discos=discos,
+            rede={"down_mbps": down, "up_mbps": up},
+            ping=ping,
         )
     except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/top_processos")
+def api_top_processos():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(processos=_top_processos(5))
 
 
 # ===================== SCREENSHOT =====================
@@ -2854,8 +2551,7 @@ def api_screenshot_clip():
         png = _capturar_png_full(idx)
         _clip_set_imagem_png(png)
         return jsonify(saida="📋 Print copiado pra área de transferência do PC.")
-    except Exception as e:
-        return jsonify(erro=str(e))
+    except Exception as e: return jsonify(erro=str(e))
 
 
 # ===================== REPAROS =====================
@@ -2894,11 +2590,7 @@ def _gerar_qr_png_bytes(url):
     if not QRCODE_OK: return None
     try:
         from PIL import Image as PILImage
-        qr = qrcode.QRCode(
-            version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_H,
-            box_size=12, border=2,
-        )
+        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=12, border=2)
         qr.add_data(url); qr.make(fit=True)
         logo_img = None
         fonte_logo = QR_LOGO_B64 or LOGO_B64
@@ -2908,24 +2600,20 @@ def _gerar_qr_png_bytes(url):
                 qr_w = qr.modules_count * qr.box_size
                 max_logo = max(24, int(qr_w * 0.24))
                 logo_img.thumbnail((max_logo, max_logo), PILImage.LANCZOS)
-            except Exception as e:
-                log_seguro("erro logo qr:", e); logo_img = None
+            except Exception as e: log_seguro("erro logo qr:", e); logo_img = None
         if logo_img is not None:
             try:
                 from qrcode.image.styledpil import StyledPilImage
                 from qrcode.image.styles.colormasks import SolidFillColorMask
-                img = qr.make_image(
-                    image_factory=StyledPilImage, embedded_image=logo_img,
-                    color_mask=SolidFillColorMask(back_color=(255,255,255), front_color=(10,10,13)),
-                )
+                img = qr.make_image(image_factory=StyledPilImage, embedded_image=logo_img,
+                    color_mask=SolidFillColorMask(back_color=(255,255,255), front_color=(10,10,13)))
             except Exception as e:
-                log_seguro("erro embed logo:", e)
+                log_seguro("erro embed:", e)
                 img = qr.make_image(fill_color="#0a0a0d", back_color="white")
         else:
             img = qr.make_image(fill_color="#0a0a0d", back_color="white")
         buf = io.BytesIO(); img.save(buf, "PNG"); return buf.getvalue()
-    except Exception as e:
-        log_seguro("erro qr:", e); return None
+    except Exception as e: log_seguro("erro qr:", e); return None
 
 
 @app.route("/api/qr_para_pc", methods=["POST"])
@@ -2947,7 +2635,7 @@ def qr_para_pc_page():
             b64 = base64.b64encode(png_bytes).decode()
             img_tag = f'<img src="data:image/png;base64,{b64}" alt="QR">'
         else:
-            img_tag = '<p style="color:#888;padding:20px">Instale <code>qrcode[pil]</code> pra gerar o QR.</p>'
+            img_tag = '<p style="color:#888;padding:20px">Instale qrcode[pil].</p>'
         html = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <title>RotaControl — QR</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -2956,11 +2644,10 @@ html,body{margin:0;padding:0;height:100vh;overflow:hidden;background:#05050a}
 body{font:16px/1.5 system-ui,sans-serif;color:#e9e9f0;display:flex;align-items:center;justify-content:center;flex-direction:column}
 #bg{position:fixed;inset:0;z-index:0}
 .content{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:24px;padding:24px}
-h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-gradient(135deg,#9a3cff,#d4a0ff 50%,#7c00f0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 50px rgba(154,60,255,.5);animation:glow 3s ease-in-out infinite}
-@keyframes glow{0%,100%{filter:brightness(1)}50%{filter:brightness(1.3)}}
-.card{background:#fff;padding:22px;border-radius:22px;box-shadow:0 0 0 1px rgba(154,60,255,.35),0 0 80px rgba(124,0,240,.5),0 24px 80px rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center}
+h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-gradient(135deg,#9a3cff,#d4a0ff 50%,#7c00f0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 50px rgba(154,60,255,.5)}
+.card{background:#fff;padding:22px;border-radius:22px;box-shadow:0 0 0 1px rgba(154,60,255,.35),0 0 80px rgba(124,0,240,.5);display:flex;align-items:center;justify-content:center}
 .card img{width:320px;height:320px;display:block}
-.url{font:18px/1 ui-monospace,Consolas,monospace;color:#d4a0ff;background:rgba(20,20,30,.85);backdrop-filter:blur(12px);padding:14px 26px;border-radius:12px;border:1px solid rgba(154,60,255,.4);letter-spacing:.5px}
+.url{font:18px/1 ui-monospace,Consolas,monospace;color:#d4a0ff;background:rgba(20,20,30,.85);backdrop-filter:blur(12px);padding:14px 26px;border-radius:12px;border:1px solid rgba(154,60,255,.4)}
 .hint{color:#6c6c7a;font-size:13px}
 </style></head><body>
 <canvas id="bg"></canvas>
@@ -2971,29 +2658,19 @@ h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-
   <div class="hint">Aponte a câmera do celular pro QR</div>
 </div>
 <script>
-(function(){
-  const c=document.getElementById('bg'),ctx=c.getContext('2d');
-  let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
-  function resize(){W=window.innerWidth;H=window.innerHeight;c.width=W*DPR;c.height=H*DPR;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0)}
-  window.addEventListener('resize',resize);resize();
-  const N=22,tris=[];
-  for(let i=0;i<N;i++)tris.push({x:Math.random()*W,y:Math.random()*H,size:40+Math.random()*120,angle:Math.random()*Math.PI*2,speed:(Math.random()-.5)*0.012,vx:(Math.random()-.5)*0.35,vy:(Math.random()-.5)*0.35,alpha:.08+Math.random()*.22,hue:265+Math.random()*35,blur:14+Math.random()*20});
-  function vig(){const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.75);g.addColorStop(0,'rgba(124,0,240,.12)');g.addColorStop(.55,'rgba(10,10,15,0)');g.addColorStop(1,'rgba(0,0,0,.6)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H)}
-  let t0=performance.now();
-  function frame(now){const dt=Math.min((now-t0)/16.67,3);t0=now;ctx.fillStyle='#05050a';ctx.fillRect(0,0,W,H);
-    for(const t of tris){t.x+=t.vx*dt;t.y+=t.vy*dt;t.angle+=t.speed*dt;
-      if(t.x<-t.size)t.x=W+t.size;if(t.x>W+t.size)t.x=-t.size;if(t.y<-t.size)t.y=H+t.size;if(t.y>H+t.size)t.y=-t.size;
-      ctx.save();ctx.translate(t.x,t.y);ctx.rotate(t.angle);
-      ctx.strokeStyle='hsla('+t.hue+',100%,65%,'+t.alpha+')';ctx.lineWidth=2;ctx.lineJoin='round';
-      ctx.shadowColor='hsla('+t.hue+',100%,60%,'+(t.alpha+.15)+')';ctx.shadowBlur=t.blur;
-      const s=t.size,v=[[0,-s*.5],[s*.45,s*.45],[-s*.45,s*.45]];
-      ctx.beginPath();ctx.moveTo(v[0][0],v[0][1]);ctx.lineTo(v[1][0],v[1][1]);ctx.lineTo(v[2][0],v[2][1]);ctx.closePath();ctx.stroke();
-      ctx.fillStyle='hsla('+t.hue+',100%,78%,'+(t.alpha*1.5)+')';
-      for(const p of v){ctx.beginPath();ctx.arc(p[0],p[1],2,0,Math.PI*2);ctx.fill()}
-      ctx.restore()}
-    vig();requestAnimationFrame(frame)}
-  requestAnimationFrame(frame);
-})();
+(function(){const c=document.getElementById('bg'),ctx=c.getContext('2d');let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
+function rs(){W=window.innerWidth;H=window.innerHeight;c.width=W*DPR;c.height=H*DPR;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0)}
+window.addEventListener('resize',rs);rs();
+const N=22,tris=[];
+for(let i=0;i<N;i++)tris.push({x:Math.random()*W,y:Math.random()*H,size:40+Math.random()*120,angle:Math.random()*Math.PI*2,speed:(Math.random()-.5)*0.012,vx:(Math.random()-.5)*0.35,vy:(Math.random()-.5)*0.35,alpha:.08+Math.random()*.22,hue:265+Math.random()*35,blur:14+Math.random()*20});
+function vig(){const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.75);g.addColorStop(0,'rgba(124,0,240,.12)');g.addColorStop(.55,'rgba(10,10,15,0)');g.addColorStop(1,'rgba(0,0,0,.6)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H)}
+let t0=performance.now();
+function frame(now){const dt=Math.min((now-t0)/16.67,3);t0=now;ctx.fillStyle='#05050a';ctx.fillRect(0,0,W,H);
+for(const t of tris){t.x+=t.vx*dt;t.y+=t.vy*dt;t.angle+=t.speed*dt;if(t.x<-t.size)t.x=W+t.size;if(t.x>W+t.size)t.x=-t.size;if(t.y<-t.size)t.y=H+t.size;if(t.y>H+t.size)t.y=-t.size;
+ctx.save();ctx.translate(t.x,t.y);ctx.rotate(t.angle);ctx.strokeStyle='hsla('+t.hue+',100%,65%,'+t.alpha+')';ctx.lineWidth=2;ctx.lineJoin='round';ctx.shadowColor='hsla('+t.hue+',100%,60%,'+(t.alpha+.15)+')';ctx.shadowBlur=t.blur;
+const s=t.size,v=[[0,-s*.5],[s*.45,s*.45],[-s*.45,s*.45]];ctx.beginPath();ctx.moveTo(v[0][0],v[0][1]);ctx.lineTo(v[1][0],v[1][1]);ctx.lineTo(v[2][0],v[2][1]);ctx.closePath();ctx.stroke();
+ctx.fillStyle='hsla('+t.hue+',100%,78%,'+(t.alpha*1.5)+')';for(const p of v){ctx.beginPath();ctx.arc(p[0],p[1],2,0,Math.PI*2);ctx.fill()}ctx.restore()}
+vig();requestAnimationFrame(frame)}requestAnimationFrame(frame);})();
 </script></body></html>"""
         html = html.replace("__QR__", img_tag).replace("__URL__", url)
         return html
@@ -3001,7 +2678,7 @@ h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-
         return f"Erro: {e}", 500
 
 
-# ===================== TELA / STREAM =====================
+# ===================== TELA =====================
 @app.route("/api/tela.jpg")
 def api_tela():
     b = exigir_auth()
@@ -3072,7 +2749,6 @@ def api_stream_mjpg():
 
 # ===================== ARQUIVOS =====================
 def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
-
 
 def _path_seguro(p):
     if not p: return pasta_arquivos()
@@ -3274,7 +2950,7 @@ def api_terminal():
                     headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 
 
-# ===================== IA (SÓ GROQ) =====================
+# ===================== IA =====================
 GROQ_MODELOS_FALLBACK = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
@@ -3285,7 +2961,6 @@ GROQ_MODELOS_FALLBACK = [
 
 def _ia_chamar_groq(key, model, msgs, system):
     if not REQ_OK: return None, "requests nao instalado"
-
     tools = []
     for nome, fn in FUNCOES_IA.items():
         props = fn.get("parametros", {})
@@ -3294,28 +2969,19 @@ def _ia_chamar_groq(key, model, msgs, system):
             "function": {
                 "name": nome,
                 "description": fn["descricao"],
-                "parameters": {
-                    "type": "object",
-                    "properties": props,
-                    "required": list(props.keys()),
-                }
+                "parameters": {"type": "object", "properties": props, "required": list(props.keys())}
             }
         })
-
     candidatos = [model] + [m for m in GROQ_MODELOS_FALLBACK if m != model]
     ultimo_erro = None
     for mdl in candidatos:
         try:
             r = _req.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": mdl,
-                    "messages": [{"role":"system","content":system}] + msgs,
-                    "tools": tools,
-                    "tool_choice": "auto",
-                    "temperature": 0.6,
-                    "max_tokens": 1024,
-                },
+                json={"model": mdl,
+                      "messages": [{"role":"system","content":system}] + msgs,
+                      "tools": tools, "tool_choice": "auto",
+                      "temperature": 0.6, "max_tokens": 1024},
                 timeout=45)
             if r.status_code == 200:
                 data = r.json()
@@ -3328,9 +2994,9 @@ def _ia_chamar_groq(key, model, msgs, system):
                         if nome_fn in FUNCOES_IA:
                             try:
                                 resultado = FUNCOES_IA[nome_fn]["executar"](**args)
-                                resultados.append(f"✅ {nome_fn}: {resultado}")
+                                resultados.append(str(resultado))
                             except Exception as e:
-                                resultados.append(f"❌ {nome_fn}: {e}")
+                                resultados.append(f"❌ Erro ao executar {nome_fn}: {e}")
                     return "\n".join(resultados), None
                 return msg.get("content", ""), None
             if r.status_code in (400, 404):
@@ -3360,8 +3026,7 @@ def api_ia():
     msgs = [{"role": m.get("role","user"), "content": (m.get("content") or "")[:4000]}
             for m in msgs if isinstance(m, dict) and m.get("role") in ("user","assistant","system")][-20:]
     if not msgs: return jsonify(erro="sem mensagens")
-    if not GROQ_API_KEY:
-        return jsonify(erro="configure GROQ_API_KEY no codigo")
+    if not GROQ_API_KEY: return jsonify(erro="configure GROQ_API_KEY no codigo")
     modelo = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
     sysmsg = ESTADO.get("ia_system", "")
     resp, err = _ia_chamar_groq(GROQ_API_KEY, modelo, msgs, sysmsg)
@@ -3481,11 +3146,11 @@ def api_sistema():
     return jsonify(erro="acao desconhecida")
 
 
-# ===================== TEXTO / CLIPBOARD / MÍDIA =====================
+# ===================== TEXTO / CLIPBOARD =====================
 def copiar_pc(texto):
     try:
         _clip_set(texto); time.sleep(0.05); lido = _clip_get()
-        if lido == texto: return f"Copiado ({len(texto)} caractere(s) — verificado)."
+        if lido == texto: return f"Copiado ({len(texto)} caractere(s))."
         elif lido is not None: return f"Copiado ({len(texto)} caractere(s))."
         else: return f"Copiado ({len(texto)} caractere(s))."
     except Exception as e:
@@ -3746,6 +3411,9 @@ if __name__ == "__main__":
     CAPTURA["monitor_idx"] = int(ESTADO.get("monitor_escolhido", 0))
     if PSUTIL_OK:
         threading.Thread(target=_loop_cpu, daemon=True).start()
+        threading.Thread(target=_loop_net, daemon=True).start()
+    # Abre o HWiNFO64 embutido (opção B)
+    threading.Thread(target=iniciar_hwinfo, daemon=True).start()
     if ESTADO.get("modo") == "wan":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
     log_seguro("RotaControl:", "http://127.0.0.1:5000")
