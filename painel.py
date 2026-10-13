@@ -218,6 +218,8 @@ CONFIG_PADRAO = {
         "• criar_acao(nome, tipo, valor) → botão em Ações. tipo: abrir/pasta/url/comando.\n"
         "• renomear_acao(nome_atual, nome_novo) → troca o nome de um botão existente.\n"
         "• remover_acao(nome) → apaga um botão de Ações.\n"
+        "• renomear_atalho(nome_atual, nome_novo) → troca o nome de um atalho de teclado existente.\n"
+        "• remover_atalho(nome) → apaga um atalho de teclado salvo.\n"
         "• criar_atalho(nome, combo) → atalho de teclado (ctrl+s, etc).\n"
         "• abrir_site(url), abrir_programa(nome), abrir_youtube()\n"
         "• digitar_texto(texto) → digita onde o cursor tiver\n"
@@ -580,6 +582,28 @@ def _remover_acao_interno(nome):
     return f"Não achei a ação '{nome}'."
 
 
+def _renomear_atalho_interno(nome_atual, nome_novo):
+    alvo = (nome_atual or "").lower().strip()
+    if not alvo: return "Nome atual vazio."
+    for a in ESTADO.get("atalhos", []):
+        if a.get("nome","").lower().strip() == alvo:
+            antigo = a["nome"]
+            a["nome"] = nome_novo[:40]
+            salvar_config()
+            return f"Atalho '{antigo}' renomeado para '{nome_novo}'."
+    return f"Não achei nenhum atalho chamado '{nome_atual}'."
+
+
+def _remover_atalho_interno(nome):
+    alvo = (nome or "").lower().strip()
+    atalhos = ESTADO.get("atalhos", [])
+    for i, a in enumerate(atalhos):
+        if a.get("nome","").lower().strip() == alvo:
+            atalhos.pop(i); salvar_config()
+            return f"Atalho '{nome}' removido."
+    return f"Não achei o atalho '{nome}'."
+
+
 def _digitar_texto_interno(texto):
     if not texto: return "Texto vazio."
     threading.Thread(target=digitar_pc, args=(texto,), daemon=True).start()
@@ -696,6 +720,19 @@ FUNCOES_IA = {
         "descricao": "Remove uma ação da aba Ações rápidas pelo nome.",
         "parametros": {"nome": {"type": "string", "description": "Nome do botão a remover"}},
         "executar": lambda nome: _remover_acao_interno(nome),
+    },
+    "renomear_atalho": {
+        "descricao": "Renomeia um atalho de teclado existente na aba Ações.",
+        "parametros": {
+            "nome_atual": {"type": "string", "description": "Nome atual do atalho"},
+            "nome_novo":  {"type": "string", "description": "Novo nome do atalho"},
+        },
+        "executar": lambda nome_atual, nome_novo: _renomear_atalho_interno(nome_atual, nome_novo),
+    },
+    "remover_atalho": {
+        "descricao": "Remove um atalho de teclado salvo, pelo nome.",
+        "parametros": {"nome": {"type": "string", "description": "Nome do atalho a remover"}},
+        "executar": lambda nome: _remover_atalho_interno(nome),
     },
     "desligar_pc": {
         "descricao": "Desliga o PC em 3 segundos",
@@ -1619,9 +1656,8 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
         <div class="grid g4" style="margin-bottom:8px">
           <button class="btn ghost mini" onclick="irPai()">⬆ Subir</button>
           <button class="btn ghost mini" onclick="novaPasta()">+ Pasta</button>
-          <button class="btn ghost mini" onclick="carregarArquivos()">🔄</button>
+          <button class="btn ghost mini" onclick="carregarArquivos(CAMINHO_ATUAL)">🔄</button>
           <button class="btn ghost mini" onclick="copiarCaminhoAtual()">📋 Caminho</button>
-          <button class="btn ghost mini" onclick="abrirDiagnostico()">🩺 Diagnóstico</button>
         </div>
         <div id="txtArquivos"></div>
       </div>
@@ -1709,7 +1745,7 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
   <section id="p-ia" class="page hid">
     <div class="panel">
       <h2>Assistente IA</h2>
-      <div class="hint" style="margin-bottom:8px">Groq (gpt-oss-120b) — pode pedir ações: <b>"abre o YouTube"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"escreve uma mensagem na tela"</b></div>
+      <div class="hint" style="margin-bottom:8px"> IA Assistant — pode pedir ações: <b>"abre o YouTube"</b>, <b>"adiciona o ChatGPT em ações rápidas"</b>, <b>"remove o atalho Copiar"</b>, <b>"renomeia o atalho Copiar pra Copiar Texto"</b></div>
       <div class="iaChat" id="iaChat"></div>
       <div class="vozWrap" style="margin-top:10px">
         <input id="iaInput" placeholder="Pergunte ou peça uma ação..." autocomplete="off"
@@ -1826,6 +1862,12 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
       </select>
       <input id="pastaIn" type="text" placeholder="C:\Users\Voce\Desktop" readonly>
       <button class="btn acc block" style="margin-top:8px" onclick="salvarPasta()">Salvar pasta</button>
+    </div>
+
+    <div class="panel">
+      <h2>Diagnóstico do sistema</h2>
+      <div class="hint" style="margin-bottom:8px">Roda uma bateria de testes no PC e mostra alertas.</div>
+      <button class="btn acc block" onclick="abrirDiagnostico()">🩺 Abrir diagnóstico</button>
     </div>
 
     <div class="panel">
@@ -2039,7 +2081,7 @@ function pararPollTopProcs(){if(topProcTimer){clearInterval(topProcTimer);topPro
 function show(nome){
   $$(".page").forEach(p=>p.classList.toggle("hid",p.id!=="p-"+nome));
   $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===nome));
-  if(nome==="arquivos"){carregarArquivos();limparBusca()}
+  if(nome==="arquivos"){limparBusca();carregarArquivos(CAMINHO_ATUAL)}
   if(nome==="tela"){carregarMonitores();if(telaAtiva)atualizarTela()}
   if(nome==="sistema"){carregarSistema();carregarTemas()}
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
@@ -2061,7 +2103,46 @@ async function executarAcao(i){const j=await post("/api/acao",{idx:i});toast(j.s
 async function removerAcao(i){await post("/api/acao_remover",{idx:i});carregarAcoes()}
 function abrirNovaAcao(){const nome=prompt("Nome:");if(!nome)return;const tipo=(prompt("Tipo: abrir/pasta/url/comando","abrir")||"").toLowerCase();if(!["abrir","pasta","url","comando"].includes(tipo)){alert("Inválido");return}const valor=prompt("Valor:");if(!valor)return;post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes)}
 async function nav(a){const j=await post("/api/nav",{acao:a});toast(j.saida||j.erro||a)}
-async function carregarAtalhos(){const j=await get("/api/atalhos");const g=$("#gridAtalhos");g.innerHTML="";(j.atalhos||[]).forEach((a,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=a.nome;b.onclick=()=>executarAtalho(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAtalho(i)};g.appendChild(b)})}
+async function carregarAtalhos(){
+  const j=await get("/api/atalhos");
+  const g=$("#gridAtalhos");
+  g.innerHTML="";
+  (j.atalhos||[]).forEach((a,i)=>{
+    const wrap=document.createElement("div");
+    wrap.style.cssText="display:flex;gap:4px;align-items:stretch";
+    const b=document.createElement("button");
+    b.className="btn";
+    b.style.flex="1";
+    b.textContent=a.nome;
+    b.onclick=()=>executarAtalho(i);
+    const bR=document.createElement("button");
+    bR.className="btn ghost mini";
+    bR.style.flex="none";
+    bR.style.padding="8px 10px";
+    bR.textContent="✎";
+    bR.title="Renomear";
+    bR.onclick=()=>renomearAtalho(i, a.nome);
+    const bX=document.createElement("button");
+    bX.className="btn red mini";
+    bX.style.flex="none";
+    bX.style.padding="8px 10px";
+    bX.textContent="x";
+    bX.title="Remover";
+    bX.onclick=()=>{ if(confirm(`Remover atalho "${a.nome}"?`)) removerAtalho(i); };
+    wrap.appendChild(b); wrap.appendChild(bR); wrap.appendChild(bX);
+    g.appendChild(wrap);
+  });
+  if(!(j.atalhos||[]).length) g.innerHTML='<div class="hint">(nenhum atalho salvo)</div>';
+}
+
+async function renomearAtalho(i, nomeAntigo){
+  const novo = prompt(`Novo nome para "${nomeAntigo}":`, nomeAntigo);
+  if(!novo || novo.trim()===nomeAntigo) return;
+  const r = await post("/api/atalho_renomear", {idx: i, nome: novo.trim()});
+  if(r.erro){ toast("Erro: " + r.erro); return; }
+  toast(r.saida || "Renomeado");
+  carregarAtalhos();
+}
 async function executarAtalho(i){const j=await post("/api/atalho_exec",{idx:i});toast(j.saida||j.erro||"ok")}
 async function removerAtalho(i){await post("/api/atalho_remover",{idx:i});carregarAtalhos()}
 function abrirNovoAtalho(){const nome=prompt("Nome:");if(!nome)return;const combo=prompt("Teclas (ex: ctrl+s):","ctrl+s");if(!combo)return;post("/api/atalho_add",{nome,combo}).then(carregarAtalhos)}
@@ -2170,6 +2251,10 @@ function limparBusca(){
   const inp=$("#buscaInput");if(inp)inp.value="";
   const res=$("#buscaResultados");if(res)res.innerHTML="";
   const nav=$("#navArquivos");if(nav)nav.style.display="";
+}
+
+function recarregarPastaAtual(){
+  carregarArquivos(CAMINHO_ATUAL);
 }
 
 async function buscarArquivos(){
@@ -4107,6 +4192,23 @@ def api_atalho_remover():
     atalhos = ESTADO.get("atalhos", [])
     if 0 <= idx < len(atalhos): atalhos.pop(idx); salvar_config()
     return jsonify(ok=True)
+
+@app.route("/api/atalho_renomear", methods=["POST"])
+def api_atalho_renomear():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    idx = int(d.get("idx", -1))
+    novo_nome = (d.get("nome") or "").strip()[:40]
+    atalhos = ESTADO.get("atalhos", [])
+    if idx < 0 or idx >= len(atalhos):
+        return jsonify(erro="índice inválido")
+    if not novo_nome:
+        return jsonify(erro="nome vazio")
+    antigo = atalhos[idx]["nome"]
+    atalhos[idx]["nome"] = novo_nome
+    salvar_config()
+    return jsonify(ok=True, saida=f"Atalho '{antigo}' renomeado para '{novo_nome}'.")
 
 
 @app.route("/api/atalho_exec", methods=["POST"])
