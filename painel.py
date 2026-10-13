@@ -2097,7 +2097,57 @@ async function get(url){const r=await fetch(url,{cache:"no-store"});if(r.status=
 function copiarTextoLegacy(t){const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.select();try{document.execCommand("copy")}catch(e){}document.body.removeChild(ta)}
 async function copiar(txt,label){if(!txt){toast("Nada pra copiar");return}try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(txt);toast("Copiado: "+label);return}}catch(e){}copiarTextoLegacy(txt);toast("Copiado: "+label)}
 
-async function carregarAcoes(){const j=await get("/api/acoes");const g=$("#gridAcoes");g.innerHTML="";(j.acoes||[]).forEach((a,i)=>{const b=document.createElement("button");b.className="btn";b.textContent=a.nome;b.onclick=()=>executarAcao(i);b.oncontextmenu=e=>{e.preventDefault();if(confirm(`Remover "${a.nome}"?`))removerAcao(i)};g.appendChild(b)})}
+async function carregarAcoes(){
+  const j = await get("/api/acoes");
+  const g = $("#gridAcoes");
+  g.innerHTML = "";
+  (j.acoes||[]).forEach((a,i)=>{
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = a.nome;
+    b.onclick = () => executarAcao(i);
+    // Segurar (clique direito no PC ou toque longo no celular) abre o menu
+    let timer = null;
+    let segurou = false;
+    const abrirMenu = (e) => {
+      if(e) e.preventDefault();
+      segurou = true;
+      const acao = prompt(
+        `Ação: ${a.nome}\n\n` +
+        `Digite:\n` +
+        `1 - Renomear\n` +
+        `2 - Remover\n` +
+        `(ou deixe vazio pra cancelar)`
+      );
+      if(acao === "1") renomearAcao(i, a.nome);
+      else if(acao === "2") {
+        if(confirm(`Remover ação "${a.nome}"?`)) removerAcao(i);
+      }
+    };
+    b.oncontextmenu = abrirMenu;
+    b.addEventListener("touchstart", () => {
+      segurou = false;
+      timer = setTimeout(() => { abrirMenu(); }, 600);
+    }, {passive:true});
+    b.addEventListener("touchend", (e) => {
+      if(timer){ clearTimeout(timer); timer = null; }
+      if(segurou){ e.preventDefault(); }
+    });
+    b.addEventListener("touchmove", () => {
+      if(timer){ clearTimeout(timer); timer = null; }
+    });
+    g.appendChild(b);
+  });
+}
+
+async function renomearAcao(i, nomeAntigo){
+  const novo = prompt(`Novo nome para "${nomeAntigo}":`, nomeAntigo);
+  if(!novo || novo.trim() === nomeAntigo) return;
+  const r = await post("/api/acao_renomear", {idx: i, nome: novo.trim()});
+  if(r.erro){ toast("Erro: " + r.erro); return; }
+  toast(r.saida || "Renomeada");
+  carregarAcoes();
+}
 async function executarAcao(i){const j=await post("/api/acao",{idx:i});toast(j.saida||j.erro||"ok")}
 async function removerAcao(i){await post("/api/acao_remover",{idx:i});carregarAcoes()}
 function abrirNovaAcao(){const nome=prompt("Nome:");if(!nome)return;const tipo=(prompt("Tipo: abrir/pasta/url/comando","abrir")||"").toLowerCase();if(!["abrir","pasta","url","comando"].includes(tipo)){alert("Inválido");return}const valor=prompt("Valor:");if(!valor)return;post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes)}
@@ -2907,6 +2957,22 @@ def api_acao_remover():
     if 0 <= idx < len(acoes): acoes.pop(idx); salvar_config()
     return jsonify(ok=True)
 
+@app.route("/api/acao_renomear", methods=["POST"])
+def api_acao_renomear():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    idx = int(d.get("idx", -1))
+    novo_nome = (d.get("nome") or "").strip()[:40]
+    acoes = ESTADO.get("acoes", [])
+    if idx < 0 or idx >= len(acoes):
+        return jsonify(erro="índice inválido")
+    if not novo_nome:
+        return jsonify(erro="nome vazio")
+    antigo = acoes[idx]["nome"]
+    acoes[idx]["nome"] = novo_nome
+    salvar_config()
+    return jsonify(ok=True, saida=f"Ação '{antigo}' renomeada para '{novo_nome}'.")
 
 def executar_acao(a):
     tipo = a.get("tipo"); valor = os.path.expandvars(a.get("valor") or "")
