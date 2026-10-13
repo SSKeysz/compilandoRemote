@@ -2103,40 +2103,54 @@ async function removerAcao(i){await post("/api/acao_remover",{idx:i});carregarAc
 function abrirNovaAcao(){const nome=prompt("Nome:");if(!nome)return;const tipo=(prompt("Tipo: abrir/pasta/url/comando","abrir")||"").toLowerCase();if(!["abrir","pasta","url","comando"].includes(tipo)){alert("Inválido");return}const valor=prompt("Valor:");if(!valor)return;post("/api/acao_add",{nome,tipo,valor}).then(carregarAcoes)}
 async function nav(a){const j=await post("/api/nav",{acao:a});toast(j.saida||j.erro||a)}
 async function carregarAtalhos(){
-  const j=await get("/api/atalhos");
-  const g=$("#gridAtalhos");
-  g.innerHTML="";
+  const j = await get("/api/atalhos");
+  const g = $("#gridAtalhos");
+  g.innerHTML = "";
   (j.atalhos||[]).forEach((a,i)=>{
-    const wrap=document.createElement("div");
-    wrap.style.cssText="display:flex;gap:4px;align-items:stretch";
-    const b=document.createElement("button");
-    b.className="btn";
-    b.style.flex="1";
-    b.textContent=a.nome;
-    b.onclick=()=>executarAtalho(i);
-    const bR=document.createElement("button");
-    bR.className="btn ghost mini";
-    bR.style.flex="none";
-    bR.style.padding="8px 10px";
-    bR.textContent="✎";
-    bR.title="Renomear";
-    bR.onclick=()=>renomearAtalho(i, a.nome);
-    const bX=document.createElement("button");
-    bX.className="btn red mini";
-    bX.style.flex="none";
-    bX.style.padding="8px 10px";
-    bX.textContent="x";
-    bX.title="Remover";
-    bX.onclick=()=>{ if(confirm(`Remover atalho "${a.nome}"?`)) removerAtalho(i); };
-    wrap.appendChild(b); wrap.appendChild(bR); wrap.appendChild(bX);
-    g.appendChild(wrap);
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = a.nome;
+    b.onclick = () => executarAtalho(i);
+    // Segurar (clique direito ou toque longo) abre menu de editar/remover
+    let timer = null;
+    let segurou = false;
+    const abrirMenu = (e) => {
+      if(e) e.preventDefault();
+      segurou = true;
+      const acao = prompt(
+        `Atalho: ${a.nome}\n\n` +
+        `Digite:\n` +
+        `1 - Renomear\n` +
+        `2 - Remover\n` +
+        `(ou deixe vazio pra cancelar)`
+      );
+      if(acao === "1") renomearAtalho(i, a.nome);
+      else if(acao === "2") {
+        if(confirm(`Remover atalho "${a.nome}"?`)) removerAtalho(i);
+      }
+    };
+    // Clique direito (PC)
+    b.oncontextmenu = abrirMenu;
+    // Toque longo (celular) — 600ms
+    b.addEventListener("touchstart", () => {
+      segurou = false;
+      timer = setTimeout(() => { abrirMenu(); }, 600);
+    }, {passive:true});
+    b.addEventListener("touchend", (e) => {
+      if(timer){ clearTimeout(timer); timer = null; }
+      if(segurou){ e.preventDefault(); }
+    });
+    b.addEventListener("touchmove", () => {
+      if(timer){ clearTimeout(timer); timer = null; }
+    });
+    g.appendChild(b);
   });
-  if(!(j.atalhos||[]).length) g.innerHTML='<div class="hint">(nenhum atalho salvo)</div>';
+  if(!(j.atalhos||[]).length) g.innerHTML = '<div class="hint">(nenhum atalho salvo)</div>';
 }
 
 async function renomearAtalho(i, nomeAntigo){
   const novo = prompt(`Novo nome para "${nomeAntigo}":`, nomeAntigo);
-  if(!novo || novo.trim()===nomeAntigo) return;
+  if(!novo || novo.trim() === nomeAntigo) return;
   const r = await post("/api/atalho_renomear", {idx: i, nome: novo.trim()});
   if(r.erro){ toast("Erro: " + r.erro); return; }
   toast(r.saida || "Renomeado");
@@ -2396,7 +2410,7 @@ async function iaEnviar(){
   iaHistorico.push({role:"assistant",content:resp});
   iaAddMsg("bot",resp);
 }
-async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA pronta (Groq)":"Sem chave da Groq"}
+async function carregarIAConfig(){const j=await get("/api/ia_config");if(j.erro)return;$("#iaStatus").textContent=j.tem_chave?"IA RotaControl":"Sem chave da Groq"}
 
 let pipActive=false,pipStream=null,pipVideoReady=false,pipStopDraw=false,docPipWin=null,docPipStop=false;
 const PIP_METHOD=('documentPictureInPicture' in window)?'doc':(document.pictureInPictureEnabled?'video':'none');
