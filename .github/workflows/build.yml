@@ -8,7 +8,6 @@ on:
 env:
   NOME_EXE: RotaControl
   
-
 jobs:
   build:
     runs-on: windows-latest
