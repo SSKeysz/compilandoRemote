@@ -1,5 +1,5 @@
 """
-RotaControl v2.12
+RotaControl v2.11
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
@@ -155,7 +155,6 @@ CONFIG_PADRAO = {
     "monitor_escolhido": 0,
     "modo_ui": "iniciante",
     "tutorial_visto": False,
-    "efeitos_ativos": False,
     "ia_model_groq": "openai/gpt-oss-120b",
     "ia_system": (
         "Você é o assistente do RotaControl, um app que controla o PC pelo celular. "
@@ -1194,808 +1193,7 @@ $g.Dispose(); $bmp.Dispose()
     executar(["powershell", "-NoProfile", "-EncodedCommand", cod], capture_output=True, timeout=20)
     with open(out, "rb") as f: return f.read()
 
-
-# ===== TEMPERATURA com cache (15s) =====
-_TEMP_CACHE = {"t": 0, "v": None}
-_TEMP_INTERVALO = 15
-
-
-def _ler_temperatura():
-    now = time.time()
-    if now - _TEMP_CACHE["t"] < _TEMP_INTERVALO:
-        return _TEMP_CACHE["v"]
-    _TEMP_CACHE["t"] = now
-    _TEMP_CACHE["v"] = None
-    try:
-        script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
-                  "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
-                  "if ($t) { Write-Output ([math]::Round(($t/10 - 273.15), 1)) }")
-        cod = base64.b64encode(script.encode("utf-16-le")).decode()
-        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                     capture_output=True, text=True, encoding="utf-8",
-                     errors="replace", timeout=6)
-        out = (r.stdout or "").strip()
-        if out and re.match(r"^-?\d+(\.\d+)?$", out):
-            v = float(out)
-            if -50 < v < 200:
-                _TEMP_CACHE["v"] = v
-                return v
-    except Exception: pass
-    return None
-
-
-# ===== GPU com cache (15s) =====
-_GPU_CACHE = {"t": 0, "v": None}
-_GPU_INTERVALO = 15
-
-
-def _ler_gpu():
-    now = time.time()
-    if now - _GPU_CACHE["t"] < _GPU_INTERVALO and _GPU_CACHE["v"]:
-        return _GPU_CACHE["v"]
-    _GPU_CACHE["t"] = now
-    info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
-
-    try:
-        r = executar(["nvidia-smi",
-                      "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                      "--format=csv,noheader,nounits"],
-                     capture_output=True, text=True, timeout=5)
-        out = (r.stdout or "").strip()
-        if out:
-            parts = [p.strip() for p in out.split("\n")[0].split(",")]
-            if len(parts) >= 5:
-                info["nome"] = parts[0]
-                for i, key in enumerate(["uso","mem_usada","mem_total","temp"], start=1):
-                    try: info[key] = int(float(parts[i]))
-                    except: pass
-                _GPU_CACHE["v"] = info
-                return info
-    except Exception: pass
-
-    try:
-        script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
-        cod = base64.b64encode(script.encode("utf-16-le")).decode()
-        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
-                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
-        out = (r.stdout or "").strip()
-        if out: info["nome"] = out
-    except Exception: pass
-
-    _GPU_CACHE["v"] = info
-    return info
-
-
-def _listar_discos():
-    discos = []
-    if not PSUTIL_OK: return discos
-    try: parts = psutil.disk_partitions(all=False)
-    except Exception: return discos
-    vistos = set()
-    for p in parts:
-        mp = p.mountpoint
-        if mp in vistos: continue
-        opts = (p.opts or "")
-        if "cdrom" in opts: continue
-        if not p.fstype and "removable" not in opts: continue
-        try:
-            u = psutil.disk_usage(mp)
-            vistos.add(mp)
-            letra = mp.rstrip("\\/") or mp
-            discos.append({
-                "letra": letra,
-                "total_gb": round(u.total / (1024**3), 1),
-                "usado_gb": round(u.used / (1024**3), 1),
-                "livre_gb": round(u.free / (1024**3), 1),
-                "percent": int(u.percent),
-                "fs": p.fstype or "?",
-            })
-        except Exception: continue
-    discos.sort(key=lambda d: d["letra"])
-    return discos
-
-
-def _fmt_uptime(seg):
-    d = int(seg // 86400); h = int((seg % 86400)//3600); m = int((seg % 3600)//60)
-    if d > 0: return f"{d}d {h}h {m}m"
-    if h > 0: return f"{h}h {m}m"
-    return f"{m}m"
-
-
-
-@app.route("/api/status")
-def api_status():
-    b = exigir_auth()
-    if b: return b
-    if not PSUTIL_OK: return jsonify(erro="psutil nao instalado")
-    try:
-        with _CPU_CACHE["lock"]: cpu = _CPU_CACHE["v"]
-        ram = psutil.virtual_memory()
-        uptime = time.time() - psutil.boot_time()
-        temp = _ler_temperatura()
-        gpu = _ler_gpu()
-        discos = _listar_discos()
-        with _NET_CACHE["lock"]:
-            down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
-        ping = _ping_google()
-        return jsonify(
-            cpu=cpu,
-            cpu_model=_ler_cpu_model(),
-            ram=ram.percent,
-            ram_detalhe=f"({fmt_gib(ram.used):.1f}/{fmt_gib(ram.total):.1f} GiB)",
-            temp=temp,
-            uptime=_fmt_uptime(uptime),
-            gpu=gpu,
-            discos=discos,
-            rede={"down_mbps": down, "up_mbps": up},
-            ping=ping,
-            qtd_processos=_contar_processos(),
-        )
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/top_processos")
-def api_top_processos():
-    b = exigir_auth()
-    if b: return b
-    return jsonify(processos=_top_processos(5))
-
-
-@app.route("/api/screenshot", methods=["POST"])
-def api_screenshot():
-    b = exigir_auth()
-    if b: return b
-    try:
-        idx = int(ESTADO.get("monitor_escolhido", 0))
-        png = _capturar_png_full(idx)
-        nome = time.strftime("screenshot_%Y-%m-%d_%H-%M-%S.png")
-        with open(os.path.join(pasta_arquivos(), nome), "wb") as f: f.write(png)
-        return jsonify(ok=True, nome=nome, saida=f"Salvo: {nome}")
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/screenshot_clip", methods=["POST"])
-def api_screenshot_clip():
-    b = exigir_auth()
-    if b: return b
-    try:
-        idx = int(ESTADO.get("monitor_escolhido", 0))
-        png = _capturar_png_full(idx)
-        _clip_set_imagem_png(png)
-        return jsonify(saida="Print copiado pra área de transferência do PC.")
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/reparar", methods=["POST"])
-def api_reparar():
-    b = exigir_auth()
-    if b: return b
-    tipo = (request.get_json(force=True) or {}).get("tipo", "")
-    if tipo == "explorer":
-        def _r():
-            try:
-                subprocess.Popen(["taskkill","/f","/im","explorer.exe"],
-                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                time.sleep(1.5)
-                subprocess.Popen(["cmd","/c","start","","explorer.exe"],
-                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception: pass
-        threading.Thread(target=_r, daemon=True).start()
-        return jsonify(saida="Explorer reiniciando...")
-    if tipo == "audio":
-        def _a():
-            try:
-                subprocess.Popen(["taskkill","/f","/im","audiodg.exe"],
-                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception: pass
-        threading.Thread(target=_a, daemon=True).start()
-        return jsonify(saida="Áudio reiniciando...")
-    return jsonify(erro="tipo invalido")
-
-
-def _gerar_qr_png_bytes(url):
-    if not QRCODE_OK: return None
-    try:
-        from PIL import Image as PILImage
-        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=12, border=2)
-        qr.add_data(url); qr.make(fit=True)
-        logo_img = None
-        fonte_logo = QR_LOGO_B64 or LOGO_B64
-        if fonte_logo:
-            try:
-                logo_img = PILImage.open(io.BytesIO(base64.b64decode(fonte_logo))).convert("RGBA")
-                qr_w = qr.modules_count * qr.box_size
-                max_logo = max(24, int(qr_w * 0.24))
-                logo_img.thumbnail((max_logo, max_logo), PILImage.LANCZOS)
-            except Exception as e: log_seguro("erro logo qr:", e); logo_img = None
-        if logo_img is not None:
-            try:
-                from qrcode.image.styledpil import StyledPilImage
-                from qrcode.image.styles.colormasks import SolidFillColorMask
-                img = qr.make_image(image_factory=StyledPilImage, embedded_image=logo_img,
-                    color_mask=SolidFillColorMask(back_color=(255,255,255), front_color=(10,10,13)))
-            except Exception as e:
-                log_seguro("erro embed:", e)
-                img = qr.make_image(fill_color="#0a0a0d", back_color="white")
-        else:
-            img = qr.make_image(fill_color="#0a0a0d", back_color="white")
-        buf = io.BytesIO(); img.save(buf, "PNG"); return buf.getvalue()
-    except Exception as e: log_seguro("erro qr:", e); return None
-
-
-@app.route("/api/qr_para_pc", methods=["POST"])
-def api_qr_para_pc():
-    b = exigir_auth()
-    if b: return b
-    try:
-        webbrowser.open_new_tab(f"http://{ip_local()}:5000/qr_para_pc")
-        return jsonify(saida="QR aberto no PC.")
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/qr_para_pc")
-def qr_para_pc_page():
-    try:
-        ip = ip_local(); url = f"http://{ip}:5000"
-        png_bytes = _gerar_qr_png_bytes(url)
-        if png_bytes:
-            b64 = base64.b64encode(png_bytes).decode()
-            img_tag = f'<img src="data:image/png;base64,{b64}" alt="QR">'
-        else:
-            img_tag = '<p style="color:#888;padding:20px">Instale qrcode[pil].</p>'
-        wan_url = ""
-        try:
-            if TUNEL.get("url") and str(TUNEL["url"]).startswith("http"):
-                wan_url = TUNEL["url"]
-        except Exception: pass
-        html = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<title>RotaControl - QR</title><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{color-scheme:dark}
-html,body{margin:0;padding:0;min-height:100vh;overflow-x:hidden;background:#05050a}
-body{font:16px/1.5 system-ui,sans-serif;color:#e9e9f0;display:flex;align-items:center;justify-content:center;flex-direction:column;perspective:1200px}
-#bg{position:fixed;inset:0;z-index:0}
-.content{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:22px;padding:24px}
-h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-gradient(135deg,#9a3cff,#d4a0ff 50%,#7c00f0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 50px rgba(154,60,255,.5)}
-.card{background:#fff;padding:22px;border-radius:22px;box-shadow:0 0 0 1px rgba(154,60,255,.35),0 0 80px rgba(124,0,240,.5),0 30px 60px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;transform-style:preserve-3d;animation:cardFloat 6s ease-in-out infinite}
-@keyframes cardFloat{0%,100%{transform:translateZ(0) rotateX(0deg) rotateY(0deg)}50%{transform:translateZ(20px) rotateX(2deg) rotateY(-2deg)}}
-.card img{width:320px;height:320px;display:block}
-.url{font:18px/1 ui-monospace,Consolas,monospace;color:#d4a0ff;background:rgba(20,20,30,.85);backdrop-filter:blur(12px);padding:14px 26px;border-radius:12px;border:1px solid rgba(154,60,255,.4)}
-.hint{color:#6c6c7a;font-size:13px}
-.wanBox{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:6px;max-width:90vw}
-.wanBox.hid{display:none}
-.wanUrl{font:13px/1.3 ui-monospace,Consolas,monospace;color:#8ad0ff;background:rgba(10,20,30,.85);padding:10px 16px;border-radius:10px;border:1px solid rgba(60,140,255,.35);word-break:break-all;max-width:100%;text-align:center}
-.wanBtn{background:linear-gradient(135deg,#7c00f0,#9a3cff);color:#fff;border:0;padding:12px 22px;border-radius:10px;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(124,0,240,.4);transition:.2s}
-.wanBtn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,0,240,.55)}
-.wanBtn:active{transform:scale(.96)}
-</style></head><body>
-<canvas id="bg"></canvas>
-<div class="content">
-  <h1>ROTACONTROL</h1>
-  <div class="card">__QR__</div>
-  <div class="url">__URL__</div>
-  <div class="hint">Aponte a câmera do celular pro QR</div>
-  <div class="wanBox hid" id="wanBox">
-    <div class="wanUrl" id="wanUrl"></div>
-    <button class="wanBtn" onclick="copiarWan()">📋 Copiar link WAN</button>
-  </div>
-</div>
-<script>
-const WAN_URL = "__WAN__";
-if(WAN_URL){document.getElementById("wanBox").classList.remove("hid");document.getElementById("wanUrl").textContent=WAN_URL;}
-function copiarWan(){
-  if(!WAN_URL) return;
-  const ta=document.createElement("textarea");ta.value=WAN_URL;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.select();
-  try{document.execCommand("copy")}catch(e){}
-  document.body.removeChild(ta);
-  const btn=event.target;const orig=btn.textContent;btn.textContent="✅ Copiado!";setTimeout(()=>btn.textContent=orig,1500);
-}
-(function(){
-const c=document.getElementById('bg'),ctx=c.getContext('2d');
-let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
-function rs(){W=window.innerWidth;H=window.innerHeight;c.width=W*DPR;c.height=H*DPR;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0)}
-window.addEventListener('resize',rs);rs();
-const N=26,tris=[];
-for(let i=0;i<N;i++){
-  tris.push({
-    x:(Math.random()-.5)*W*1.5,y:(Math.random()-.5)*H*1.5,z:(Math.random()-.5)*600,
-    size:60+Math.random()*140,
-    rotX:Math.random()*Math.PI*2,rotY:Math.random()*Math.PI*2,rotZ:Math.random()*Math.PI*2,
-    spX:(Math.random()-.5)*0.008,spY:(Math.random()-.5)*0.008,spZ:(Math.random()-.5)*0.008,
-    vz:(Math.random()-.5)*0.6,vx:(Math.random()-.5)*0.4,vy:(Math.random()-.5)*0.4,
-    alpha:.10+Math.random()*.25,hue:265+Math.random()*40,blur:16+Math.random()*24,
-  });
-}
-const VERTS=[[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]];
-const EDGES=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
-function projetar(v,rotX,rotY,rotZ,persp){
-  let [x,y,z]=v;
-  let cx=Math.cos(rotZ),sx=Math.sin(rotZ);
-  let x1=x*cx-y*sx,y1=x*sx+y*cx,z1=z;
-  let cy=Math.cos(rotY),sy=Math.sin(rotY);
-  let x2=x1*cy+z1*sy,y2=y1,z2=-x1*sy+z1*cy;
-  let cxx=Math.cos(rotX),sxx=Math.sin(rotX);
-  let x3=x2,y3=y2*cxx-z2*sxx,z3=y2*sxx+z2*cxx;
-  const f=persp/(persp+z3+300);
-  return [x3*f,y3*f,z3];
-}
-function vig(){const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.75);g.addColorStop(0,'rgba(124,0,240,.12)');g.addColorStop(.55,'rgba(10,10,15,0)');g.addColorStop(1,'rgba(0,0,0,.65)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H)}
-let t0=performance.now();
-function frame(now){
-  const dt=Math.min((now-t0)/16.67,3);t0=now;
-  ctx.fillStyle='#05050a';ctx.fillRect(0,0,W,H);
-  tris.sort((a,b)=>b.z-a.z);
-  for(const t of tris){
-    t.x+=t.vx*dt;t.y+=t.vy*dt;t.z+=t.vz*dt;
-    t.rotX+=t.spX*dt;t.rotY+=t.spY*dt;t.rotZ+=t.spZ*dt;
-    const limX=W*0.9,limY=H*0.9,limZ=650;
-    if(t.x<-limX)t.x=limX;if(t.x>limX)t.x=-limX;
-    if(t.y<-limY)t.y=limY;if(t.y>limY)t.y=-limY;
-    if(t.z<-limZ)t.z=limZ;if(t.z>limZ)t.z=-limZ;
-    const persp=800,camZ=t.z+700;
-    if(camZ<60)continue;
-    const escala=persp/camZ;
-    const cx=W/2+t.x*escala,cy=H/2+t.y*escala;
-    const fade=Math.max(0.1,Math.min(1,1.6-(t.z+limZ)/(2*limZ)*1.4));
-    const a=t.alpha*fade;
-    ctx.save();ctx.translate(cx,cy);
-    ctx.lineWidth=Math.max(0.8,1.6*escala);ctx.lineJoin='round';
-    ctx.strokeStyle='hsla('+t.hue+',100%,68%,'+a+')';
-    ctx.shadowColor='hsla('+t.hue+',100%,62%,'+(a+.18)+')';ctx.shadowBlur=t.blur*escala;
-    const pts=[];
-    for(const v of VERTS){
-      const [vx,vy,vz]=projetar([v[0]*t.size*0.5,v[1]*t.size*0.5,v[2]*t.size*0.5],t.rotX,t.rotY,t.rotZ,500);
-      pts.push([vx*escala,vy*escala,vz]);
-    }
-    ctx.beginPath();
-    for(const [i,j] of EDGES){ctx.moveTo(pts[i][0],pts[i][1]);ctx.lineTo(pts[j][0],pts[j][1])}
-    ctx.stroke();
-    ctx.fillStyle='hsla('+t.hue+',100%,80%,'+(a*1.4)+')';
-    for(const p of pts){const r=Math.max(1.2,2.2*escala);ctx.beginPath();ctx.arc(p[0],p[1],r,0,Math.PI*2);ctx.fill()}
-    ctx.fillStyle='hsla('+t.hue+',100%,60%,'+(a*0.10)+')';
-    ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);ctx.lineTo(pts[1][0],pts[1][1]);ctx.lineTo(pts[2][0],pts[2][1]);ctx.closePath();ctx.fill();
-    ctx.restore();
-  }
-  vig();requestAnimationFrame(frame);
-}
-requestAnimationFrame(frame);
-})();
-</script></body></html>"""
-        html = html.replace("__QR__", img_tag).replace("__URL__", url).replace("__WAN__", wan_url)
-        return html
-    except Exception as e:
-        return f"Erro: {e}", 500
-
-
-@app.route("/api/tela.jpg")
-def api_tela():
-    b = exigir_auth()
-    if b: return b
-    try: monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
-    except Exception: monitor = 0
-    if TEM_MSS:
-        CAPTURA["monitor_idx"] = monitor
-        CAPTURA["ultimo_pedido"] = time.time()
-        _garantir_captura()
-        for _ in range(40):
-            with CAPTURA["lock"]: jpeg = CAPTURA["jpeg"]; err = CAPTURA["erro"]
-            if jpeg: break
-            if err and not CAPTURA["running"]: break
-            time.sleep(0.05)
-        if not jpeg:
-            try: jpeg = _capturar_pil(monitor_idx=monitor)
-            except Exception: pass
-        if not jpeg: return jsonify(erro=err or "sem captura"), 503
-        return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control":"no-store, max-age=0"})
-    try:
-        jpeg = None
-        if ImageGrab is not None:
-            try: jpeg = _capturar_pil()
-            except Exception: pass
-        if jpeg is None: jpeg = _capturar_ps()
-    except Exception as e: return jsonify(erro=f"erro captura: {e}"), 500
-    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control":"no-store, max-age=0"})
-
-
-def _gerar_mjpeg():
-    boundary = b"--frame\r\n"; ultimo = None
-    while True:
-        CAPTURA["ultimo_pedido"] = time.time()
-        with CAPTURA["lock"]: jpeg = CAPTURA["jpeg"]
-        if jpeg and jpeg is not ultimo:
-            ultimo = jpeg
-            try:
-                yield (boundary + b"Content-Type: image/jpeg\r\n" +
-                       b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
-                       jpeg + b"\r\n")
-            except GeneratorExit: return
-            except Exception: return
-        time.sleep(1.0 / CAP_FPS)
-
-
-@app.route("/api/stream.mjpg")
-def api_stream_mjpg():
-    b = exigir_auth()
-    if b: return b
-    if not TEM_MSS: return jsonify(erro="mss nao instalado"), 503
-    try: monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
-    except Exception: monitor = 0
-    CAPTURA["monitor_idx"] = monitor
-    CAPTURA["ultimo_pedido"] = time.time()
-    _garantir_captura()
-    for _ in range(40):
-        with CAPTURA["lock"]:
-            if CAPTURA["jpeg"]: break
-        time.sleep(0.05)
-    resp = Response(stream_with_context(_gerar_mjpeg()),
-                    mimetype="multipart/x-mixed-replace; boundary=frame")
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    resp.headers["Pragma"] = "no-cache"
-    resp.headers["X-Accel-Buffering"] = "no"
-    return resp
-
-
-def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
-
-def _path_seguro(p):
-    if not p: return pasta_arquivos()
-    if "%USERPROFILE%" in p:
-        userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-        p = p.replace("%USERPROFILE%", userprofile)
-    p = os.path.expandvars(p); p = os.path.expanduser(p); p = os.path.abspath(p)
-    return p
-
-
-@app.route("/api/arquivos")
-def api_arquivos():
-    b = exigir_auth()
-    if b: return b
-    path = _path_seguro(request.args.get("path") or pasta_arquivos())
-    if not os.path.isdir(path):
-        return jsonify(erro="pasta invalida", pasta=path, itens=[], partes=[])
-    partes = []
-    cur = path
-    while True:
-        pai = os.path.dirname(cur)
-        if pai == cur: break
-        partes.insert(0, {"nome": os.path.basename(cur) or cur, "path": cur})
-        cur = pai
-    if not partes or partes[0]["path"] != cur:
-        partes.insert(0, {"nome": cur or "\\", "path": cur})
-    itens = []
-    try:
-        for n in sorted(os.listdir(path), key=lambda x: x.lower()):
-            full = os.path.join(path, n)
-            try:
-                if os.path.isdir(full): itens.append({"nome": n, "tipo": "pasta", "tam": 0})
-                elif os.path.isfile(full): itens.append({"nome": n, "tipo": "arquivo", "tam": os.path.getsize(full)})
-            except Exception: pass
-    except Exception as e: return jsonify(erro=str(e), pasta=path, itens=[], partes=partes)
-    return jsonify(pasta=path, itens=itens[:500], partes=partes)
-
-
-@app.route("/api/nova_pasta", methods=["POST"])
-def api_nova_pasta():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    path = _path_seguro(d.get("path") or pasta_arquivos())
-    nome = _nome_seguro(d.get("nome") or "")
-    if not nome: return jsonify(erro="nome vazio")
-    try:
-        os.makedirs(os.path.join(path, nome), exist_ok=False); return jsonify(ok=True)
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/apagar_pasta", methods=["POST"])
-def api_apagar_pasta():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    path = _path_seguro(d.get("path") or pasta_arquivos())
-    nome = _nome_seguro(d.get("nome") or "")
-    try:
-        os.rmdir(os.path.join(path, nome)); return jsonify(ok=True)
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/download")
-def api_download():
-    b = exigir_auth()
-    if b: return b
-    nome = _nome_seguro(request.args.get("nome", ""))
-    path = _path_seguro(request.args.get("path") or pasta_arquivos())
-    p = os.path.join(path, nome)
-    if not os.path.isfile(p): return jsonify(erro="arquivo nao encontrado"), 404
-    return send_file(p, as_attachment=True, download_name=nome)
-
-
-@app.route("/api/upload", methods=["POST"])
-def api_upload():
-    b = exigir_auth()
-    if b: return b
-    arquivos = request.files.getlist("arquivos")
-    if not arquivos: return jsonify(erro="nenhum arquivo")
-    path = _path_seguro(request.form.get("path") or pasta_arquivos())
-    if not os.path.isdir(path): path = pasta_arquivos()
-    salvos = 0
-    for f in arquivos:
-        if not f.filename: continue
-        nome = _nome_seguro(f.filename); f.save(os.path.join(path, nome)); salvos += 1
-    return jsonify(saida=f"{salvos} arquivo(s) salvos em {path}")
-
-
-@app.route("/api/apagar", methods=["POST"])
-def api_apagar():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    nome = _nome_seguro(d.get("nome", ""))
-    path = _path_seguro(d.get("path") or pasta_arquivos())
-    p = os.path.join(path, nome)
-    try:
-        if os.path.isfile(p): os.remove(p)
-        return jsonify(ok=True)
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/processos")
-def api_processos():
-    b = exigir_auth()
-    if b: return b
-    try:
-        r = executar(["tasklist","/FO","CSV","/NH"], capture_output=True, text=True,
-                     encoding="cp850", errors="replace", timeout=15)
-        linhas = (r.stdout or "").splitlines()
-    except Exception as e: return jsonify(erro=str(e))
-    procs = []; reader = csv.reader(linhas)
-    for row in reader:
-        if len(row) < 5: continue
-        nome = row[0].strip()
-        try: pid = int(row[1])
-        except Exception: continue
-        mem_raw = (row[4] or "").replace(".","").replace(",","").replace(" K","").replace("K","").strip()
-        mem_kb = int(mem_raw) if mem_raw.isdigit() else 0
-        procs.append({"nome": nome, "pid": pid, "mem_kb": mem_kb})
-    procs.sort(key=lambda x: x["mem_kb"], reverse=True)
-    return jsonify(processos=procs[:80])
-
-
-@app.route("/api/matar_processo", methods=["POST"])
-def api_matar_processo():
-    b = exigir_auth()
-    if b: return b
-    pid = int((request.get_json(force=True) or {}).get("pid", 0))
-    if not pid: return jsonify(erro="pid invalido")
-    try:
-        r = executar(["taskkill","/PID",str(pid),"/F"], capture_output=True, text=True, timeout=10)
-        return jsonify(saida=((r.stdout or "")+(r.stderr or "")).strip() or "OK")
-    except Exception as e: return jsonify(erro=str(e))
-
-
-@app.route("/api/comandos")
-def api_comandos():
-    b = exigir_auth()
-    if b: return b
-    return jsonify(comandos=ESTADO.get("comandos", []))
-
-
-@app.route("/api/comando_add", methods=["POST"])
-def api_comando_add():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True)
-    nome = (d.get("nome") or "?")[:40]; cmd = (d.get("cmd") or "").strip()
-    if not cmd: return jsonify(erro="comando vazio")
-    ESTADO.setdefault("comandos", []).append({"nome": nome, "cmd": cmd})
-    salvar_config(); return jsonify(ok=True)
-
-
-@app.route("/api/comando_remover", methods=["POST"])
-def api_comando_remover():
-    b = exigir_auth()
-    if b: return b
-    idx = int((request.get_json(force=True) or {}).get("idx", -1))
-    cmds = ESTADO.get("comandos", [])
-    if 0 <= idx < len(cmds): cmds.pop(idx); salvar_config()
-    return jsonify(ok=True)
-
-
-@app.route("/api/comando_exec", methods=["POST"])
-def api_comando_exec():
-    b = exigir_auth()
-    if b: return b
-    idx = int((request.get_json(force=True) or {}).get("idx", -1))
-    cmds = ESTADO.get("comandos", [])
-    if idx < 0 or idx >= len(cmds): return jsonify(erro="comando invalido")
-    return jsonify(saida=run_cmd_escondido(cmds[idx]["cmd"]).strip() or "(sem saida)")
-
-
-@app.route("/api/terminal")
-def api_terminal():
-    b = exigir_auth()
-    if b: return b
-    cmd = (request.args.get("cmd") or "").strip()
-    if not cmd: return jsonify(erro="sem comando")
-    def gen():
-        try:
-            p = subprocess.Popen(cmd, shell=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, text=True, bufsize=1,
-                encoding="cp850", errors="replace",
-                creationflags=CREATE_NO_WINDOW)
-            for line in p.stdout:
-                yield f"data: {json.dumps(line)}\n\n"
-            p.wait()
-        except Exception as e:
-            yield f"data: {json.dumps('(erro: '+str(e)+')')}\n\n"
-        yield "event: end\ndata: \n\n"
-    return Response(stream_with_context(gen()),
-                    mimetype="text/event-stream",
-                    headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
-
-
-GROQ_MODELOS_FALLBACK = ["openai/gpt-oss-120b","openai/gpt-oss-20b","qwen/qwen3.6-27b","gemma2-9b-it"]
-
-
-def _ia_chamar_groq(key, model, msgs, system):
-    if not REQ_OK: return None, "requests nao instalado"
-    tools = []
-    for nome, fn in FUNCOES_IA.items():
-        props = fn.get("parametros", {})
-        tools.append({"type":"function","function":{"name":nome,"description":fn["descricao"],
-            "parameters":{"type":"object","properties":props,"required":list(props.keys())}}})
-    candidatos = [model] + [m for m in GROQ_MODELOS_FALLBACK if m != model]
-    ultimo_erro = None
-    for mdl in candidatos:
-        try:
-            r = _req.post("https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"model": mdl, "messages": [{"role":"system","content":system}] + msgs,
-                      "tools": tools, "tool_choice": "auto",
-                      "temperature": 0.6, "max_tokens": 1024}, timeout=45)
-            if r.status_code == 200:
-                data = r.json(); msg = data["choices"][0]["message"]
-                if msg.get("tool_calls"):
-                    resultados = []
-                    for tc in msg["tool_calls"]:
-                        nome_fn = tc["function"]["name"]
-                        args = json.loads(tc["function"]["arguments"] or "{}")
-                        if nome_fn in FUNCOES_IA:
-                            try: resultados.append(str(FUNCOES_IA[nome_fn]["executar"](**args)))
-                            except Exception as e: resultados.append(f"Erro ao executar {nome_fn}: {e}")
-                    return "\n".join(resultados), None
-                return _limpar_markdown(msg.get("content", "")), None
-            if r.status_code in (400, 404):
-                ultimo_erro = f"Groq {r.status_code} no modelo {mdl}: {r.text[:150]}"; continue
-            return None, f"Groq HTTP {r.status_code}: {r.text[:200]}"
-        except Exception as e:
-            ultimo_erro = f"Groq erro: {e}"; continue
-    return None, ultimo_erro or "Groq falhou em todos os modelos"
-
-
-@app.route("/api/ia_config", methods=["GET"])
-def api_ia_config_get():
-    b = exigir_auth()
-    if b: return b
-    return jsonify(tem_chave=bool(GROQ_API_KEY))
-
-
-@app.route("/api/ia", methods=["POST"])
-def api_ia():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    msgs = d.get("mensagens") or []
-    if not isinstance(msgs, list): msgs = []
-    msgs = [{"role": m.get("role","user"), "content": (m.get("content") or "")[:4000]}
-            for m in msgs if isinstance(m, dict) and m.get("role") in ("user","assistant","system")][-20:]
-    if not msgs: return jsonify(erro="sem mensagens")
-    if not GROQ_API_KEY: return jsonify(erro="configure GROQ_API_KEY no codigo")
-    modelo = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
-    sysmsg = ESTADO.get("ia_system", "")
-    resp, err = _ia_chamar_groq(GROQ_API_KEY, modelo, msgs, sysmsg)
-    if resp: return jsonify(resposta=_limpar_markdown(resp), provedor="groq")
-    return jsonify(erro=err or "Groq falhou")
-
-
-@app.route("/api/midia_info")
-def api_midia_info():
-    b = exigir_auth()
-    if b: return b
-    return jsonify(smtc_info())
-
-
-@app.route("/api/midia_smtc", methods=["POST"])
-def api_midia_smtc():
-    b = exigir_auth()
-    if b: return b
-    acao = (request.get_json(force=True) or {}).get("acao", "")
-    if acao not in ("shuffle_on","shuffle_off","repeat_off","repeat_all","repeat_one"):
-        return jsonify(erro="acao invalida")
-    ok = smtc_acao(acao)
-    return jsonify(ok=ok) if ok else jsonify(erro="falhou")
-
-
-@app.route("/api/timer", methods=["POST"])
-def api_timer():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True)
-    try: minutos = max(1, min(1440, int(d.get("minutos", 30))))
-    except Exception: minutos = 30
-    acao = d.get("acao") or "desligar"
-    if acao not in ("desligar","reiniciar","dormir","bloquear"): return jsonify(erro="acao invalida")
-    agendar_timer(minutos * 60, acao)
-    return jsonify(saida=f"{acao} agendado para daqui a {minutos} min.")
-
-
-@app.route("/api/timers")
-def api_timers():
-    b = exigir_auth()
-    if b: return b
-    itens = [{"id": tid, "segundos": t["segundos"], "acao": t["acao"], "quando": t["quando"]}
-             for tid, t in list(TIMERS.items())]
-    return jsonify(timers=itens)
-
-
-@app.route("/api/timers_cancelar", methods=["POST"])
-def api_timers_cancelar():
-    b = exigir_auth()
-    if b: return b
-    for t in list(TIMERS.values()):
-        try: t["timer"].cancel()
-        except Exception: pass
-    TIMERS.clear(); return jsonify(ok=True)
-
-
-@app.route("/api/sistema", methods=["POST"])
-def api_sistema():
-    b = exigir_auth()
-    if b: return b
-    acao = (request.get_json(force=True) or {}).get("acao", "")
-    if acao == "bloquear": executar(["rundll32.exe","user32.dll,LockWorkStation"]); return jsonify(saida="PC bloqueado.")
-    if acao == "dormir":
-        executar(["powercfg","-h","off"])
-        executar(["rundll32.exe","powrprof.dll,SetSuspendState","0,1,0"])
-        return jsonify(saida="Dormindo...")
-    if acao == "desligar":
-        ok, msg = _shutdown(restart=False, delay=3)
-        return jsonify(saida=("Desligando em 3s." if ok else "Erro: "+msg))
-    if acao == "reiniciar":
-        ok, msg = _shutdown(restart=True, delay=3)
-        return jsonify(saida=("Reiniciando em 3s." if ok else "Erro: "+msg))
-    if acao == "cancelar": executar(["shutdown","/a"]); return jsonify(saida="Cancelado.")
-    return jsonify(erro="acao desconhecida")
-
-
-@app.route("/api/efeitos", methods=["POST"])
-def api_efeitos():
-    b = exigir_auth()
-    if b: return b
-    d = request.get_json(force=True) or {}
-    ESTADO["efeitos_ativos"] = bool(d.get("ativo"))
-    salvar_config()
-    return jsonify(ok=True, ativo=ESTADO["efeitos_ativos"])
-
-
-
-@app.route("/api/state")
-def api_state():
-    return jsonify(
-        ip=ip_local(), porta=5000,
-        pin_set=bool(ESTADO.get("pin")),
-        autenticado=autenticado(),
-        modo=ESTADO.get("modo"),
-        modo_ui=ESTADO.get("modo_ui", "iniciante"),
-        efeitos_ativos=bool(ESTADO.get("efeitos_ativos", False)),
-        pasta_arquivos=pasta_arquivos(),
-        userprofile=os.environ.get("USERPROFILE") or os.path.expanduser("~"),
-    )
-
+    
 
 # ============================================================
 # PAGINA
@@ -2013,11 +1211,8 @@ PAGINA = r"""
 <style>
 :root{--bg:#0a0a0d;--panel:#101015;--line:#1d1d25;--fg:#e9e9f0;--mut:#8b8b99;--acc:#7c00f0;--acc2:#9a3cff;--red:#c82020;--green:#23d160;color-scheme:dark}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;padding:0;background:transparent;color:var(--fg);font:14px/1.4 system-ui,-apple-system,sans-serif;overflow-x:hidden;width:100%;max-width:100vw}
-body{padding:env(safe-area-inset-top) 0 calc(70px + env(safe-area-inset-bottom));background:var(--bg);position:relative;min-height:100vh}
-#bgGlobal{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity .6s ease}
-body.efeitos-on #bgGlobal{opacity:1}
-header,main,nav,.lock{position:relative;z-index:1}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,sans-serif;overflow-x:hidden;width:100%;max-width:100vw}
+body{padding:env(safe-area-inset-top) 0 calc(70px + env(safe-area-inset-bottom))}
 header{padding:8px 12px 6px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg);z-index:5;gap:8px;flex-wrap:wrap;max-width:680px;margin:0 auto;width:100%}
 header .logoWrap{display:flex;align-items:center;gap:10px}
 header .logo{height:26px;width:auto;display:block}
@@ -2139,12 +1334,6 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .tutorialBox p{color:var(--mut);line-height:1.6;margin:8px 0}
 .tutorialBox ul{color:var(--mut);line-height:1.7;padding-left:20px;margin:8px 0}
 .tutorialBox li b{color:var(--fg)}
-.switch{position:relative;display:inline-block;width:52px;height:30px;flex:none}
-.switch input{opacity:0;width:0;height:0}
-.slider{position:absolute;cursor:pointer;inset:0;background:#2a2a35;transition:.3s;border-radius:30px}
-.slider:before{position:absolute;content:"";height:22px;width:22px;left:4px;bottom:4px;background:#e9e9f0;transition:.3s;border-radius:50%}
-input:checked+.slider{background:var(--acc)}
-input:checked+.slider:before{transform:translateX(22px)}
 body[data-modo="iniciante"] .avancado{display:none!important}
 @media(min-width:700px){
   body{background:#060609}
@@ -2171,8 +1360,6 @@ body[data-modo="iniciante"] .avancado{display:none!important}
 </style>
 </head>
 <body data-modo="iniciante">
-
-<canvas id="bgGlobal"></canvas>
 
 <header>
   <div class="logoWrap">
@@ -2492,18 +1679,6 @@ body[data-modo="iniciante"] .avancado{display:none!important}
 
   <section id="p-sistema" class="page hid">
     <div class="panel">
-      <h2>Efeitos visuais</h2>
-      <div class="hint" style="margin-bottom:10px">Ativa os triângulos 3D de fundo (igual ao QR Code). Pode deixar o site mais pesado em celulares antigos.</div>
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <span style="font-weight:600">Efeito de fundo</span>
-        <label class="switch">
-          <input type="checkbox" id="toggleEfeitos" onchange="toggleEfeitos(this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-    </div>
-
-    <div class="panel">
       <h2>Acesso remoto</h2>
       <span class="hint">LAN:</span>
       <div class="ipbox" id="ipShow">carregando…</div>
@@ -2629,142 +1804,10 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",
 
 if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 
-// ============ EFEITOS 3D DE FUNDO ============
-let EFEITOS_ON=false, bgRaf=null, bgPaused=false;
-let bgTris=[], bgCanvas=null, bgCtx=null, bgW=0, bgH=0, bgDPR=1;
-
-function bgResize(){
-  if(!bgCanvas)return;
-  bgW=window.innerWidth; bgH=window.innerHeight;
-  bgDPR=Math.min(window.devicePixelRatio||1,2);
-  bgCanvas.width=bgW*bgDPR; bgCanvas.height=bgH*bgDPR;
-  bgCanvas.style.width=bgW+'px'; bgCanvas.style.height=bgH+'px';
-  bgCtx.setTransform(bgDPR,0,0,bgDPR,0,0);
-}
-
-function bgInit(){
-  bgCanvas=document.getElementById('bgGlobal');
-  if(!bgCanvas)return;
-  bgCtx=bgCanvas.getContext('2d');
-  bgResize();
-  window.addEventListener('resize',bgResize);
-  const N=18;
-  bgTris=[];
-  for(let i=0;i<N;i++){
-    bgTris.push({
-      x:(Math.random()-.5)*bgW*1.5,
-      y:(Math.random()-.5)*bgH*1.5,
-      z:(Math.random()-.5)*600,
-      size:60+Math.random()*140,
-      rotX:Math.random()*Math.PI*2,
-      rotY:Math.random()*Math.PI*2,
-      rotZ:Math.random()*Math.PI*2,
-      spX:(Math.random()-.5)*0.008,
-      spY:(Math.random()-.5)*0.008,
-      spZ:(Math.random()-.5)*0.008,
-      vz:(Math.random()-.5)*0.6,
-      vx:(Math.random()-.5)*0.4,
-      vy:(Math.random()-.5)*0.4,
-      alpha:.10+Math.random()*.25,
-      hue:265+Math.random()*40,
-      blur:16+Math.random()*24,
-    });
-  }
-}
-
-const BG_VERTS=[[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]];
-const BG_EDGES=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
-
-function bgProjetar(v,rx,ry,rz,persp){
-  let [x,y,z]=v;
-  let cx=Math.cos(rz),sx=Math.sin(rz);
-  let x1=x*cx-y*sx,y1=x*sx+y*cx,z1=z;
-  let cy=Math.cos(ry),sy=Math.sin(ry);
-  let x2=x1*cy+z1*sy,y2=y1,z2=-x1*sy+z1*cy;
-  let cxx=Math.cos(rx),sxx=Math.sin(rx);
-  let x3=x2,y3=y2*cxx-z2*sxx,z3=y2*sxx+z2*cxx;
-  const f=persp/(persp+z3+300);
-  return [x3*f,y3*f,z3];
-}
-
-let bgT0=performance.now();
-function bgFrame(now){
-  if(!EFEITOS_ON||bgPaused)return;
-  const dt=Math.min((now-bgT0)/16.67,3);bgT0=now;
-  bgCtx.clearRect(0,0,bgW,bgH);
-  bgTris.sort((a,b)=>b.z-a.z);
-  for(const t of bgTris){
-    t.x+=t.vx*dt;t.y+=t.vy*dt;t.z+=t.vz*dt;
-    t.rotX+=t.spX*dt;t.rotY+=t.spY*dt;t.rotZ+=t.spZ*dt;
-    const limX=bgW*0.9,limY=bgH*0.9,limZ=650;
-    if(t.x<-limX)t.x=limX;if(t.x>limX)t.x=-limX;
-    if(t.y<-limY)t.y=limY;if(t.y>limY)t.y=-limY;
-    if(t.z<-limZ)t.z=limZ;if(t.z>limZ)t.z=-limZ;
-    const persp=800,camZ=t.z+700;
-    if(camZ<60)continue;
-    const escala=persp/camZ;
-    const cx=bgW/2+t.x*escala, cy=bgH/2+t.y*escala;
-    const fade=Math.max(0.1,Math.min(1,1.6-(t.z+limZ)/(2*limZ)*1.4));
-    const a=t.alpha*fade;
-    bgCtx.save();
-    bgCtx.translate(cx,cy);
-    bgCtx.lineWidth=Math.max(0.8,1.6*escala);
-    bgCtx.lineJoin='round';
-    bgCtx.strokeStyle='hsla('+t.hue+',100%,68%,'+a+')';
-    bgCtx.shadowColor='hsla('+t.hue+',100%,62%,'+(a+.18)+')';
-    bgCtx.shadowBlur=t.blur*escala;
-    const pts=[];
-    for(const v of BG_VERTS){
-      const [vx,vy,vz]=bgProjetar([v[0]*t.size*0.5,v[1]*t.size*0.5,v[2]*t.size*0.5],t.rotX,t.rotY,t.rotZ,500);
-      pts.push([vx*escala,vy*escala,vz]);
-    }
-    bgCtx.beginPath();
-    for(const [i,j] of BG_EDGES){
-      bgCtx.moveTo(pts[i][0],pts[i][1]);
-      bgCtx.lineTo(pts[j][0],pts[j][1]);
-    }
-    bgCtx.stroke();
-    bgCtx.fillStyle='hsla('+t.hue+',100%,80%,'+(a*1.4)+')';
-    for(const p of pts){
-      const r=Math.max(1.2,2.2*escala);
-      bgCtx.beginPath();bgCtx.arc(p[0],p[1],r,0,Math.PI*2);bgCtx.fill();
-    }
-    bgCtx.restore();
-  }
-  bgRaf=requestAnimationFrame(bgFrame);
-}
-
-function efeitosOn(){
-  if(EFEITOS_ON)return;
-  EFEITOS_ON=true;
-  document.body.classList.add('efeitos-on');
-  if(!bgCanvas)bgInit();
-  bgT0=performance.now();
-  if(bgRaf)cancelAnimationFrame(bgRaf);
-  bgRaf=requestAnimationFrame(bgFrame);
-}
-function efeitosOff(){
-  EFEITOS_ON=false;
-  document.body.classList.remove('efeitos-on');
-  if(bgRaf){cancelAnimationFrame(bgRaf);bgRaf=null}
-  if(bgCtx)bgCtx.clearRect(0,0,bgW,bgH);
-}
-
-document.addEventListener('visibilitychange',()=>{
-  bgPaused=document.hidden;
-  if(!document.hidden&&EFEITOS_ON){bgT0=performance.now();if(!bgRaf)bgRaf=requestAnimationFrame(bgFrame);}
-});
-
-async function toggleEfeitos(ativo){
-  if(ativo)efeitosOn(); else efeitosOff();
-  await post("/api/efeitos",{ativo:!!ativo});
-  toast(ativo?"Efeitos ativados":"Efeitos desativados");
-}
-// ============================================
-
 let modoUI="iniciante";
 function aplicarModoUI(m){modoUI=m;document.body.setAttribute("data-modo",m);$$("#modoToggle button").forEach(b=>b.classList.toggle("on",b.dataset.m===m))}
 $$("#modoToggle button").forEach(b=>{b.onclick=async()=>{const m=b.dataset.m;if(m===modoUI)return;aplicarModoUI(m);await post("/api/modo_ui",{modo:m});toast(m==="iniciante"?"Modo Iniciante":"Modo Avançado")}});
+async function carregarModoUI(){try{const j=await get("/api/state");if(j.modo_ui)aplicarModoUI(j.modo_ui)}catch(e){}}
 
 const TUTORIAL_INICIANTE=`<h3>Bem-vindo!</h3><p>Modo <b>Iniciante</b>. Só o essencial.</p><ul><li><b>Ações</b> — abre apps</li><li><b>Texto</b> — digita (voz)</li><li><b>Mídia</b> — play/pause, volume</li><li><b>Mouse</b> — touchpad</li><li><b>Tela</b> — vê e tira print</li><li><b>Arquivos</b> — envio</li><li><b>PC</b> — CPU/RAM/GPU/rede</li><li><b>IA</b> — assistente com ações</li><li><b>Sistema</b> — QR, LAN/WAN, PIN</li></ul><div class="grid g2" style="margin-top:14px"><button class="btn ghost" onclick="fecharTutorial()">Pular</button><button class="btn acc" onclick="marcarTutorialVisto()">Entendi</button></div>`;
 const TUTORIAL_AVANCADO=`<h3>Avançado</h3><p>Liberou:</p><ul><li><b>Arquivos</b> — navegador completo</li><li><b>PC → Terminal/Comandos</b></li></ul><div class="grid g2" style="margin-top:14px"><button class="btn ghost" onclick="fecharTutorial()">Pular</button><button class="btn acc" onclick="marcarTutorialVisto()">Entendi</button></div>`;
@@ -3079,9 +2122,8 @@ async function iniciar(){
   const j=await get("/api/state");
   if(j.pin_set&&!j.autenticado){mostrarLock();return}
   $("#lockScreen").classList.add("hid");
-  if(j.modo_ui)aplicarModoUI(j.modo_ui);
-  if(j.efeitos_ativos){const cb=$("#toggleEfeitos");if(cb)cb.checked=true;efeitosOn();}
   initTouchpad();
+  carregarModoUI();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarComandos();
   try{await post("/api/teclas/soltar_todas",{})}catch(e){}
@@ -3097,6 +2139,1180 @@ iniciar();
 </body>
 </html>
 """
+
+
+# ============================================================
+# ROTAS
+# ============================================================
+
+@app.route("/")
+def home(): return PAGINA
+
+
+@app.route("/manifest.json")
+def manifest():
+    return jsonify({
+        "name": "RotaControl", "short_name": "RotaControl",
+        "start_url": "/", "display": "standalone",
+        "background_color": "#0a0a0d", "theme_color": "#0a0a0d",
+        "icons": [
+            {"src": "/icon.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/icon.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+            {"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ]
+    })
+
+
+@app.route("/sw.js")
+def sw():
+    js = """
+self.addEventListener('install', e => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', e => {
+  const u = new URL(e.request.url);
+  if(u.pathname.startsWith('/api/')) return;
+  e.respondWith(fetch(e.request).catch(() => new Response('', {status:503})));
+});
+"""
+    return Response(js, mimetype="application/javascript", headers={"Cache-Control": "no-store"})
+
+
+@app.route("/logo.png")
+def logo():
+    if not LOGO_B64: return "", 404
+    try:
+        return Response(base64.b64decode(LOGO_B64), mimetype="image/png", headers={"Cache-Control": "no-cache"})
+    except Exception: return "", 404
+
+
+@app.route("/icon.png")
+def icon():
+    """Ícone do PWA — usa a logo do QR se existir, senão a principal."""
+    fonte = QR_LOGO_B64 or LOGO_B64
+    if not fonte: return "", 404
+    try:
+        return Response(base64.b64decode(fonte), mimetype="image/png", headers={"Cache-Control": "no-cache"})
+    except Exception: return "", 404
+
+
+@app.route("/api/state")
+def api_state():
+    return jsonify(
+        ip=ip_local(), porta=5000,
+        pin_set=bool(ESTADO.get("pin")),
+        autenticado=autenticado(),
+        modo=ESTADO.get("modo"),
+        modo_ui=ESTADO.get("modo_ui", "iniciante"),
+        pasta_arquivos=pasta_arquivos(),
+        userprofile=os.environ.get("USERPROFILE") or os.path.expanduser("~"),
+    )
+
+
+@app.route("/api/modo_ui", methods=["POST"])
+def api_modo_ui():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    m = d.get("modo") or "iniciante"
+    if m not in ("iniciante", "avancado"): m = "iniciante"
+    ESTADO["modo_ui"] = m; salvar_config()
+    return jsonify(ok=True, modo=m)
+
+
+@app.route("/api/tutorial_visto", methods=["POST"])
+def api_tutorial_visto():
+    b = exigir_auth()
+    if b: return b
+    ESTADO["tutorial_visto"] = True; salvar_config()
+    return jsonify(ok=True)
+
+
+@app.route("/api/config", methods=["GET"])
+def api_config_get():
+    return jsonify(modo=ESTADO.get("modo"), tunel_ativo=bool(TUNEL["ativo"]),
+                   tunel_url=TUNEL["url"], pin_set=bool(ESTADO.get("pin")),
+                   modo_ui=ESTADO.get("modo_ui", "iniciante"))
+
+
+@app.route("/api/modo", methods=["POST"])
+def api_modo():
+    b = exigir_auth()
+    if b: return b
+    modo = (request.get_json(force=True) or {}).get("modo")
+    if modo not in ("lan", "wan"): return jsonify(erro="modo invalido"), 400
+    ESTADO["modo"] = modo; salvar_config()
+    if modo == "wan": iniciar_tunel_async()
+    else: parar_tunel()
+    return jsonify(ok=True, modo=modo, tunel_url=TUNEL["url"], tunel_ativo=bool(TUNEL["ativo"]))
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    pin = (request.get_json(force=True).get("pin") or "").strip()
+    if not ESTADO.get("pin") or pin == ESTADO["pin"]:
+        session["ok"] = True; return jsonify(ok=True)
+    return jsonify(erro="pin incorreto"), 401
+
+
+@app.route("/api/pin", methods=["POST"])
+def api_pin():
+    b = exigir_auth()
+    if b: return b
+    pin = (request.get_json(force=True).get("pin") or "").strip()
+    ESTADO["pin"] = pin or None; salvar_config(); return jsonify(ok=True)
+
+
+@app.route("/api/pasta", methods=["POST"])
+def api_pasta():
+    b = exigir_auth()
+    if b: return b
+    p = (request.get_json(force=True).get("pasta") or "").strip()
+    ESTADO["pasta_arquivos"] = p; salvar_config()
+    return jsonify(ok=True, pasta=pasta_arquivos())
+
+
+@app.route("/api/autostart", methods=["GET"])
+def api_autostart_get(): return jsonify(ativo=autostart_ativo())
+
+
+@app.route("/api/autostart", methods=["POST"])
+def api_autostart_post():
+    b = exigir_auth()
+    if b: return b
+    set_autostart(bool((request.get_json(force=True) or {}).get("ativo")))
+    return jsonify(ok=True, ativo=autostart_ativo())
+
+
+@app.route("/api/acoes")
+def api_acoes():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(acoes=ESTADO.get("acoes", []))
+
+
+@app.route("/api/acao", methods=["POST"])
+def api_acao():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    acoes = ESTADO.get("acoes", [])
+    if idx < 0 or idx >= len(acoes): return jsonify(erro="acao invalida")
+    try:
+        executar_acao(acoes[idx]); return jsonify(saida=f"OK: {acoes[idx]['nome']}")
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/acao_add", methods=["POST"])
+def api_acao_add():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True)
+    ESTADO.setdefault("acoes", []).append({
+        "nome": (d.get("nome") or "?")[:40],
+        "tipo": d.get("tipo") or "abrir",
+        "valor": d.get("valor") or "",
+    })
+    salvar_config(); return jsonify(ok=True)
+
+
+@app.route("/api/acao_remover", methods=["POST"])
+def api_acao_remover():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    acoes = ESTADO.get("acoes", [])
+    if 0 <= idx < len(acoes): acoes.pop(idx); salvar_config()
+    return jsonify(ok=True)
+
+
+def executar_acao(a):
+    tipo = a.get("tipo"); valor = os.path.expandvars(a.get("valor") or "")
+    if tipo == "abrir": rodar_oculto(["cmd", "/c", "start", "", valor], shell=False)
+    elif tipo == "pasta":
+        if os.path.isdir(valor): os.startfile(valor)
+        else: raise Exception("Pasta nao existe: " + valor)
+    elif tipo == "url": webbrowser.open_new_tab(valor)
+    elif tipo == "comando": rodar_oculto(["cmd", "/c", valor], shell=False)
+    else: raise Exception("Tipo desconhecido: " + tipo)
+
+
+@app.route("/api/nav", methods=["POST"])
+def api_nav():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    mapa = {"back": VK_BROWSER_BACK, "forward": VK_BROWSER_FORWARD, "refresh": VK_BROWSER_REFRESH}
+    vk = mapa.get(acao)
+    if vk is None: return jsonify(erro="acao desconhecida")
+    try:
+        enviar_tecla_browser(vk); return jsonify(ok=True, saida=acao)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_move", methods=["POST"])
+def api_mouse_move():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    try: dx = int(d.get("dx",0)); dy = int(d.get("dy",0))
+    except Exception: return jsonify(erro="dx/dy invalidos")
+    try:
+        u = ctypes.windll.user32; pt = PONTO(); u.GetCursorPos(ctypes.byref(pt))
+        nx = pt.x + dx; ny = pt.y + dy
+        sw = u.GetSystemMetrics(78); sh = u.GetSystemMetrics(79)
+        sx = u.GetSystemMetrics(76); sy = u.GetSystemMetrics(77)
+        if sw > 0 and sh > 0:
+            if nx < sx: nx = sx
+            if ny < sy: ny = sy
+            if nx > sx+sw-1: nx = sx+sw-1
+            if ny > sy+sh-1: ny = sy+sh-1
+        u.SetCursorPos(nx, ny); return jsonify(ok=True, x=nx, y=ny)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_click", methods=["POST"])
+def api_mouse_click():
+    b = exigir_auth()
+    if b: return b
+    tipo = (request.get_json(force=True) or {}).get("tipo", "left")
+    u = ctypes.windll.user32
+    LD=0x0002; LU=0x0004; RD=0x0008; RU=0x0010; MD=0x0020; MU=0x0040
+    try:
+        if tipo=="left": u.mouse_event(LD,0,0,0,0);u.mouse_event(LU,0,0,0,0)
+        elif tipo=="right": u.mouse_event(RD,0,0,0,0);u.mouse_event(RU,0,0,0,0)
+        elif tipo=="middle": u.mouse_event(MD,0,0,0,0);u.mouse_event(MU,0,0,0,0)
+        elif tipo=="double":
+            for _ in range(2): u.mouse_event(LD,0,0,0,0);u.mouse_event(LU,0,0,0,0);time.sleep(0.05)
+        else: return jsonify(erro="tipo invalido")
+        return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_scroll", methods=["POST"])
+def api_mouse_scroll():
+    b = exigir_auth()
+    if b: return b
+    try: dy = int((request.get_json(force=True) or {}).get("dy",0))
+    except Exception: return jsonify(erro="dy invalido")
+    try:
+        ctypes.windll.user32.mouse_event(0x0800,0,0,dy,0); return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/mouse_drag", methods=["POST"])
+def api_mouse_drag():
+    b = exigir_auth()
+    if b: return b
+    tipo = (request.get_json(force=True) or {}).get("tipo", "drag_down")
+    u = ctypes.windll.user32
+    if tipo == "drag_down": u.mouse_event(0x0002,0,0,0,0)
+    elif tipo == "drag_up": u.mouse_event(0x0004,0,0,0,0)
+    return jsonify(ok=True)
+
+
+@app.route("/api/monitor", methods=["POST"])
+def api_monitor():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    if acao == "off": threading.Thread(target=monitor_desligar, daemon=True).start(); return jsonify(saida="Monitores desligando...")
+    if acao == "on": threading.Thread(target=monitor_ligar, daemon=True).start(); return jsonify(saida="Monitores acordando...")
+    return jsonify(erro="acao invalida")
+
+
+@app.route("/api/teclas/estado")
+def api_teclas_estado():
+    b = exigir_auth()
+    if b: return b
+    with TECLAS_LOCK: return jsonify(travadas=dict(TECLAS_TRAVADAS))
+
+
+@app.route("/api/teclas/travar", methods=["POST"])
+def api_teclas_travar():
+    b = exigir_auth()
+    if b: return b
+    nome = (request.get_json(force=True) or {}).get("nome", "").lower()
+    if nome not in _vks_modificadores(): return jsonify(erro="tecla invalida")
+    return jsonify(ok=travar_tecla(nome))
+
+
+@app.route("/api/teclas/soltar", methods=["POST"])
+def api_teclas_soltar():
+    b = exigir_auth()
+    if b: return b
+    soltar_tecla_travada((request.get_json(force=True) or {}).get("nome","").lower())
+    return jsonify(ok=True)
+
+
+@app.route("/api/teclas/soltar_todas", methods=["POST"])
+def api_teclas_soltar_todas():
+    soltar_todas_travadas(); return jsonify(ok=True)
+
+
+@app.route("/api/monitores")
+def api_monitores():
+    b = exigir_auth()
+    if b: return b
+    if not TEM_MSS: return jsonify(lista=[], atual=0)
+    try:
+        with _mss.mss() as sct:
+            mons = sct.monitors
+            lista = [{"idx":i, "w":mons[i].get("width",0), "h":mons[i].get("height",0), "principal":(i==1)}
+                     for i in range(1, len(mons))]
+        return jsonify(lista=lista, atual=int(ESTADO.get("monitor_escolhido", 0)))
+    except Exception as e: return jsonify(erro=str(e), lista=[], atual=0)
+
+
+@app.route("/api/monitor_escolhido", methods=["POST"])
+def api_monitor_escolhido():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", 0))
+    ESTADO["monitor_escolhido"] = idx; salvar_config()
+    CAPTURA["monitor_idx"] = idx
+    return jsonify(ok=True, idx=idx)
+
+
+def _ler_temperatura():
+    try:
+        script = ("$t = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+                  "-ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature; "
+                  "if ($t) { Write-Output ([math]::Round(($t/10 - 273.15), 1)) }")
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                     capture_output=True, text=True, encoding="utf-8",
+                     errors="replace", timeout=6)
+        out = (r.stdout or "").strip()
+        if out and re.match(r"^-?\d+(\.\d+)?$", out):
+            v = float(out)
+            if -50 < v < 200: return v
+    except Exception: pass
+    return None
+
+
+_GPU_CACHE = {"t": 0, "v": None}
+_GPU_INTERVALO = 5
+
+def _ler_gpu():
+    now = time.time()
+    if now - _GPU_CACHE["t"] < _GPU_INTERVALO and _GPU_CACHE["v"]:
+        return _GPU_CACHE["v"]
+    _GPU_CACHE["t"] = now
+    info = {"nome": None, "uso": None, "mem_usada": None, "mem_total": None, "temp": None}
+
+    try:
+        r = executar(["nvidia-smi",
+                      "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                      "--format=csv,noheader,nounits"],
+                     capture_output=True, text=True, timeout=5)
+        out = (r.stdout or "").strip()
+        if out:
+            parts = [p.strip() for p in out.split("\n")[0].split(",")]
+            if len(parts) >= 5:
+                info["nome"] = parts[0]
+                for i, key in enumerate(["uso","mem_usada","mem_total","temp"], start=1):
+                    try: info[key] = int(float(parts[i]))
+                    except: pass
+                _GPU_CACHE["v"] = info
+                return info
+    except Exception: pass
+
+    try:
+        script = "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"
+        cod = base64.b64encode(script.encode("utf-16-le")).decode()
+        r = executar(["powershell","-NoProfile","-EncodedCommand",cod],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=6)
+        out = (r.stdout or "").strip()
+        if out: info["nome"] = out
+    except Exception: pass
+
+    _GPU_CACHE["v"] = info
+    return info
+
+
+def _listar_discos():
+    discos = []
+    if not PSUTIL_OK: return discos
+    try: parts = psutil.disk_partitions(all=False)
+    except Exception: return discos
+    vistos = set()
+    for p in parts:
+        mp = p.mountpoint
+        if mp in vistos: continue
+        opts = (p.opts or "")
+        if "cdrom" in opts: continue
+        if not p.fstype and "removable" not in opts: continue
+        try:
+            u = psutil.disk_usage(mp)
+            vistos.add(mp)
+            letra = mp.rstrip("\\/") or mp
+            discos.append({
+                "letra": letra,
+                "total_gb": round(u.total / (1024**3), 1),
+                "usado_gb": round(u.used / (1024**3), 1),
+                "livre_gb": round(u.free / (1024**3), 1),
+                "percent": int(u.percent),
+                "fs": p.fstype or "?",
+            })
+        except Exception: continue
+    discos.sort(key=lambda d: d["letra"])
+    return discos
+
+
+def _fmt_uptime(seg):
+    d = int(seg // 86400); h = int((seg % 86400)//3600); m = int((seg % 3600)//60)
+    if d > 0: return f"{d}d {h}h {m}m"
+    if h > 0: return f"{h}h {m}m"
+    return f"{m}m"
+
+
+@app.route("/api/status")
+def api_status():
+    b = exigir_auth()
+    if b: return b
+    if not PSUTIL_OK: return jsonify(erro="psutil nao instalado")
+    try:
+        with _CPU_CACHE["lock"]: cpu = _CPU_CACHE["v"]
+        ram = psutil.virtual_memory()
+        uptime = time.time() - psutil.boot_time()
+        temp = _ler_temperatura()
+        gpu = _ler_gpu()
+        discos = _listar_discos()
+        with _NET_CACHE["lock"]:
+            down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
+        ping = _ping_google()
+        return jsonify(
+            cpu=cpu,
+            cpu_model=_ler_cpu_model(),
+            ram=ram.percent,
+            ram_detalhe=f"({fmt_gib(ram.used):.1f}/{fmt_gib(ram.total):.1f} GiB)",
+            temp=temp,
+            uptime=_fmt_uptime(uptime),
+            gpu=gpu,
+            discos=discos,
+            rede={"down_mbps": down, "up_mbps": up},
+            ping=ping,
+            qtd_processos=_contar_processos(),
+        )
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/top_processos")
+def api_top_processos():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(processos=_top_processos(5))
+
+
+@app.route("/api/screenshot", methods=["POST"])
+def api_screenshot():
+    b = exigir_auth()
+    if b: return b
+    try:
+        idx = int(ESTADO.get("monitor_escolhido", 0))
+        png = _capturar_png_full(idx)
+        nome = time.strftime("screenshot_%Y-%m-%d_%H-%M-%S.png")
+        with open(os.path.join(pasta_arquivos(), nome), "wb") as f: f.write(png)
+        return jsonify(ok=True, nome=nome, saida=f"Salvo: {nome}")
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/screenshot_clip", methods=["POST"])
+def api_screenshot_clip():
+    b = exigir_auth()
+    if b: return b
+    try:
+        idx = int(ESTADO.get("monitor_escolhido", 0))
+        png = _capturar_png_full(idx)
+        _clip_set_imagem_png(png)
+        return jsonify(saida="Print copiado pra área de transferência do PC.")
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/reparar", methods=["POST"])
+def api_reparar():
+    b = exigir_auth()
+    if b: return b
+    tipo = (request.get_json(force=True) or {}).get("tipo", "")
+    if tipo == "explorer":
+        def _r():
+            try:
+                subprocess.Popen(["taskkill","/f","/im","explorer.exe"],
+                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1.5)
+                subprocess.Popen(["cmd","/c","start","","explorer.exe"],
+                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception: pass
+        threading.Thread(target=_r, daemon=True).start()
+        return jsonify(saida="Explorer reiniciando...")
+    if tipo == "audio":
+        def _a():
+            try:
+                subprocess.Popen(["taskkill","/f","/im","audiodg.exe"],
+                    creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception: pass
+        threading.Thread(target=_a, daemon=True).start()
+        return jsonify(saida="Áudio reiniciando...")
+    return jsonify(erro="tipo invalido")
+
+
+def _gerar_qr_png_bytes(url):
+    if not QRCODE_OK: return None
+    try:
+        from PIL import Image as PILImage
+        qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=12, border=2)
+        qr.add_data(url); qr.make(fit=True)
+        logo_img = None
+        fonte_logo = QR_LOGO_B64 or LOGO_B64
+        if fonte_logo:
+            try:
+                logo_img = PILImage.open(io.BytesIO(base64.b64decode(fonte_logo))).convert("RGBA")
+                qr_w = qr.modules_count * qr.box_size
+                max_logo = max(24, int(qr_w * 0.24))
+                logo_img.thumbnail((max_logo, max_logo), PILImage.LANCZOS)
+            except Exception as e: log_seguro("erro logo qr:", e); logo_img = None
+        if logo_img is not None:
+            try:
+                from qrcode.image.styledpil import StyledPilImage
+                from qrcode.image.styles.colormasks import SolidFillColorMask
+                img = qr.make_image(image_factory=StyledPilImage, embedded_image=logo_img,
+                    color_mask=SolidFillColorMask(back_color=(255,255,255), front_color=(10,10,13)))
+            except Exception as e:
+                log_seguro("erro embed:", e)
+                img = qr.make_image(fill_color="#0a0a0d", back_color="white")
+        else:
+            img = qr.make_image(fill_color="#0a0a0d", back_color="white")
+        buf = io.BytesIO(); img.save(buf, "PNG"); return buf.getvalue()
+    except Exception as e: log_seguro("erro qr:", e); return None
+
+
+@app.route("/api/qr_para_pc", methods=["POST"])
+def api_qr_para_pc():
+    b = exigir_auth()
+    if b: return b
+    try:
+        webbrowser.open_new_tab(f"http://{ip_local()}:5000/qr_para_pc")
+        return jsonify(saida="QR aberto no PC.")
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/qr_para_pc")
+def qr_para_pc_page():
+    try:
+        ip = ip_local(); url = f"http://{ip}:5000"
+        png_bytes = _gerar_qr_png_bytes(url)
+        if png_bytes:
+            b64 = base64.b64encode(png_bytes).decode()
+            img_tag = f'<img src="data:image/png;base64,{b64}" alt="QR">'
+        else:
+            img_tag = '<p style="color:#888;padding:20px">Instale qrcode[pil].</p>'
+
+        # Se tiver túnel WAN ativo, mostra o botão
+        wan_url = ""
+        try:
+            if TUNEL.get("url") and str(TUNEL["url"]).startswith("http"):
+                wan_url = TUNEL["url"]
+        except Exception: pass
+
+        html = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<title>RotaControl - QR</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark}
+html,body{margin:0;padding:0;min-height:100vh;overflow-x:hidden;background:#05050a}
+body{font:16px/1.5 system-ui,sans-serif;color:#e9e9f0;display:flex;align-items:center;justify-content:center;flex-direction:column;perspective:1200px}
+#bg{position:fixed;inset:0;z-index:0}
+.content{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:22px;padding:24px}
+h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-gradient(135deg,#9a3cff,#d4a0ff 50%,#7c00f0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;text-shadow:0 0 50px rgba(154,60,255,.5)}
+.card{background:#fff;padding:22px;border-radius:22px;box-shadow:0 0 0 1px rgba(154,60,255,.35),0 0 80px rgba(124,0,240,.5),0 30px 60px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;transform-style:preserve-3d;animation:cardFloat 6s ease-in-out infinite}
+@keyframes cardFloat{0%,100%{transform:translateZ(0) rotateX(0deg) rotateY(0deg)}50%{transform:translateZ(20px) rotateX(2deg) rotateY(-2deg)}}
+.card img{width:320px;height:320px;display:block}
+.url{font:18px/1 ui-monospace,Consolas,monospace;color:#d4a0ff;background:rgba(20,20,30,.85);backdrop-filter:blur(12px);padding:14px 26px;border-radius:12px;border:1px solid rgba(154,60,255,.4)}
+.hint{color:#6c6c7a;font-size:13px}
+.wanBox{display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:6px;max-width:90vw}
+.wanBox.hid{display:none}
+.wanUrl{font:13px/1.3 ui-monospace,Consolas,monospace;color:#8ad0ff;background:rgba(10,20,30,.85);padding:10px 16px;border-radius:10px;border:1px solid rgba(60,140,255,.35);word-break:break-all;max-width:100%;text-align:center}
+.wanBtn{background:linear-gradient(135deg,#7c00f0,#9a3cff);color:#fff;border:0;padding:12px 22px;border-radius:10px;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 6px 20px rgba(124,0,240,.4);transition:.2s}
+.wanBtn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(124,0,240,.55)}
+.wanBtn:active{transform:scale(.96)}
+</style></head><body>
+<canvas id="bg"></canvas>
+<div class="content">
+  <h1>ROTACONTROL</h1>
+  <div class="card">__QR__</div>
+  <div class="url">__URL__</div>
+  <div class="hint">Aponte a câmera do celular pro QR</div>
+  <div class="wanBox hid" id="wanBox">
+    <div class="wanUrl" id="wanUrl"></div>
+    <button class="wanBtn" onclick="copiarWan()">📋 Copiar link WAN</button>
+  </div>
+</div>
+<script>
+const WAN_URL = "__WAN__";
+if(WAN_URL){document.getElementById("wanBox").classList.remove("hid");document.getElementById("wanUrl").textContent=WAN_URL;}
+function copiarWan(){
+  if(!WAN_URL) return;
+  const ta=document.createElement("textarea");ta.value=WAN_URL;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.select();
+  try{document.execCommand("copy")}catch(e){}
+  document.body.removeChild(ta);
+  const btn=event.target;const orig=btn.textContent;btn.textContent="✅ Copiado!";setTimeout(()=>btn.textContent=orig,1500);
+}
+(function(){
+const c=document.getElementById('bg'),ctx=c.getContext('2d');
+let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
+function rs(){W=window.innerWidth;H=window.innerHeight;c.width=W*DPR;c.height=H*DPR;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0)}
+window.addEventListener('resize',rs);rs();
+
+const N=26,tris=[];
+for(let i=0;i<N;i++){
+  tris.push({
+    x:(Math.random()-.5)*W*1.5,
+    y:(Math.random()-.5)*H*1.5,
+    z:(Math.random()-.5)*600,
+    size:60+Math.random()*140,
+    rotX:Math.random()*Math.PI*2,
+    rotY:Math.random()*Math.PI*2,
+    rotZ:Math.random()*Math.PI*2,
+    spX:(Math.random()-.5)*0.008,
+    spY:(Math.random()-.5)*0.008,
+    spZ:(Math.random()-.5)*0.008,
+    vz:(Math.random()-.5)*0.6,
+    vx:(Math.random()-.5)*0.4,
+    vy:(Math.random()-.5)*0.4,
+    alpha:.10+Math.random()*.25,
+    hue:265+Math.random()*40,
+    blur:16+Math.random()*24,
+  });
+}
+
+const VERTS=[[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]];
+const EDGES=[[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];
+
+function projetar(v,rotX,rotY,rotZ,persp){
+  let [x,y,z]=v;
+  let cx=Math.cos(rotZ),sx=Math.sin(rotZ);
+  let x1=x*cx-y*sx, y1=x*sx+y*cx, z1=z;
+  let cy=Math.cos(rotY),sy=Math.sin(rotY);
+  let x2=x1*cy+z1*sy, y2=y1, z2=-x1*sy+z1*cy;
+  let cxx=Math.cos(rotX),sxx=Math.sin(rotX);
+  let x3=x2, y3=y2*cxx-z2*sxx, z3=y2*sxx+z2*cxx;
+  const f=persp/(persp+z3+300);
+  return [x3*f, y3*f, z3];
+}
+
+function vig(){
+  const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.75);
+  g.addColorStop(0,'rgba(124,0,240,.12)');
+  g.addColorStop(.55,'rgba(10,10,15,0)');
+  g.addColorStop(1,'rgba(0,0,0,.65)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+}
+
+let t0=performance.now();
+function frame(now){
+  const dt=Math.min((now-t0)/16.67,3);t0=now;
+  ctx.fillStyle='#05050a';ctx.fillRect(0,0,W,H);
+
+  tris.sort((a,b)=>b.z-a.z);
+
+  for(const t of tris){
+    t.x += t.vx*dt;
+    t.y += t.vy*dt;
+    t.z += t.vz*dt;
+    t.rotX += t.spX*dt;
+    t.rotY += t.spY*dt;
+    t.rotZ += t.spZ*dt;
+
+    const limX=W*0.9, limY=H*0.9, limZ=650;
+    if(t.x<-limX)t.x=limX;if(t.x>limX)t.x=-limX;
+    if(t.y<-limY)t.y=limY;if(t.y>limY)t.y=-limY;
+    if(t.z<-limZ)t.z=limZ;if(t.z>limZ)t.z=-limZ;
+
+    const persp=800;
+    const camZ = t.z + 700;
+    if(camZ < 60) continue;
+    const escala = persp / camZ;
+    const cx = W/2 + t.x * escala;
+    const cy = H/2 + t.y * escala;
+
+    const fade = Math.max(0.1, Math.min(1, 1.6 - (t.z+limZ)/(2*limZ)*1.4));
+    const a = t.alpha * fade;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.lineWidth = Math.max(0.8, 1.6*escala);
+    ctx.lineJoin='round';
+    ctx.strokeStyle = 'hsla('+t.hue+',100%,68%,'+a+')';
+    ctx.shadowColor = 'hsla('+t.hue+',100%,62%,'+(a+.18)+')';
+    ctx.shadowBlur = t.blur*escala;
+
+    const pts=[];
+    for(const v of VERTS){
+      const [vx,vy,vz] = projetar([v[0]*t.size*0.5, v[1]*t.size*0.5, v[2]*t.size*0.5],
+                                   t.rotX, t.rotY, t.rotZ, 500);
+      pts.push([vx*escala, vy*escala, vz]);
+    }
+
+    ctx.beginPath();
+    for(const [i,j] of EDGES){
+      ctx.moveTo(pts[i][0], pts[i][1]);
+      ctx.lineTo(pts[j][0], pts[j][1]);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = 'hsla('+t.hue+',100%,80%,'+(a*1.4)+')';
+    for(const p of pts){
+      const r = Math.max(1.2, 2.2 * escala);
+      ctx.beginPath(); ctx.arc(p[0],p[1],r,0,Math.PI*2); ctx.fill();
+    }
+
+    ctx.fillStyle = 'hsla('+t.hue+',100%,60%,'+(a*0.10)+')';
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0],pts[0][1]);
+    ctx.lineTo(pts[1][0],pts[1][1]);
+    ctx.lineTo(pts[2][0],pts[2][1]);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  vig();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script></body></html>"""
+        html = html.replace("__QR__", img_tag).replace("__URL__", url).replace("__WAN__", wan_url)
+        return html
+    except Exception as e:
+        return f"Erro: {e}", 500
+
+
+@app.route("/api/tela.jpg")
+def api_tela():
+    b = exigir_auth()
+    if b: return b
+    try: monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
+    except Exception: monitor = 0
+    if TEM_MSS:
+        CAPTURA["monitor_idx"] = monitor
+        CAPTURA["ultimo_pedido"] = time.time()
+        _garantir_captura()
+        for _ in range(40):
+            with CAPTURA["lock"]: jpeg = CAPTURA["jpeg"]; err = CAPTURA["erro"]
+            if jpeg: break
+            if err and not CAPTURA["running"]: break
+            time.sleep(0.05)
+        if not jpeg:
+            try: jpeg = _capturar_pil(monitor_idx=monitor)
+            except Exception: pass
+        if not jpeg: return jsonify(erro=err or "sem captura"), 503
+        return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control":"no-store, max-age=0"})
+    try:
+        jpeg = None
+        if ImageGrab is not None:
+            try: jpeg = _capturar_pil()
+            except Exception: pass
+        if jpeg is None: jpeg = _capturar_ps()
+    except Exception as e: return jsonify(erro=f"erro captura: {e}"), 500
+    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control":"no-store, max-age=0"})
+
+
+def _gerar_mjpeg():
+    boundary = b"--frame\r\n"; ultimo = None
+    while True:
+        CAPTURA["ultimo_pedido"] = time.time()
+        with CAPTURA["lock"]: jpeg = CAPTURA["jpeg"]
+        if jpeg and jpeg is not ultimo:
+            ultimo = jpeg
+            try:
+                yield (boundary + b"Content-Type: image/jpeg\r\n" +
+                       b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" +
+                       jpeg + b"\r\n")
+            except GeneratorExit: return
+            except Exception: return
+        time.sleep(1.0 / CAP_FPS)
+
+
+@app.route("/api/stream.mjpg")
+def api_stream_mjpg():
+    b = exigir_auth()
+    if b: return b
+    if not TEM_MSS: return jsonify(erro="mss nao instalado"), 503
+    try: monitor = int(request.args.get("monitor", ESTADO.get("monitor_escolhido", 0)))
+    except Exception: monitor = 0
+    CAPTURA["monitor_idx"] = monitor
+    CAPTURA["ultimo_pedido"] = time.time()
+    _garantir_captura()
+    for _ in range(40):
+        with CAPTURA["lock"]:
+            if CAPTURA["jpeg"]: break
+        time.sleep(0.05)
+    resp = Response(stream_with_context(_gerar_mjpeg()),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
+def _nome_seguro(n): return os.path.basename(n).replace("..", "_")[:200]
+
+def _path_seguro(p):
+    if not p: return pasta_arquivos()
+    if "%USERPROFILE%" in p:
+        userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        p = p.replace("%USERPROFILE%", userprofile)
+    p = os.path.expandvars(p); p = os.path.expanduser(p); p = os.path.abspath(p)
+    return p
+
+
+@app.route("/api/arquivos")
+def api_arquivos():
+    b = exigir_auth()
+    if b: return b
+    path = _path_seguro(request.args.get("path") or pasta_arquivos())
+    if not os.path.isdir(path):
+        return jsonify(erro="pasta invalida", pasta=path, itens=[], partes=[])
+    partes = []
+    cur = path
+    while True:
+        pai = os.path.dirname(cur)
+        if pai == cur: break
+        partes.insert(0, {"nome": os.path.basename(cur) or cur, "path": cur})
+        cur = pai
+    if not partes or partes[0]["path"] != cur:
+        partes.insert(0, {"nome": cur or "\\", "path": cur})
+    itens = []
+    try:
+        for n in sorted(os.listdir(path), key=lambda x: x.lower()):
+            full = os.path.join(path, n)
+            try:
+                if os.path.isdir(full): itens.append({"nome": n, "tipo": "pasta", "tam": 0})
+                elif os.path.isfile(full): itens.append({"nome": n, "tipo": "arquivo", "tam": os.path.getsize(full)})
+            except Exception: pass
+    except Exception as e: return jsonify(erro=str(e), pasta=path, itens=[], partes=partes)
+    return jsonify(pasta=path, itens=itens[:500], partes=partes)
+
+
+@app.route("/api/nova_pasta", methods=["POST"])
+def api_nova_pasta():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    path = _path_seguro(d.get("path") or pasta_arquivos())
+    nome = _nome_seguro(d.get("nome") or "")
+    if not nome: return jsonify(erro="nome vazio")
+    try:
+        os.makedirs(os.path.join(path, nome), exist_ok=False); return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/apagar_pasta", methods=["POST"])
+def api_apagar_pasta():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    path = _path_seguro(d.get("path") or pasta_arquivos())
+    nome = _nome_seguro(d.get("nome") or "")
+    try:
+        os.rmdir(os.path.join(path, nome)); return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/download")
+def api_download():
+    b = exigir_auth()
+    if b: return b
+    nome = _nome_seguro(request.args.get("nome", ""))
+    path = _path_seguro(request.args.get("path") or pasta_arquivos())
+    p = os.path.join(path, nome)
+    if not os.path.isfile(p): return jsonify(erro="arquivo nao encontrado"), 404
+    return send_file(p, as_attachment=True, download_name=nome)
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    b = exigir_auth()
+    if b: return b
+    arquivos = request.files.getlist("arquivos")
+    if not arquivos: return jsonify(erro="nenhum arquivo")
+    path = _path_seguro(request.form.get("path") or pasta_arquivos())
+    if not os.path.isdir(path): path = pasta_arquivos()
+    salvos = 0
+    for f in arquivos:
+        if not f.filename: continue
+        nome = _nome_seguro(f.filename); f.save(os.path.join(path, nome)); salvos += 1
+    return jsonify(saida=f"{salvos} arquivo(s) salvos em {path}")
+
+
+@app.route("/api/apagar", methods=["POST"])
+def api_apagar():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    nome = _nome_seguro(d.get("nome", ""))
+    path = _path_seguro(d.get("path") or pasta_arquivos())
+    p = os.path.join(path, nome)
+    try:
+        if os.path.isfile(p): os.remove(p)
+        return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/processos")
+def api_processos():
+    b = exigir_auth()
+    if b: return b
+    try:
+        r = executar(["tasklist","/FO","CSV","/NH"], capture_output=True, text=True,
+                     encoding="cp850", errors="replace", timeout=15)
+        linhas = (r.stdout or "").splitlines()
+    except Exception as e: return jsonify(erro=str(e))
+    procs = []; reader = csv.reader(linhas)
+    for row in reader:
+        if len(row) < 5: continue
+        nome = row[0].strip()
+        try: pid = int(row[1])
+        except Exception: continue
+        mem_raw = (row[4] or "").replace(".","").replace(",","").replace(" K","").replace("K","").strip()
+        mem_kb = int(mem_raw) if mem_raw.isdigit() else 0
+        procs.append({"nome": nome, "pid": pid, "mem_kb": mem_kb})
+    procs.sort(key=lambda x: x["mem_kb"], reverse=True)
+    return jsonify(processos=procs[:80])
+
+
+@app.route("/api/matar_processo", methods=["POST"])
+def api_matar_processo():
+    b = exigir_auth()
+    if b: return b
+    pid = int((request.get_json(force=True) or {}).get("pid", 0))
+    if not pid: return jsonify(erro="pid invalido")
+    try:
+        r = executar(["taskkill","/PID",str(pid),"/F"], capture_output=True, text=True, timeout=10)
+        return jsonify(saida=((r.stdout or "")+(r.stderr or "")).strip() or "OK")
+    except Exception as e: return jsonify(erro=str(e))
+
+
+@app.route("/api/comandos")
+def api_comandos():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(comandos=ESTADO.get("comandos", []))
+
+
+@app.route("/api/comando_add", methods=["POST"])
+def api_comando_add():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True)
+    nome = (d.get("nome") or "?")[:40]; cmd = (d.get("cmd") or "").strip()
+    if not cmd: return jsonify(erro="comando vazio")
+    ESTADO.setdefault("comandos", []).append({"nome": nome, "cmd": cmd})
+    salvar_config(); return jsonify(ok=True)
+
+
+@app.route("/api/comando_remover", methods=["POST"])
+def api_comando_remover():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    cmds = ESTADO.get("comandos", [])
+    if 0 <= idx < len(cmds): cmds.pop(idx); salvar_config()
+    return jsonify(ok=True)
+
+
+@app.route("/api/comando_exec", methods=["POST"])
+def api_comando_exec():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    cmds = ESTADO.get("comandos", [])
+    if idx < 0 or idx >= len(cmds): return jsonify(erro="comando invalido")
+    return jsonify(saida=run_cmd_escondido(cmds[idx]["cmd"]).strip() or "(sem saida)")
+
+
+@app.route("/api/terminal")
+def api_terminal():
+    b = exigir_auth()
+    if b: return b
+    cmd = (request.args.get("cmd") or "").strip()
+    if not cmd: return jsonify(erro="sem comando")
+    def gen():
+        try:
+            p = subprocess.Popen(cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                encoding="cp850", errors="replace",
+                creationflags=CREATE_NO_WINDOW)
+            for line in p.stdout:
+                yield f"data: {json.dumps(line)}\n\n"
+            p.wait()
+        except Exception as e:
+            yield f"data: {json.dumps('(erro: '+str(e)+')')}\n\n"
+        yield "event: end\ndata: \n\n"
+    return Response(stream_with_context(gen()),
+                    mimetype="text/event-stream",
+                    headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+
+GROQ_MODELOS_FALLBACK = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "gemma2-9b-it",
+]
+
+
+def _ia_chamar_groq(key, model, msgs, system):
+    if not REQ_OK: return None, "requests nao instalado"
+    tools = []
+    for nome, fn in FUNCOES_IA.items():
+        props = fn.get("parametros", {})
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": nome,
+                "description": fn["descricao"],
+                "parameters": {"type": "object", "properties": props, "required": list(props.keys())}
+            }
+        })
+    candidatos = [model] + [m for m in GROQ_MODELOS_FALLBACK if m != model]
+    ultimo_erro = None
+    for mdl in candidatos:
+        try:
+            r = _req.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": mdl,
+                      "messages": [{"role":"system","content":system}] + msgs,
+                      "tools": tools, "tool_choice": "auto",
+                      "temperature": 0.6, "max_tokens": 1024},
+                timeout=45)
+            if r.status_code == 200:
+                data = r.json()
+                msg = data["choices"][0]["message"]
+                if msg.get("tool_calls"):
+                    resultados = []
+                    for tc in msg["tool_calls"]:
+                        nome_fn = tc["function"]["name"]
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                        if nome_fn in FUNCOES_IA:
+                            try:
+                                resultado = FUNCOES_IA[nome_fn]["executar"](**args)
+                                resultados.append(str(resultado))
+                            except Exception as e:
+                                resultados.append(f"Erro ao executar {nome_fn}: {e}")
+                    return "\n".join(resultados), None
+                return _limpar_markdown(msg.get("content", "")), None
+            if r.status_code in (400, 404):
+                ultimo_erro = f"Groq {r.status_code} no modelo {mdl}: {r.text[:150]}"
+                continue
+            return None, f"Groq HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            ultimo_erro = f"Groq erro: {e}"
+            continue
+    return None, ultimo_erro or "Groq falhou em todos os modelos"
+
+
+@app.route("/api/ia_config", methods=["GET"])
+def api_ia_config_get():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(tem_chave=bool(GROQ_API_KEY))
+
+
+@app.route("/api/ia", methods=["POST"])
+def api_ia():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    msgs = d.get("mensagens") or []
+    if not isinstance(msgs, list): msgs = []
+    msgs = [{"role": m.get("role","user"), "content": (m.get("content") or "")[:4000]}
+            for m in msgs if isinstance(m, dict) and m.get("role") in ("user","assistant","system")][-20:]
+    if not msgs: return jsonify(erro="sem mensagens")
+    if not GROQ_API_KEY: return jsonify(erro="configure GROQ_API_KEY no codigo")
+    modelo = ESTADO.get("ia_model_groq", "openai/gpt-oss-120b")
+    sysmsg = ESTADO.get("ia_system", "")
+    resp, err = _ia_chamar_groq(GROQ_API_KEY, modelo, msgs, sysmsg)
+    if resp:
+        resp = _limpar_markdown(resp)
+        return jsonify(resposta=resp, provedor="groq")
+    return jsonify(erro=err or "Groq falhou")
+
+
+@app.route("/api/midia_info")
+def api_midia_info():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(smtc_info())
+
+
+@app.route("/api/midia_smtc", methods=["POST"])
+def api_midia_smtc():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    if acao not in ("shuffle_on","shuffle_off","repeat_off","repeat_all","repeat_one"):
+        return jsonify(erro="acao invalida")
+    ok = smtc_acao(acao)
+    return jsonify(ok=ok) if ok else jsonify(erro="falhou")
+
+
+@app.route("/api/timer", methods=["POST"])
+def api_timer():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True)
+    try: minutos = max(1, min(1440, int(d.get("minutos", 30))))
+    except Exception: minutos = 30
+    acao = d.get("acao") or "desligar"
+    if acao not in ("desligar","reiniciar","dormir","bloquear"): return jsonify(erro="acao invalida")
+    agendar_timer(minutos * 60, acao)
+    return jsonify(saida=f"{acao} agendado para daqui a {minutos} min.")
+
+
+@app.route("/api/timers")
+def api_timers():
+    b = exigir_auth()
+    if b: return b
+    itens = [{"id": tid, "segundos": t["segundos"], "acao": t["acao"], "quando": t["quando"]}
+             for tid, t in list(TIMERS.items())]
+    return jsonify(timers=itens)
+
+
+@app.route("/api/timers_cancelar", methods=["POST"])
+def api_timers_cancelar():
+    b = exigir_auth()
+    if b: return b
+    for t in list(TIMERS.values()):
+        try: t["timer"].cancel()
+        except Exception: pass
+    TIMERS.clear(); return jsonify(ok=True)
+
+
+@app.route("/api/sistema", methods=["POST"])
+def api_sistema():
+    b = exigir_auth()
+    if b: return b
+    acao = (request.get_json(force=True) or {}).get("acao", "")
+    if acao == "bloquear": executar(["rundll32.exe","user32.dll,LockWorkStation"]); return jsonify(saida="PC bloqueado.")
+    if acao == "dormir":
+        executar(["powercfg","-h","off"])
+        executar(["rundll32.exe","powrprof.dll,SetSuspendState","0,1,0"])
+        return jsonify(saida="Dormindo...")
+    if acao == "desligar":
+        ok, msg = _shutdown(restart=False, delay=3)
+        return jsonify(saida=("Desligando em 3s." if ok else "Erro: "+msg))
+    if acao == "reiniciar":
+        ok, msg = _shutdown(restart=True, delay=3)
+        return jsonify(saida=("Reiniciando em 3s." if ok else "Erro: "+msg))
+    if acao == "cancelar": executar(["shutdown","/a"]); return jsonify(saida="Cancelado.")
+    return jsonify(erro="acao desconhecida")
 
 
 def copiar_pc(texto):
