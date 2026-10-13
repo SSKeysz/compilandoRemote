@@ -1,5 +1,6 @@
 name: Build EXE
 
+
 on:
   push:
     branches: [ main, master ]
