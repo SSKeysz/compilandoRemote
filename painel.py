@@ -49,6 +49,56 @@ try:
 except Exception:
     _req = None; REQ_OK = False
 
+try:
+    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as _SMTC_Mgr
+    SMTC_OK = True
+except Exception:
+    _SMTC_Mgr = None; SMTC_OK = False
+
+import shutil
+
+
+# ============ VERIFICAÇÃO DE INTEGRIDADE ============
+INTEGRIDADE = {
+    "ok": True,
+    "obrigatorios_faltando": [],
+    "opcionais_faltando": [],
+}
+
+def _checar_integridade():
+    obrigatorios = [
+        ("flask",  "Flask (motor do servidor)"),
+        ("PIL",    "Pillow (imagens / prints)"),
+        ("mss",    "MSS (captura de tela)"),
+        ("psutil", "psutil (status do PC)"),
+    ]
+    opcionais = [
+        ("pycaw",    "Mixer de áudio por app",       "pycaw + comtypes"),
+        ("comtypes", "Necessário pro mixer",          "comtypes"),
+        ("qrcode",   "Gerar QR Code",                 "qrcode[pil]"),
+        ("requests", "Assistente IA (Groq)",          "requests"),
+        ("winsdk",   "Tocando agora (título/capa)",   "winsdk"),
+    ]
+    import importlib
+    falt_obr = []
+    for mod, amigavel in obrigatorios:
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            falt_obr.append(amigavel)
+    falt_opc = []
+    for mod, amigavel, pacote in opcionais:
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            falt_opc.append({"nome": amigavel, "pacote": pacote})
+    INTEGRIDADE["obrigatorios_faltando"] = falt_obr
+    INTEGRIDADE["opcionais_faltando"] = falt_opc
+    INTEGRIDADE["ok"] = len(falt_obr) == 0
+
+_checar_integridade()
+# ====================================================
+
 
 GROQ_API_KEY   = "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"   # <<< gsk_...
 
@@ -225,6 +275,8 @@ def salvar_config():
 
 
 ESTADO = carregar_config()
+if "perfis_teclado" not in ESTADO:
+    ESTADO["perfis_teclado"] = []
 
 
 # ============ CACHE: pasta_arquivos ============
@@ -1447,6 +1499,13 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
     </div>
 
     <div class="panel">
+      <h2>Perfis de teclado salvos</h2>
+      <div class="hint" style="margin-bottom:10px">Combos prontos pra 1 clique. Ex: Alt+Tab, Ctrl+Shift+Esc.</div>
+      <div id="listaPerfis"></div>
+      <button class="btn ghost block" style="margin-top:8px" onclick="abrirNovoPerfil()">+ Criar perfil</button>
+    </div>
+
+    <div class="panel">
       <h2>Pegar do PC</h2>
       <button class="btn acc block" onclick="pegarClipboard()">Ler área de transferência</button>
       <textarea id="txtRec" style="margin-top:10px" readonly placeholder="(vazio)"></textarea>
@@ -1562,6 +1621,7 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
           <button class="btn ghost mini" onclick="novaPasta()">+ Pasta</button>
           <button class="btn ghost mini" onclick="carregarArquivos()">🔄</button>
           <button class="btn ghost mini" onclick="copiarCaminhoAtual()">📋 Caminho</button>
+          <button class="btn ghost mini" onclick="abrirDiagnostico()">🩺 Diagnóstico</button>
         </div>
         <div id="txtArquivos"></div>
       </div>
@@ -1810,6 +1870,10 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
   <div class="tutorialBox" id="tutorialConteudo"></div>
 </div>
 
+<div class="tutorialModal hid" id="diagModal">
+  <div class="tutorialBox" id="diagConteudo" style="max-width:600px"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1983,7 +2047,7 @@ function show(nome){
   if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos();iniciarPollTopProcs()}else{pararPollStatus();pararPollTopProcs()}
   if(nome==="mouse")initTouchpad();
   if(nome==="midia"){carregarMixer();iniciarPollMixer();iniciarPollSmtc()}else{pararPollMixer();pararPollSmtc()}
-  if(nome==="texto"){carregarClipHist();iniciarPollClipHist();carregarTeclasPersistentes()}else{pararPollClipHist()}
+  if(nome==="texto"){carregarClipHist();iniciarPollClipHist();carregarTeclasPersistentes();carregarPerfis()}else{pararPollClipHist()}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
 
@@ -2145,7 +2209,19 @@ function baixarBusca(nomeEnc,pathEnc){
   window.open("/api/download?nome="+encodeURIComponent(nome)+"&path="+encodeURIComponent(path),"_blank");
 }
 
-async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+encodeURIComponent(path)):"");const j=await get(url);if(j.erro){$("#txtArquivos").innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}CAMINHO_ATUAL=j.pasta;const bc=$("#breadcrumb");bc.innerHTML="";(j.partes||[]).forEach((p,i)=>{const s=document.createElement("span");s.textContent=p.nome;if(i===j.partes.length-1)s.classList.add("atual");s.onclick=()=>carregarArquivos(p.path);bc.appendChild(s);if(i<j.partes.length-1){const sep=document.createElement("span");sep.textContent="›";sep.style.background="transparent";sep.style.cursor="default";sep.onclick=()=>{};bc.appendChild(sep)}});const box=$("#txtArquivos");box.innerHTML="";(j.itens||[]).forEach(a=>{const d=document.createElement("div");d.className="arq"+(a.tipo==="pasta"?" pasta":"");if(a.tipo==="pasta"){d.innerHTML=`<span class="nome"><span class="icoTipo">📁</span>${esc(a.nome)}</span><button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome)}else{d.innerHTML=`<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span><span class="tam">${fmtTam(a.tam)}</span><button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button><button class="del" onclick="event.stopPropagation();apagar('${encodeURIComponent(a.nome)}')">x</button>`}box.appendChild(d)});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
+async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+encodeURIComponent(path)):"");const j=await get(url);if(j.erro){$("#txtArquivos").innerHTML='<div class="hint">Erro: '+esc(j.erro)+'</div>';return}CAMINHO_ATUAL=j.pasta;const bc=$("#breadcrumb");bc.innerHTML="";(j.partes||[]).forEach((p,i)=>{const s=document.createElement("span");s.textContent=p.nome;if(i===j.partes.length-1)s.classList.add("atual");s.onclick=()=>carregarArquivos(p.path);bc.appendChild(s);if(i<j.partes.length-1){const sep=document.createElement("span");sep.textContent="›";sep.style.background="transparent";sep.style.cursor="default";sep.onclick=()=>{};bc.appendChild(sep)}});const box=$("#txtArquivos");box.innerHTML="";(j.itens||[]).forEach(a=>{const d=document.createElement("div");d.className="arq"+(a.tipo==="pasta"?" pasta":"");if(a.tipo==="pasta"){
+  d.innerHTML=`<span class="nome"><span class="icoTipo">📁</span>${esc(a.nome)}</span>`
+    +`<button onclick="event.stopPropagation();copiarMover('${encodeURIComponent(a.nome)}','pasta')" title="Copiar/Mover">↔</button>`
+    +`<button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;
+  d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome);
+}else{
+  d.innerHTML=`<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span>`
+    +`<span class="tam">${fmtTam(a.tam)}</span>`
+    +`<button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button>`
+    +`<button onclick="event.stopPropagation();copiarMover('${encodeURIComponent(a.nome)}','arquivo')" title="Copiar/Mover">↔</button>`
+    +`<button class="del" onclick="event.stopPropagation();apagar('${encodeURIComponent(a.nome)}')">x</button>`;
+}
+box.appendChild(d);});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
 function irPai(){if(!CAMINHO_ATUAL)return;const p=CAMINHO_ATUAL.replace(/[\\\/]+$/,"");const ultimo=p.lastIndexOf("\\");if(ultimo>2)carregarArquivos(p.slice(0,ultimo)||p.slice(0,3))}
 function copiarCaminhoAtual(){if(!CAMINHO_ATUAL){toast("Abra uma pasta primeiro");return}copiar(CAMINHO_ATUAL,"caminho")}
 async function novaPasta(){const nome=prompt("Nome da pasta:");if(!nome)return;const j=await post("/api/nova_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Pasta criada");carregarArquivos(CAMINHO_ATUAL)}
@@ -2321,6 +2397,215 @@ async function iniciar(){
   window.addEventListener("pagehide",()=>{try{navigator.sendBeacon("/api/teclas/soltar_todas",new Blob([JSON.stringify({})],{type:"application/json"}))}catch(e){}});
   setTimeout(()=>abrirTutorial(false),400);
 }
+
+/* ===== Copiar / Mover (arquivos E pastas) ===== */
+async function copiarMover(nomeEnc, tipo){
+  const nome = decodeURIComponent(nomeEnc);
+  const j = await get("/api/pastas_destino");
+  const pastas = j.itens || [];
+  if(!pastas.length){ toast("Nenhuma pasta disponível"); return; }
+  const lista = pastas.map((p,i)=>`${i+1}. ${p.nome}`).join("\n");
+  const escolha = prompt(`Copiar/Mover "${nome}"\n\nEscolha a pasta de destino:\n${lista}`);
+  if(!escolha) return;
+  const idx = parseInt(escolha, 10) - 1;
+  if(isNaN(idx) || idx < 0 || idx >= pastas.length){ toast("Opção inválida"); return; }
+  const destino = pastas[idx];
+  const modo = (prompt("Digite 'copiar' ou 'mover':", "copiar") || "copiar").toLowerCase();
+  if(modo !== "copiar" && modo !== "mover"){ toast("Modo inválido"); return; }
+  toast(modo === "mover" ? "Movendo..." : "Copiando...");
+  const r = await post("/api/copiar_mover", {
+    origem_pasta: CAMINHO_ATUAL,
+    destino_pasta: destino.path,
+    nome: nome, modo: modo
+  });
+  if(r.erro){ toast("Erro: " + r.erro); return; }
+  toast(r.saida || "ok");
+  if(modo === "mover") carregarArquivos(CAMINHO_ATUAL);
+}
+
+/* ===== Perfis de teclado ===== */
+async function carregarPerfis(){
+  const j = await get("/api/perfis");
+  const box = document.getElementById("listaPerfis");
+  if(!box) return;
+  box.innerHTML = "";
+  const perfis = j.perfis || [];
+  if(!perfis.length){
+    box.innerHTML = '<div class="hint">(nenhum perfil salvo)</div>';
+    return;
+  }
+  perfis.forEach((p,i)=>{
+    const d = document.createElement("div");
+    d.className = "arq";
+    d.innerHTML = `<span class="nome">⌨ ${esc(p.nome)} <small style="color:#8b8b99">${esc(p.texto)}</small></span>`;
+    const bExec = document.createElement("button");
+    bExec.textContent = "Executar";
+    bExec.onclick = ()=>executarPerfil(i);
+    const bDel = document.createElement("button");
+    bDel.className = "del"; bDel.textContent = "x";
+    bDel.onclick = ()=>{ if(confirm(`Remover "${p.nome}"?`)) removerPerfil(i); };
+    d.appendChild(bExec); d.appendChild(bDel);
+    box.appendChild(d);
+  });
+}
+async function executarPerfil(i){
+  const j = await post("/api/perfis_exec", {idx: i});
+  toast(j.saida || j.erro || "ok");
+  if(navigator.vibrate) navigator.vibrate(20);
+}
+async function removerPerfil(i){
+  await post("/api/perfis_remover", {idx: i});
+  carregarPerfis();
+}
+function abrirNovoPerfil(){
+  const nome = prompt("Nome do perfil (ex: Alt+Tab):");
+  if(!nome) return;
+  const combo = prompt("Teclas separadas por + (ex: alt+tab, ctrl+shift+esc):", "alt+tab");
+  if(!combo) return;
+  post("/api/perfis_add", {nome, combo}).then(j=>{
+    if(j.erro){ toast("Erro: " + j.erro); return; }
+    toast("Perfil criado");
+    carregarPerfis();
+  });
+}
+
+/* ===== Diagnóstico remoto ===== */
+async function abrirDiagnostico(){
+  const modal = document.getElementById("diagModal");
+  const cont = document.getElementById("diagConteudo");
+  modal.classList.remove("hid");
+  cont.innerHTML = '<h3>🩺 Diagnóstico do PC</h3><p style="color:#8b8b99">Coletando informações...</p>';
+  const j = await get("/api/diagnostico");
+  if(j.erro){
+    cont.innerHTML = `<h3>🩺 Diagnóstico</h3><p style="color:#ff8a8a">Erro: ${esc(j.erro)}</p>
+      <button class="btn ghost block" onclick="document.getElementById('diagModal').classList.add('hid')">Fechar</button>`;
+    return;
+  }
+  let html = `<h3>🩺 Diagnóstico do PC</h3>`;
+  html += `<p style="color:#4a4a5a;font-size:11px">${esc(j._hora||"")}</p>`;
+
+  if(j.alertas && j.alertas.length){
+    html += `<div style="background:#2a1a00;border:1px solid #7a4a00;border-radius:10px;padding:12px;margin:10px 0">`;
+    html += `<b style="color:#ffd08a">⚠ ${j.alertas.length} alerta(s):</b>`;
+    html += `<ul style="margin:8px 0 0;padding-left:20px;color:#ffd08a;font-size:13px">`;
+    j.alertas.forEach(a=>html += `<li>${esc(a)}</li>`);
+    html += `</ul></div>`;
+  } else {
+    html += `<div style="background:#0d2a15;border:1px solid #1a5a2a;border-radius:10px;padding:12px;margin:10px 0;color:#7aff9a">✓ Tudo ok — nenhum problema detectado</div>`;
+  }
+
+  const linha = (lbl, val)=>{
+    if(val === null || val === undefined || val === "") return "";
+    return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1d1d25;font-size:13px">
+      <span style="color:#8b8b99">${esc(lbl)}</span><span style="font-weight:600">${esc(String(val))}</span></div>`;
+  };
+  const bloco = (titulo, conteudo)=>{
+    return `<div style="margin:14px 0 6px"><b style="color:#9a3cff;font-size:12px;text-transform:uppercase;letter-spacing:1px">${esc(titulo)}</b>${conteudo}</div>`;
+  };
+
+  if(j.sistema && !j.sistema.erro){
+    html += bloco("Sistema",
+      linha("SO", j.sistema.so) +
+      linha("Arquitetura", j.sistema.arquitetura) +
+      linha("Hostname", j.sistema.hostname) +
+      linha("Usuário", j.sistema.usuario));
+  }
+  if(j.cpu && !j.cpu.erro){
+    html += bloco("CPU",
+      linha("Modelo", j.cpu.modelo) +
+      linha("Núcleos", `${j.cpu.nucleos_fisicos||"?"} físicos / ${j.cpu.nucleos_logicos||"?"} lógicos`) +
+      linha("Uso atual", j.cpu.uso_atual));
+  }
+  if(j.ram && !j.ram.erro){
+    html += bloco("RAM",
+      linha("Total", `${j.ram.total_gb} GB`) +
+      linha("Usada", `${j.ram.usada_gb} GB (${j.ram.percent})`) +
+      linha("Livre", `${j.ram.livre_gb} GB`));
+  }
+  if(j.disco && j.disco.discos){
+    let d = "";
+    j.disco.discos.forEach(x=>{
+      const cor = x.percent >= 90 ? "#ff5a5a" : (x.percent >= 70 ? "#ffd08a" : "#e9e9f0");
+      d += `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1d1d25;font-size:13px">
+        <span style="color:#8b8b99">${esc(x.letra)}</span>
+        <span style="font-weight:600;color:${cor}">${x.percent}% (${x.livre_gb} GB livres)</span></div>`;
+    });
+    html += bloco("Discos", d);
+  }
+  if(j.temperatura && j.temperatura.celsius !== null && j.temperatura.celsius !== undefined){
+    html += bloco("Temperatura", linha("CPU", `${j.temperatura.celsius}°C`));
+  }
+  if(j.gpu && j.gpu.nome){
+    let g = linha("Modelo", j.gpu.nome);
+    if(j.gpu.uso !== null && j.gpu.uso !== undefined) g += linha("Uso", `${j.gpu.uso}%`);
+    if(j.gpu.mem_usada) g += linha("VRAM", `${j.gpu.mem_usada}/${j.gpu.mem_total} MB`);
+    html += bloco("GPU", g);
+  }
+  if(j.rede && !j.rede.erro){
+    html += bloco("Rede",
+      linha("IP local", j.rede.ip_local) +
+      linha("Ping", j.rede.ping_google_ms !== null ? `${j.rede.ping_google_ms} ms` : "—") +
+      linha("Download", `${j.rede.download_mbps} Mbps`) +
+      linha("Upload", `${j.rede.upload_mbps} Mbps`));
+  }
+  if(j.uptime && !j.uptime.erro){
+    html += bloco("Uptime", linha("Ligado há", j.uptime.formatado));
+  }
+  if(j.processos && !j.processos.erro){
+    let p = linha("Total", `${j.processos.total} ativos`);
+    (j.processos.top3_ram||[]).forEach(x=>{
+      p += linha(x.nome, `${x.mem_mb} MB`);
+    });
+    html += bloco("Processos", p);
+  }
+  if(j.integridade && j.integridade.opcionais_faltando && j.integridade.opcionais_faltando.length){
+    let i = "";
+    j.integridade.opcionais_faltando.forEach(o=>{
+      i += linha(o.nome, o.pacote);
+    });
+    html += bloco("Features limitadas", i);
+  }
+
+  html += `<button class="btn ghost block" style="margin-top:16px" onclick="document.getElementById('diagModal').classList.add('hid')">Fechar</button>`;
+  html += `<button class="btn acc block" style="margin-top:8px" onclick="copiarDiagnostico()">📋 Copiar relatório</button>`;
+  cont.innerHTML = html;
+  window._diagCache = j;
+}
+
+function copiarDiagnostico(){
+  const j = window._diagCache;
+  if(!j) return;
+  let txt = "=== RotaControl — Diagnóstico ===\n";
+  txt += "Data: " + (j._hora||"") + "\n\n";
+  if(j.alertas && j.alertas.length){
+    txt += "ALERTAS:\n";
+    j.alertas.forEach(a=> txt += "  - " + a + "\n");
+    txt += "\n";
+  }
+  const sec = (titulo, obj)=>{
+    if(!obj || obj.erro) return;
+    txt += `[${titulo}]\n`;
+    Object.keys(obj).forEach(k=>{
+      if(k === "erro") return;
+      const v = obj[k];
+      if(v === null || v === undefined) return;
+      if(typeof v === "object") txt += `  ${k}: ${JSON.stringify(v)}\n`;
+      else txt += `  ${k}: ${v}\n`;
+    });
+    txt += "\n";
+  };
+  sec("Sistema", j.sistema);
+  sec("CPU", j.cpu);
+  sec("RAM", j.ram);
+  sec("Disco", j.disco);
+  sec("Temperatura", j.temperatura);
+  sec("GPU", j.gpu);
+  sec("Rede", j.rede);
+  sec("Uptime", j.uptime);
+  sec("Processos", j.processos);
+  copiar(txt, "diagnóstico");
+}
+
 iniciar();
 </script>
 </body>
@@ -3834,6 +4119,273 @@ def api_atalho_exec():
     ok = enviar_combo(atalhos[idx]["combo"])
     return jsonify(ok=ok, saida=("OK: " + atalhos[idx]["nome"]) if ok else "combo invalido")
 
+# ============================================================
+# Copiar / Mover arquivos e PASTAS
+# ============================================================
+@app.route("/api/copiar_mover", methods=["POST"])
+def api_copiar_mover():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    origem_pasta = _path_seguro(d.get("origem_pasta") or pasta_arquivos())
+    destino_pasta = _path_seguro(d.get("destino_pasta") or pasta_arquivos())
+    nome = _nome_seguro(d.get("nome", ""))
+    modo = (d.get("modo") or "copiar").lower()
+    if not nome:
+        return jsonify(erro="nome vazio")
+    if modo not in ("copiar", "mover"):
+        return jsonify(erro="modo inválido (copiar|mover)")
+    origem = os.path.join(origem_pasta, nome)
+    destino = os.path.join(destino_pasta, nome)
+    if not os.path.exists(origem):
+        return jsonify(erro="item de origem não existe")
+    if not os.path.isdir(destino_pasta):
+        return jsonify(erro="pasta de destino inválida")
+    if os.path.abspath(origem) == os.path.abspath(destino):
+        return jsonify(erro="origem e destino são iguais")
+    if os.path.exists(destino):
+        return jsonify(erro="já existe um item com esse nome no destino")
+    # Não permite copiar/mover uma pasta pra dentro dela mesma
+    try:
+        raiz_orig = os.path.abspath(origem)
+        raiz_dest = os.path.abspath(destino)
+        if raiz_dest.startswith(raiz_orig + os.sep) or raiz_dest == raiz_orig:
+            return jsonify(erro="não é possível colocar dentro dela mesma")
+    except Exception:
+        pass
+    try:
+        eh_pasta = os.path.isdir(origem)
+        if modo == "mover":
+            shutil.move(origem, destino)
+            return jsonify(ok=True, saida=f"{'Pasta' if eh_pasta else 'Arquivo'} movido: {nome}")
+        else:
+            if eh_pasta:
+                shutil.copytree(origem, destino)
+                return jsonify(ok=True, saida=f"Pasta copiada: {nome}")
+            else:
+                shutil.copy2(origem, destino)
+                return jsonify(ok=True, saida=f"Arquivo copiado: {nome}")
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+@app.route("/api/pastas_destino")
+def api_pastas_destino():
+    b = exigir_auth()
+    if b: return b
+    up = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    candidatos = [
+        ("Área de Trabalho", os.path.join(up, "Desktop")),
+        ("Documentos", os.path.join(up, "Documents")),
+        ("Downloads", os.path.join(up, "Downloads")),
+        ("Imagens", os.path.join(up, "Pictures")),
+        ("Vídeos", os.path.join(up, "Videos")),
+        ("Músicas", os.path.join(up, "Music")),
+        ("Pasta padrão", pasta_arquivos()),
+    ]
+    itens = [{"nome": n, "path": p} for n, p in candidatos if os.path.isdir(p)]
+    return jsonify(itens=itens)
+
+
+# ============================================================
+# Perfis de teclado salvos
+# ============================================================
+@app.route("/api/perfis")
+def api_perfis_listar():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(perfis=ESTADO.get("perfis_teclado", []))
+
+
+@app.route("/api/perfis_add", methods=["POST"])
+def api_perfis_add():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    nome = (d.get("nome") or "").strip()[:40]
+    combo_raw = (d.get("combo") or "").lower().strip()
+    if not nome or not combo_raw:
+        return jsonify(erro="nome e combo obrigatórios")
+    partes = [p.strip() for p in re.split(r"[+\s]+", combo_raw) if p.strip()]
+    partes = [p for p in partes if p in VK_MAP]
+    if not partes:
+        return jsonify(erro="combo inválido")
+    ESTADO.setdefault("perfis_teclado", []).append({
+        "nome": nome, "combo": partes, "texto": "+".join(partes),
+    })
+    salvar_config()
+    return jsonify(ok=True)
+
+
+@app.route("/api/perfis_remover", methods=["POST"])
+def api_perfis_remover():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    perfis = ESTADO.get("perfis_teclado", [])
+    if 0 <= idx < len(perfis):
+        perfis.pop(idx); salvar_config()
+        return jsonify(ok=True)
+    return jsonify(erro="índice inválido")
+
+
+@app.route("/api/perfis_exec", methods=["POST"])
+def api_perfis_exec():
+    b = exigir_auth()
+    if b: return b
+    idx = int((request.get_json(force=True) or {}).get("idx", -1))
+    perfis = ESTADO.get("perfis_teclado", [])
+    if idx < 0 or idx >= len(perfis):
+        return jsonify(erro="índice inválido")
+    p = perfis[idx]
+    try:
+        ok = enviar_combo(p["combo"])
+        return jsonify(ok=ok, saida=(f"OK: {p['nome']}" if ok else "combo inválido"))
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+# ============================================================
+# Diagnóstico remoto
+# ============================================================
+@app.route("/api/diagnostico")
+def api_diagnostico():
+    b = exigir_auth()
+    if b: return b
+    resultados = {}
+    try:
+        try:
+            import platform
+            resultados["sistema"] = {
+                "so": platform.system() + " " + platform.release(),
+                "versao": platform.version(),
+                "arquitetura": platform.machine(),
+                "hostname": socket.gethostname(),
+                "usuario": os.environ.get("USERNAME", "?"),
+            }
+        except Exception as e:
+            resultados["sistema"] = {"erro": str(e)}
+
+        try:
+            with _CPU_CACHE["lock"]: cpu_atual = _CPU_CACHE["v"]
+            resultados["cpu"] = {
+                "modelo": _ler_cpu_model() or "Desconhecido",
+                "nucleos_fisicos": psutil.cpu_count(logical=False) if PSUTIL_OK else None,
+                "nucleos_logicos": psutil.cpu_count(logical=True) if PSUTIL_OK else None,
+                "uso_atual": f"{cpu_atual:.0f}%",
+            }
+        except Exception as e:
+            resultados["cpu"] = {"erro": str(e)}
+
+        try:
+            ram = psutil.virtual_memory()
+            resultados["ram"] = {
+                "total_gb": round(ram.total / (1024**3), 1),
+                "usada_gb": round(ram.used / (1024**3), 1),
+                "livre_gb": round(ram.available / (1024**3), 1),
+                "percent": f"{ram.percent}%",
+            }
+        except Exception as e:
+            resultados["ram"] = {"erro": str(e)}
+
+        try:
+            discos = _listar_discos()
+            alerta = [d for d in discos if d["percent"] >= 85]
+            resultados["disco"] = {
+                "discos": discos,
+                "alerta_cheio": [d["letra"] for d in alerta],
+            }
+        except Exception as e:
+            resultados["disco"] = {"erro": str(e)}
+
+        try:
+            t = _ler_temperatura()
+            resultados["temperatura"] = {
+                "celsius": t,
+                "alerta": (t is not None and t >= 80),
+            }
+        except Exception as e:
+            resultados["temperatura"] = {"erro": str(e)}
+
+        try:
+            resultados["gpu"] = _ler_gpu()
+        except Exception as e:
+            resultados["gpu"] = {"erro": str(e)}
+
+        try:
+            ping = _ping_google()
+            with _NET_CACHE["lock"]:
+                down, up = _NET_CACHE["down_mbps"], _NET_CACHE["up_mbps"]
+            resultados["rede"] = {
+                "ip_local": ip_local(),
+                "ping_google_ms": ping,
+                "download_mbps": down,
+                "upload_mbps": up,
+                "alerta_ping": (ping is not None and ping > 200),
+            }
+        except Exception as e:
+            resultados["rede"] = {"erro": str(e)}
+
+        try:
+            up = time.time() - psutil.boot_time()
+            resultados["uptime"] = {
+                "segundos": int(up),
+                "formatado": _fmt_uptime(up),
+                "alerta_reinicio": up > 7 * 86400,
+            }
+        except Exception as e:
+            resultados["uptime"] = {"erro": str(e)}
+
+        try:
+            resultados["processos"] = {
+                "total": _contar_processos(),
+                "top3_ram": _top_processos(3),
+            }
+        except Exception as e:
+            resultados["processos"] = {"erro": str(e)}
+
+        resultados["integridade"] = {
+            "opcionais_faltando": INTEGRIDADE["opcionais_faltando"],
+        }
+
+        alertas = []
+        if resultados.get("disco", {}).get("alerta_cheio"):
+            alertas.append(f"Disco quase cheio: {', '.join(resultados['disco']['alerta_cheio'])}")
+        if resultados.get("temperatura", {}).get("alerta"):
+            alertas.append(f"Temperatura alta: {resultados['temperatura']['celsius']}°C")
+        if resultados.get("rede", {}).get("alerta_ping"):
+            alertas.append(f"Ping alto: {resultados['rede']['ping_google_ms']}ms")
+        if resultados.get("uptime", {}).get("alerta_reinicio"):
+            alertas.append(f"PC ligado há {resultados['uptime']['formatado']} — considere reiniciar")
+        try:
+            ram_pct = int(resultados["ram"]["percent"].rstrip("%"))
+            if ram_pct >= 85:
+                alertas.append(f"RAM em {resultados['ram']['percent']}")
+        except Exception: pass
+        if INTEGRIDADE["opcionais_faltando"]:
+            nomes = [o["nome"] for o in INTEGRIDADE["opcionais_faltando"]]
+            alertas.append(f"Features limitadas: {', '.join(nomes)}")
+
+        resultados["alertas"] = alertas
+        resultados["_hora"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        return jsonify(resultados)
+    except Exception as e:
+        return jsonify(erro=str(e))
+
+
+# ============================================================
+# Estado das features opcionais
+# ============================================================
+@app.route("/api/features")
+def api_features():
+    return jsonify(
+        mixer=PYCAW_OK,
+        tocando_agora=SMTC_OK,
+        qrcode=QRCODE_OK,
+        ia=REQ_OK,
+        integridade_opcionais=INTEGRIDADE["opcionais_faltando"],
+    )
+
 
 @app.route("/api/fechar", methods=["POST"])
 def api_fechar():
@@ -3867,9 +4419,59 @@ def abrir_navegador():
     time.sleep(1); webbrowser.open("http://127.0.0.1:5000")
 
 
+def _pagina_integridade_falhou():
+    itens_html = "".join(f"<li>{p}</li>" for p in INTEGRIDADE["obrigatorios_faltando"])
+    html = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<title>RotaControl — Indisponível</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:#0a0a0d;color:#e9e9f0;font:15px/1.6 system-ui,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{max-width:560px;background:#101015;border:1px solid #3a1a1a;border-radius:16px;padding:32px;
+box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.badge{display:inline-block;background:#3a1010;color:#ff8a8a;padding:5px 12px;border-radius:20px;
+font-size:12px;font-weight:700;letter-spacing:1px;margin-bottom:14px}
+h1{margin:0 0 12px;color:#ff5a5a;font-size:24px;line-height:1.2}
+p{color:#8b8b99;margin:10px 0}
+ul{padding-left:22px;color:#e9e9f0;margin:14px 0}
+li{margin:6px 0;font-weight:600}
+.note{margin-top:22px;padding:14px;background:#0d0d14;border-left:3px solid #7c00f0;border-radius:8px;
+color:#8b8b99;font-size:13px}
+</style></head><body>
+<div class="box">
+  <div class="badge">⚠ COMPONENTES AUSENTES</div>
+  <h1>RotaControl não pode iniciar</h1>
+  <p>O programa precisa de componentes internos que não foram encontrados nesta instalação.</p>
+  <p><b>O que está faltando:</b></p>
+  <ul>__ITENS__</ul>
+  <div class="note">
+    O site ficou bloqueado por segurança até que esses componentes estejam disponíveis.
+    Reinstale o RotaControl usando o instalador oficial para corrigir.
+  </div>
+</div>
+</body></html>"""
+    return html.replace("__ITENS__", itens_html)
+
+
 if __name__ == "__main__":
     if os.name != "nt":
         log_seguro("Feito para Windows."); sys.exit(1)
+
+    if not INTEGRIDADE["ok"]:
+        esconder_console()
+        app_diag = Flask("RotaControlDiag")
+        @app_diag.route("/")
+        @app_diag.route("/<path:_>")
+        def _diag(_=None):
+            return _pagina_integridade_falhou(), 503
+        log_seguro("RotaControl: BLOQUEADO — componentes ausentes:")
+        for p in INTEGRIDADE["obrigatorios_faltando"]:
+            log_seguro("  -", p)
+        app_diag.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+        sys.exit(0)
+
     esconder_console()
     iniciar_loop_clipboard()
     CAPTURA["monitor_idx"] = int(ESTADO.get("monitor_escolhido", 0))
@@ -3880,6 +4482,10 @@ if __name__ == "__main__":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
     log_seguro("RotaControl:", "http://127.0.0.1:5000")
     log_seguro("LAN:", f"http://{ip_local()}:5000")
+    if INTEGRIDADE["opcionais_faltando"]:
+        log_seguro("Aviso — features opcionais limitadas:")
+        for o in INTEGRIDADE["opcionais_faltando"]:
+            log_seguro(f"  - {o['nome']} ({o['pacote']})")
     if ABRIR_NAVEGADOR_NO_PC:
         threading.Thread(target=abrir_navegador, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
