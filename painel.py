@@ -250,7 +250,13 @@ CONFIG_PADRAO = {
         "Ação: status_pc() e responda 'Sim, estão. CPU X%, RAM Y%...'\n\n"
 
         "Pergunta: 'como uso fora de casa?'\n"
-        "Resposta: 'Na aba Sistema, ativa o modo WAN. Ele cria um link HTTPS que você abre no celular de qualquer lugar. Não precisa instalar nada.'\n"
+        "Resposta: 'Na aba Sistema, ativa o modo WAN. Ele cria um link HTTPS que você abre no celular de qualquer lugar. Não precisa instalar nada.'\n\n"
+
+        "Pergunta: 'como instalo o app no celular?'\n"
+        "Resposta: 'Não tem na Play Store nem App Store. É um app da web (PWA). Abre o RotaControl no navegador do celular (Chrome, Safari, Edge), toca no menu do navegador (no Android são os 3 pontinhos; no iPhone é o ícone de Compartilhar) e escolhe Adicionar à tela inicial. Pronto, vira um ícone igual um app normal.'\n\n"
+
+        "Pergunta: 'onde baixo o aplicativo?'\n"
+        "Resposta: 'Não precisa baixar de loja. Abre o link do RotaControl no navegador do celular, toca em Compartilhar (iPhone) ou nos 3 pontinhos (Android) e escolhe Adicionar à tela inicial. O ícone aparece igual um app.'\n"
     ),
 }
 
@@ -1806,13 +1812,6 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
     </div>
 
     <div class="panel">
-      <h2>Aplicativo (PWA)</h2>
-      <div class="hint">Instale o RotaControl como app no celular.</div>
-      <button class="btn acc block hid" id="btnInstalarPWA" onclick="instalarPWA()" style="margin-top:10px">📱 Instalar app</button>
-      <div class="hint" id="pwaStatus">Disponível quando o navegador permitir (HTTPS ou localhost).</div>
-    </div>
-
-    <div class="panel">
       <h2>Inicialização</h2>
       <button class="btn ghost block" id="btnAuto2" onclick="toggleAutostart()">Iniciar com Windows</button>
       <button class="btn ghost block" style="margin-top:8px" onclick="abrirTutorial(true)">📖 Ver tutorial novamente</button>
@@ -2456,10 +2455,9 @@ async function carregarAutostart(){try{const r=await fetch("/api/autostart");con
 function atualizarBotaoAuto(){const b=$("#btnAuto2");if(!b)return;if(autoAtivo){b.innerHTML="Iniciar com Windows: ATIVADO";b.classList.remove("ghost");b.classList.add("on")}else{b.innerHTML="Iniciar com Windows: DESATIVADO";b.classList.add("ghost");b.classList.remove("on")}}
 async function toggleAutostart(){const novo=!autoAtivo;const r=await fetch("/api/autostart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ativo:novo})});if(r.ok){autoAtivo=novo;atualizarBotaoAuto();toast(novo?"Autostart ON":"Autostart OFF")}}
 
-let deferredPrompt=null;
-window.addEventListener('beforeinstallprompt',(e)=>{e.preventDefault();deferredPrompt=e;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.remove('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='Pronto pra instalar!'});
-window.addEventListener('appinstalled',()=>{deferredPrompt=null;const btn=document.getElementById('btnInstalarPWA');if(btn)btn.classList.add('hid');const st=document.getElementById('pwaStatus');if(st)st.textContent='App instalado';toast("App instalado")});
-async function instalarPWA(){if(!deferredPrompt){toast("Não disponível");return}deferredPrompt.prompt();const{outcome}=await deferredPrompt.userChoice;if(outcome==="accepted")toast("Instalando...");deferredPrompt=null}
+/* PWA: o navegador instala nativamente quando o usuário quiser (Compartilhar → Adicionar à tela inicial).
+   Não forçamos prompt — a instalação fica a critério do usuário. */
+window.addEventListener('appinstalled',()=>{ toast("App instalado"); });
 
 function mostrarLock(){$("#lockScreen").classList.remove("hid")}
 async function entrarPin(){const pin=$("#lockPin").value;const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(r.ok){$("#lockScreen").classList.add("hid");$("#lockPin").value="";iniciar()}else toast("PIN incorreto")}
