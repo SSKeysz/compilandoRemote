@@ -2204,9 +2204,20 @@ def api_state():
         autenticado=autenticado(),
         modo=ESTADO.get("modo"),
         modo_ui=ESTADO.get("modo_ui", "iniciante"),
+        tema_3d=bool(ESTADO.get("tema_3d")),
         pasta_arquivos=pasta_arquivos(),
         userprofile=os.environ.get("USERPROFILE") or os.path.expanduser("~"),
     )
+
+
+@app.route("/api/tema3d", methods=["POST"])
+def api_tema3d():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True) or {}
+    ESTADO["tema_3d"] = bool(d.get("ativo"))
+    salvar_config()
+    return jsonify(ok=True, tema_3d=ESTADO["tema_3d"])
 
 
 @app.route("/api/modo_ui", methods=["POST"])
@@ -2232,7 +2243,8 @@ def api_tutorial_visto():
 def api_config_get():
     return jsonify(modo=ESTADO.get("modo"), tunel_ativo=bool(TUNEL["ativo"]),
                    tunel_url=TUNEL["url"], pin_set=bool(ESTADO.get("pin")),
-                   modo_ui=ESTADO.get("modo_ui", "iniciante"))
+                   modo_ui=ESTADO.get("modo_ui", "iniciante"),
+                   tema_3d=bool(ESTADO.get("tema_3d")))
 
 
 @app.route("/api/modo", methods=["POST"])
@@ -2711,7 +2723,6 @@ def qr_para_pc_page():
         else:
             img_tag = '<p style="color:#888;padding:20px">Instale qrcode[pil].</p>'
 
-        # Se tiver túnel WAN ativo, mostra o botão
         wan_url = ""
         try:
             if TUNEL.get("url") and str(TUNEL["url"]).startswith("http"):
@@ -3250,17 +3261,6 @@ def api_midia_info():
     b = exigir_auth()
     if b: return b
     return jsonify(smtc_info())
-
-
-@app.route("/api/midia_smtc", methods=["POST"])
-def api_midia_smtc():
-    b = exigir_auth()
-    if b: return b
-    acao = (request.get_json(force=True) or {}).get("acao", "")
-    if acao not in ("shuffle_on","shuffle_off","repeat_off","repeat_all","repeat_one"):
-        return jsonify(erro="acao invalida")
-    ok = smtc_acao(acao)
-    return jsonify(ok=ok) if ok else jsonify(erro="falhou")
 
 
 @app.route("/api/timer", methods=["POST"])
