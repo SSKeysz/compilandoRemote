@@ -2274,6 +2274,7 @@ async function iniciar(){
   fundoInit();
   carregarModoUI();
   carregarTemas();
+  carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarComandos();
   try{await post("/api/teclas/soltar_todas",{})}catch(e){}
   setInterval(atualizarTunel,4000);
