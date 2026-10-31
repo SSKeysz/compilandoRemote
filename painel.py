@@ -1506,6 +1506,14 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .tutorialBox code{background:#0d0d14;border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:12px;color:#d4a0ff;word-break:break-all}
 .btn:disabled{opacity:.35}
 body[data-modo="iniciante"] .avancado{display:none!important}
+/* tema vidro: só barras (topo/menu) e botões */
+body.vidro{background-image:radial-gradient(circle at 15% 10%,rgba(124,0,240,.22),transparent 45%),radial-gradient(circle at 85% 70%,rgba(0,170,255,.16),transparent 45%);background-attachment:fixed}
+body.vidro header,body.vidro nav{background:rgba(255,255,255,.07);backdrop-filter:blur(14px) saturate(170%);-webkit-backdrop-filter:blur(14px) saturate(170%);border-color:rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.18)}
+body.vidro .btn{background:linear-gradient(160deg,rgba(255,255,255,.16),rgba(255,255,255,.04));backdrop-filter:blur(8px) saturate(160%);-webkit-backdrop-filter:blur(8px) saturate(160%);border:1px solid rgba(255,255,255,.2);box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 4px 14px rgba(0,0,0,.25)}
+body.vidro .btn.acc,body.vidro .btn.on{background:linear-gradient(160deg,rgba(160,60,255,.55),rgba(110,30,200,.35));border-color:rgba(200,150,255,.5)}
+body.vidro nav button.on{background:rgba(255,255,255,.14);border-radius:10px}
+body.vidro.temFundo header{background:rgba(255,255,255,.07)}
+body.vidro.temFundo nav{background:rgba(255,255,255,.07)}
 #fundoCanvas{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .6s}
 #fundoCanvas.on{opacity:1}
 body.temFundo{background:transparent}
@@ -1563,7 +1571,7 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
     <div class="panel">
       <h2>Ações rápidas</h2>
       <div class="grid g2" id="gridAcoes"></div>
-      <div class="grid g2" style="margin-top:10px"><button class="btn ghost" onclick="abrirNovaAcao()">+ Adicionar</button><button class="btn ghost btnEditar" onclick="toggleEditar()">✏️ Editar itens</button></div>
+      <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovaAcao()">+ Adicionar ação</button>
     </div>
     <div class="panel">
       <h2>Navegação</h2>
@@ -1576,7 +1584,10 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
     <div class="panel">
       <h2>Atalhos salvos</h2>
       <div class="grid g2" id="gridAtalhos"></div>
-      <div class="grid g2" style="margin-top:10px"><button class="btn ghost" onclick="abrirNovoAtalho()">+ Adicionar</button><button class="btn ghost btnEditar" onclick="toggleEditar()">✏️ Editar itens</button></div>
+      <button class="btn ghost block" style="margin-top:10px" onclick="abrirNovoAtalho()">+ Adicionar atalho</button>
+    </div>
+    <div class="panel">
+      <button class="btn ghost block btnEditar" onclick="toggleEditar()">✏️ Editar itens (ações e atalhos)</button>
     </div>
   </section>
 
@@ -1671,7 +1682,7 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       <h2>Volume do sistema</h2>
       <div class="volRow">
         <input type="range" id="volMestre" min="0" max="100" step="1" value="50" aria-label="Volume do PC">
-        <span id="volMestreVal">—</span>
+        <span id="volMestreVal" title="Toque pra digitar" style="cursor:pointer;text-decoration:underline dotted" onclick="volDigitar()">—</span>
       </div>
       <div class="hint" id="volDica"></div>
       <div class="grid g3" style="margin-top:10px">
@@ -1979,6 +1990,8 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       <div class="hint" style="margin-bottom:8px">Tema visual complementar.</div>
       <button class="btn ghost block" id="btnTema" onclick="toggleTema()">🎨 Ativar fundo animado</button>
       <div class="hint" id="temaComboHint" style="margin-top:8px"></div>
+      <button class="btn ghost block" id="btnVidro" style="margin-top:10px" onclick="toggleVidro()">🪟 Ativar efeito vidro</button>
+      <div class="hint" style="margin-top:8px">Vidro só nas barras e botões. Dá pra combinar com o fundo animado. Vale só pra este aparelho; se ficar pesado no PC, desligue.</div>
     </div>
   </section>
 
@@ -2127,7 +2140,9 @@ function fundoOff(){
 }
 /* ===== FIM FUNDO ===== */
 
-async function carregarTemas(){
+function vidroAplicar(){let on=false;try{on=localStorage.getItem("rotacontrol_vidro")==="1"}catch(e){}document.body.classList.toggle("vidro",on);const b=$("#btnVidro");if(b){b.textContent=on?"🪟 Desativar efeito vidro":"🪟 Ativar efeito vidro";b.classList.toggle("ghost",!on);b.classList.toggle("on",on)}}
+function toggleVidro(){const on=!document.body.classList.contains("vidro");try{localStorage.setItem("rotacontrol_vidro",on?"1":"0")}catch(e){}vidroAplicar()}
+async function carregarTemas(){vidroAplicar();
   try{const j=await get("/api/state");
     if(j.tema_fundo)fundoOn();
     atualizarBtnTema(j.tema_fundo);
@@ -2251,6 +2266,17 @@ function volMover(v){
   const espera=Math.max(0,80-(Date.now()-VOL.ultimo));
   VOL.envio=setTimeout(()=>{VOL.ultimo=Date.now();post("/api/volume_mestre_set",{volume:v})},espera);
 }
+function volDigitar(){
+  const s=$("#volMestre");if(!s||s.disabled)return;
+  modalAbrir(`<h3>Volume do PC</h3><label class="hint">Digite de 0 a 100</label><input id="volNum" type="number" inputmode="numeric" min="0" max="100" style="margin:6px 0 12px" value="${s.value}"><div class="grid g2"><button class="btn ghost" onclick="modalFechar()">Cancelar</button><button class="btn acc" onclick="volAplicarNum()">Aplicar</button></div>`);
+  const i=$("#volNum");i.focus();i.select();i.onkeydown=e=>{if(e.key==="Enter")volAplicarNum()};
+}
+async function volAplicarNum(){
+  let v=parseInt($("#volNum").value,10);if(isNaN(v)){toast("Digite um número");return}
+  v=Math.max(0,Math.min(100,v));modalFechar();
+  const s=$("#volMestre");s.value=v;$("#volMestreVal").textContent=v+"%";VOL.drag=true;clearTimeout(VOL.solto);VOL.solto=setTimeout(()=>{VOL.drag=false},900);
+  await post("/api/volume_mestre_set",{volume:v});
+}
 function volIniciarPoll(){volPararPoll();volCarregar();VOL.timer=setInterval(()=>{if(!document.hidden)volCarregar()},3000)}
 function volPararPoll(){if(VOL.timer){clearInterval(VOL.timer);VOL.timer=null}}
 (function(){
@@ -2264,7 +2290,7 @@ function volPararPoll(){if(VOL.timer){clearInterval(VOL.timer);VOL.timer=null}}
 const ITENS={acao:[],atalho:[],comando:[]};let MODO_EDITAR=false;
 function toggleEditar(){
   MODO_EDITAR=!MODO_EDITAR;
-  $$(".btnEditar").forEach(b=>{b.classList.toggle("on",MODO_EDITAR);b.textContent=MODO_EDITAR?"✅ Concluir":"✏️ Editar itens"});
+  $$(".btnEditar").forEach(b=>{b.classList.toggle("on",MODO_EDITAR);b.textContent=MODO_EDITAR?"✅ Concluir edição":(b.closest("#p-acoes")?"✏️ Editar itens (ações e atalhos)":"✏️ Editar itens")});
   toast(MODO_EDITAR?"Toque num item pra editar ou remover":"Edição concluída");
 }
 function ligarMenu(b,tipo,i,item){
@@ -2343,7 +2369,7 @@ const TUT=[
 <h4>Como usar</h4><ol>
 <li>Toque num botão pra executar no PC.</li>
 <li><b>+ Adicionar</b>: escolha o nome, o tipo (programa, pasta, site ou comando) e o caminho.</li>
-<li>Colocou algo errado? Toque em <b>✏️ Editar itens</b> e depois no botão: dá pra <b>Editar</b> (nome, tipo e caminho) ou <b>Remover</b>. Também funciona segurando o dedo no botão (ou clicando com o botão direito no PC).</li>
+<li>Colocou algo errado? No fim da aba, toque em <b>✏️ Editar itens</b> e depois no botão: dá pra <b>Editar</b> (nome, tipo e caminho) ou <b>Remover</b>. Também funciona segurando o dedo no botão (ou clicando com o botão direito no PC).</li>
 <li>Se a pasta ou o programa não existir, o app avisa ao salvar.</li></ol>
 <h4>Tipos de ação</h4><ul>
 <li><b>Programa/arquivo</b> — ex.: <code>notepad.exe</code></li>
@@ -2369,7 +2395,7 @@ const TUT=[
 <li><b>Volume do sistema</b> — barra arrastável e botões (menos, mudo, mais).</li>
 <li><b>Volume por app</b> — cada programa com seu próprio volume.</li></ul>
 <h4>Como usar</h4><ol>
-<li><b>Arraste a barra</b> pro volume que quiser: o PC acompanha na hora. Mexer na barra tira do mudo.</li>
+<li><b>Toque na porcentagem</b> pra digitar o valor exato. Ou <b>arraste a barra</b> pro volume que quiser: o PC acompanha na hora. Mexer na barra tira do mudo.</li>
 <li>A barra mostra o volume atual do PC e se atualiza sozinha quando você muda por outro lugar.</li>
 <li>Em <b>Volume por app</b>, toque em <b>Atualizar lista</b> e ajuste cada programa que estiver com som aberto.</li></ol>
 <p class="hint">Se a barra aparecer desativada, falta instalar o <code>pycaw</code> no PC. Os botões continuam funcionando.</p>`},
@@ -2397,7 +2423,7 @@ const TUT=[
 <li><b>Máx.</b> — o máximo de nitidez e fluidez (30 fps); só em rede local rápida. Gasta bastante internet e processador do PC.</li></ul>
 <h4>Como usar</h4><ol>
 <li>Toque em <b>Ver ao vivo</b>. A tela só roda enquanto você está nesta aba (economiza internet e bateria).</li>
-<li>Pra ver a tela em cima de outros apps: toque em <b>Picture-in-Picture</b>. Na primeira vez a tela ao vivo liga e você toca de novo.</li>
+<li>Pra ver a tela em cima de outros apps: toque em <b>Picture-in-Picture</b>. Se pedir, toque mais uma vez.</li>
 <li><b>Print</b> tira uma foto da tela; <b>Copiar print</b> manda pra área de transferência; <b>Baixar print</b> salva no celular.</li></ol>
 <p class="hint">PiP no iPhone: funciona no Safari, mas <b>não</b> no app adicionado à tela de início (limitação da Apple). No PC (Chrome/Edge) abre uma janela flutuante.</p>`},
 
@@ -2442,7 +2468,7 @@ const TUT=[
 <li><b>Pasta padrão</b> — onde caem uploads e prints.</li>
 <li><b>Diagnóstico</b> — testa o PC e mostra alertas.</li>
 <li><b>Encerrar</b> — fechar o programa. O botão <b>BYPASS</b> <b>apaga o .exe</b> (desinstala): use só se for isso mesmo.</li>
-<li><b>Aparência</b> — fundo animado.</li></ul>
+<li><b>Aparência</b> — fundo animado e efeito vidro (barras e botões translúcidos; dá pra usar os dois juntos).</li></ul>
 <h4>Dicas</h4><ul>
 <li>O PIN fica salvo neste aparelho por 90 dias: você só digita uma vez. Trocar o PIN desconecta os outros aparelhos.</li>
 <li>Esqueceu o PIN? No PC, abra o arquivo <code>rotacontrol_config.json</code> (fica ao lado do .exe), apague a linha <code>pin_hash</code> e abra o app de novo: ele pede pra criar outro.</li>
@@ -2497,7 +2523,7 @@ function show(nome){
   $$("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===nome));
   ABA_ATUAL=nome;fluxoSincronizar();
   if(nome==="arquivos"){limparBusca();carregarArquivos(CAMINHO_ATUAL)}
-  if(nome==="tela"){carregarMonitores()}
+  if(nome==="tela"){carregarMonitores();if(PIP_METHOD==='video')prepararVideoPip()}
   if(nome==="sistema"){carregarSistema();carregarTemas()}
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
   if(nome==="extra"){carregarTimers()}
@@ -2793,14 +2819,14 @@ let termEvtSource=null;
 function termRun(){const cmd=$("#termCmd").value.trim();if(!cmd)return;const pre=$("#termPre");pre.textContent+="\n$ "+cmd+"\n";pre.scrollTop=pre.scrollHeight;if(termEvtSource){try{termEvtSource.close()}catch(e){}termEvtSource=null}termEvtSource=new EventSource("/api/terminal?cmd="+encodeURIComponent(cmd));termEvtSource.onmessage=(e)=>{try{const d=JSON.parse(e.data);pre.textContent+=d;pre.scrollTop=pre.scrollHeight}catch(err){}};termEvtSource.addEventListener("end",()=>{try{termEvtSource.close()}catch(e){}termEvtSource=null});termEvtSource.onerror=()=>{try{termEvtSource.close()}catch(e){}termEvtSource=null};$("#termCmd").value=""}
 
 let pipActive=false,pipStream=null,pipVideoReady=false,pipStopDraw=false,docPipWin=null,docPipStop=false;
-let pipTickerW=null,pipTickerI=null,pipBusy=false,pipCtx=null;
+let pipTickerW=null,pipTickerI=null,pipBusy=false,pipCtx=null,pipBeat=null,pipN=0;
 const PIP_METHOD=('documentPictureInPicture' in window)?'doc':(document.pictureInPictureEnabled?'video':'none');
 function resetPipBtn(){const bp=document.getElementById('btnPip');if(!bp)return;bp.textContent='Picture-in-Picture';bp.classList.remove('on')}
 function fecharPip(comBtnReset){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true}if(pipActive){document.exitPictureInPicture().catch(()=>{});pipActive=false}pararVideoPip();if(comBtnReset!==false)resetPipBtn()}
 async function prepararVideoPip(){
   if(pipVideoReady)return;
   const vid=document.getElementById('pipVideo'),cvs=document.getElementById('pipCanvas');if(!vid||!cvs)return;
-  cvs.width=640;cvs.height=360;const ctx=cvs.getContext('2d');ctx.fillStyle='#000';ctx.fillRect(0,0,640,360);pipCtx=ctx;
+  cvs.width=640;cvs.height=360;const ctx=cvs.getContext('2d');ctx.fillStyle='#000';ctx.fillRect(0,0,640,360);pipCtx=ctx;clearInterval(pipBeat);pipBeat=setInterval(()=>{try{ctx.fillStyle=(pipN++%2)?'#010000':'#000';ctx.fillRect(0,0,2,2)}catch(e){}},150);
   try{const im=document.getElementById('tela');if(im&&im.naturalWidth>0)pipDesenhar(ctx,im,im.naturalWidth,im.naturalHeight)}catch(e){}
   try{pipStream=cvs.captureStream(15);vid.style.cssText="position:fixed;top:0;left:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1";vid.muted=true;vid.playsInline=true;vid.srcObject=pipStream;await vid.play();for(let i=0;i<40;i++){if(vid.readyState>=2&&vid.videoWidth>0)break;await new Promise(r=>setTimeout(r,100))}if(vid.readyState>=2&&vid.videoWidth>0)pipVideoReady=true}catch(e){}
 }
@@ -2825,16 +2851,15 @@ function pipTickerStart(){
   qualAplicarServidor();
 }
 function pipTickerStop(){if(pipTickerW){pipTickerW.terminate();pipTickerW=null}if(pipTickerI){clearInterval(pipTickerI);pipTickerI=null}if(telaAtiva)qualAplicarServidor()}
-function pararVideoPip(){pipStopDraw=true;pipTickerStop();pipCtx=null;if(pipStream){pipStream.getTracks().forEach(t=>t.stop());pipStream=null}const vid=document.getElementById('pipVideo');if(vid){vid.srcObject=null;vid.style.cssText="display:none"}pipVideoReady=false;pipActive=false}
+function pararVideoPip(){clearInterval(pipBeat);pipBeat=null;pipStopDraw=true;pipTickerStop();pipCtx=null;if(pipStream){pipStream.getTracks().forEach(t=>t.stop());pipStream=null}const vid=document.getElementById('pipVideo');if(vid){vid.srcObject=null;vid.style.cssText="display:none"}pipVideoReady=false;pipActive=false}
 function setupDocPip(w){docPipWin=w;docPipStop=false;const st=w.document.createElement('style');st.textContent='html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100vh}img{width:100vw;height:100vh;object-fit:contain;display:block;background:#000}';w.document.head.appendChild(st);const im=w.document.createElement('img');im.alt="";im.src=ORIGEM+"/api/stream.mjpg?monitor="+ESTADO_MONITOR_ATUAL;w.document.body.appendChild(im);const btn=document.getElementById('btnPip');btn.textContent='Sair do PiP';btn.classList.add('on');const f=()=>{docPipStop=true;docPipWin=null;try{im.src=""}catch(e){}resetPipBtn()};w.addEventListener('pagehide',f,{once:true});w.addEventListener('unload',f,{once:true})}
 function togglePip(){const btn=document.getElementById('btnPip');if(PIP_METHOD==='doc'){if(docPipWin&&!docPipWin.closed){try{docPipWin.close()}catch(e){}docPipWin=null;docPipStop=true;resetPipBtn();return}if(btn.classList.contains('on')){resetPipBtn();return}if(!telaAtiva)toggleAuto();documentPictureInPicture.requestWindow({width:640,height:360}).then(w=>setupDocPip(w)).catch(e=>toast('Erro PiP: '+(e.name||'')+' '+(e.message||e)));return}if(PIP_METHOD==='video'){const vid=document.getElementById('pipVideo');
 if(pipActive){document.exitPictureInPicture().catch(()=>{});resetPipBtn();return}
-if(!telaAtiva){toggleAuto();toast('Tela ao vivo ligada. Toque em PiP de novo.');return}
-if(!pipVideoReady){toast('Preparando...');prepararVideoPip().then(()=>toast('Pronto! Toque em PiP de novo.'));return}
-if(vid.readyState<2||vid.videoWidth===0){toast('Aguarde um instante');return}
+if(!telaAtiva)toggleAuto();
 const entrou=()=>{pipActive=true;btn.textContent='Sair do PiP';btn.classList.add('on');pipTickerStart()};
-const p=vid.requestPictureInPicture();
-if(p&&p.then){p.then(entrou).catch(e=>toast('Erro PiP: '+(e.name||'')))}else{entrou()}
+const abrir=async(depois)=>{try{await vid.requestPictureInPicture();entrou()}catch(e){if(depois&&e&&e.name==='NotAllowedError')toast('Pronto! Toque em PiP mais uma vez.');else toast('Erro PiP: '+(e&&e.name||'')+' '+(e&&e.message||''))}};
+if(pipVideoReady&&vid.videoWidth>0){abrir(false)}
+else{toast('Preparando o PiP...');prepararVideoPip().then(()=>{if(vid.videoWidth>0)abrir(true);else toast('Não consegui preparar o vídeo. Toque em PiP de novo.')})}
 if(!vid._pipLeaveBound){vid._pipLeaveBound=true;vid.addEventListener('leavepictureinpicture',()=>{pipActive=false;pipTickerStop();resetPipBtn()})}
 return}toast('PiP não suportado')}
 
