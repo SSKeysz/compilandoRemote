@@ -1,5 +1,5 @@
 """
-RotaControl v2.14
+RotaControl v2.15
 pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
 Compilar:
     pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
@@ -7,11 +7,14 @@ Compilar:
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv, asyncio
 import logging, tempfile, threading, subprocess, webbrowser, urllib.request
 from collections import deque
+import hashlib, hmac, ipaddress
+from datetime import timedelta
+from urllib.parse import urlparse
 
 try: import winreg
 except Exception: winreg = None
 
-from flask import Flask, Response, jsonify, request, session, send_file, stream_with_context
+from flask import Flask, Response, jsonify, request, session, send_file, stream_with_context, redirect
 
 try:
     import mss as _mss
@@ -182,7 +185,7 @@ COMANDOS_PADRAO = [
 ]
 
 CONFIG_PADRAO = {
-    "pin": None, "modo": "lan",
+    "pin": None, "pin_hash": None, "chave_sessao": None, "sessao_ver": None, "ultimo_ip": None, "modo": "lan",
     "pasta_arquivos": r"%USERPROFILE%\Desktop",
     "acoes": ACOES_PADRAO, "atalhos": [],
     "comandos": COMANDOS_PADRAO,
@@ -218,6 +221,112 @@ ESTADO = carregar_config()
 if "perfis_teclado" not in ESTADO:
     ESTADO["perfis_teclado"] = []
 
+# ============ PIN / AUTENTICAÇÃO ============
+PIN_MIN = 6
+PIN_MAX = 32
+_PINS_FRACOS = {"123456", "1234567", "12345678", "654321", "000000", "111111", "123123", "121212", "112233", "password", "senha123"}
+SESSAO_VER = {"v": ESTADO.get("sessao_ver") or secrets.token_hex(8)}   # muda quando o PIN muda -> derruba as outras sessões
+if ESTADO.get("sessao_ver") != SESSAO_VER["v"]:
+    ESTADO["sessao_ver"] = SESSAO_VER["v"]; salvar_config()
+
+
+def _hash_pin(pin, salt=None):
+    salt = salt or secrets.token_bytes(16)
+    h = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, 200_000)
+    return "pbkdf2$" + salt.hex() + "$" + h.hex()
+
+
+def _conferir_pin(pin, guardado):
+    try:
+        _, salt_hex, h_hex = str(guardado).split("$")
+        h = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), bytes.fromhex(salt_hex), 200_000)
+        return hmac.compare_digest(h.hex(), h_hex)
+    except Exception:
+        return False
+
+
+def pin_definido(): return bool(ESTADO.get("pin_hash"))
+
+
+def validar_pin_novo(pin):
+    """Devolve mensagem de erro (str) ou None se o PIN é aceitável."""
+    if len(pin) < PIN_MIN or len(pin) > PIN_MAX:
+        return f"O PIN deve ter de {PIN_MIN} a {PIN_MAX} caracteres."
+    if len(set(pin)) == 1 or pin.lower() in _PINS_FRACOS:
+        return "PIN fraco demais. Evite sequências e caracteres repetidos."
+    return None
+
+
+def definir_pin(pin):
+    ESTADO["pin_hash"] = _hash_pin(pin); ESTADO["pin"] = None
+    SESSAO_VER["v"] = secrets.token_hex(8); ESTADO["sessao_ver"] = SESSAO_VER["v"]
+    salvar_config()
+
+
+# migração: versões antigas guardavam o PIN em texto puro
+if ESTADO.get("pin") and not pin_definido():
+    ESTADO["pin_hash"] = _hash_pin(str(ESTADO["pin"]))
+    ESTADO["pin"] = None
+    salvar_config()
+elif ESTADO.get("pin"):
+    ESTADO["pin"] = None
+    salvar_config()
+
+
+_LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+_HEADERS_PROXY = ("Cf-Connecting-Ip", "Cf-Ray", "Cf-Visitor", "X-Forwarded-For", "X-Real-Ip", "Forwarded")
+
+
+def eh_local():
+    """True só se a requisição vem do próprio PC. Pelo túnel Cloudflare tudo chega como
+    127.0.0.1, então qualquer cabeçalho de proxy desqualifica."""
+    if (request.remote_addr or "") not in _LOOPBACK: return False
+    return not any(h in request.headers for h in _HEADERS_PROXY)
+
+
+def ip_cliente():
+    ra = request.remote_addr or "?"
+    if ra in _LOOPBACK:
+        v = request.headers.get("Cf-Connecting-Ip") or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        if v: return v
+    return ra
+
+
+# limite de tentativas de login: por IP (backoff) + teto global
+LOGIN_FALHAS = {}
+LOGIN_GLOBAL = deque()
+LOGIN_LOCK = threading.Lock()
+LOGIN_GLOBAL_MAX = 20        # falhas totais ...
+LOGIN_GLOBAL_JANELA = 600    # ... dentro de 10 minutos bloqueiam logins remotos
+
+
+def _login_bloqueado(ip):
+    agora = time.time()
+    with LOGIN_LOCK:
+        while LOGIN_GLOBAL and agora - LOGIN_GLOBAL[0] > LOGIN_GLOBAL_JANELA: LOGIN_GLOBAL.popleft()
+        if len(LOGIN_GLOBAL) >= LOGIN_GLOBAL_MAX:
+            return int(LOGIN_GLOBAL_JANELA - (agora - LOGIN_GLOBAL[0])) + 1
+        r = LOGIN_FALHAS.get(ip)
+        if r and r["ate"] > agora: return int(r["ate"] - agora) + 1
+    return 0
+
+
+def _login_falhou(ip):
+    agora = time.time()
+    with LOGIN_LOCK:
+        LOGIN_GLOBAL.append(agora)
+        r = LOGIN_FALHAS.setdefault(ip, {"n": 0, "ate": 0})
+        r["n"] += 1
+        if r["n"] >= 5: r["ate"] = agora + min(900, 15 * 2 ** (r["n"] - 5))
+        if len(LOGIN_FALHAS) > 500:
+            for k in [k for k, v in LOGIN_FALHAS.items() if v["ate"] < agora and v["n"] < 5][:250]:
+                LOGIN_FALHAS.pop(k, None)
+
+
+def _login_ok(ip):
+    with LOGIN_LOCK: LOGIN_FALHAS.pop(ip, None)
+# ============================================
+
 
 # ============ CACHE: pasta_arquivos ============
 _PASTA_CACHE = {"v": None}
@@ -240,11 +349,50 @@ def _invalidar_pasta_cache():
 
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
+if not ESTADO.get("chave_sessao"):
+    ESTADO["chave_sessao"] = secrets.token_hex(32); salvar_config()
+app.secret_key = ESTADO["chave_sessao"]
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
 
 
-def autenticado(): return not ESTADO.get("pin") or session.get("ok") is True
+app.config.update(SESSION_COOKIE_SAMESITE="Strict", SESSION_COOKIE_HTTPONLY=True,
+                  SESSION_COOKIE_NAME="rc_sessao", PERMANENT_SESSION_LIFETIME=timedelta(days=90))
+
+def autenticado():
+    # PIN é obrigatório: sem PIN definido ninguém está autenticado (nem o PC) até o primeiro acesso.
+    return session.get("ok") is True and session.get("v") == SESSAO_VER["v"]
+
+
+_SUFIXOS_HOST = (".trycloudflare.com", ".local", ".home", ".lan", ".localdomain")
+
+def _host_ok(host):
+    """Barra DNS rebinding: só aceita IP, nome simples (localhost / nome do PC) ou o túnel."""
+    host = (host or "").strip().lower()
+    if not host: return False
+    if host.startswith("["): nome = host[1:].split("]")[0]
+    elif host.count(":") == 1: nome = host.rsplit(":", 1)[0]
+    else: nome = host
+    try: ipaddress.ip_address(nome); return True
+    except ValueError: pass
+    if "." not in nome: return bool(nome)
+    return nome.endswith(_SUFIXOS_HOST)
+
+
+_PREFIXOS_SENSIVEIS = ("/api/", "/qr_para_pc", "/primeira_vez")
+
+@app.before_request
+def _protecao_basica():
+    if not _host_ok(request.host): return "host invalido", 400
+    if request.path.startswith(_PREFIXOS_SENSIVEIS):
+        # navegador moderno: bloqueia requisições disparadas por OUTROS sites (CSRF)
+        sfs = request.headers.get("Sec-Fetch-Site")
+        if sfs and sfs not in ("same-origin", "none"):
+            return jsonify(erro="origem bloqueada"), 403
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            o = request.headers.get("Origin")
+            if o is not None and urlparse(o).netloc.lower() != request.host.lower():
+                return jsonify(erro="origem bloqueada"), 403
+    return None
 def exigir_auth():
     if not autenticado(): return jsonify(erro="nao autenticado"), 401
     return None
@@ -252,20 +400,53 @@ def exigir_auth():
 
 # ============ CACHE: ip_local ============
 _IP_CACHE = {"v": None, "t": 0}
-def ip_local():
-    now = time.time()
-    if _IP_CACHE["v"] and (now - _IP_CACHE["t"]) < 60:
-        return _IP_CACHE["v"]
+_IFACE_IGNORAR = ("radmin", "vpn", "virtual", "vmware", "vbox", "vethernet", "hyper-v", "wsl", "docker",
+                  "tailscale", "zerotier", "hamachi", "loopback", "bluetooth", "teredo", "npcap", "pseudo")
+
+
+def _ip_privado(ip):
+    try: a = ipaddress.ip_address(ip)
+    except ValueError: return False
+    return a.version == 4 and a.is_private and not a.is_loopback and not a.is_link_local
+
+
+def _ip_rota_padrao():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))
-        v = s.getsockname()[0]
-    except Exception:
-        v = "127.0.0.1"
-    finally:
-        s.close()
+        s.connect(("8.8.8.8", 80)); return s.getsockname()[0]
+    except Exception: return None
+    finally: s.close()
+
+
+def ips_lan(fresh=False):
+    """IPs da rede local (192.168.x / 10.x / 172.16-31.x), o mais provável primeiro.
+    Ignora VPNs (Radmin, Hamachi...), WSL/Hyper-V/VirtualBox e adaptadores desconectados."""
+    now = time.time()
+    if not fresh and _IP_CACHE["v"] and (now - _IP_CACHE["t"]) < 20:
+        return list(_IP_CACHE["v"])
+    cands = []
+    if PSUTIL_OK:
+        try:
+            stats = psutil.net_if_stats()
+            for nome, addrs in psutil.net_if_addrs().items():
+                if any(t in nome.lower() for t in _IFACE_IGNORAR): continue
+                st = stats.get(nome)
+                if st is not None and not st.isup: continue
+                for a in addrs:
+                    if a.family == socket.AF_INET and _ip_privado(a.address) and a.address not in cands:
+                        cands.append(a.address)
+        except Exception: pass
+    principal = _ip_rota_padrao()
+    if principal in cands:
+        cands.remove(principal); cands.insert(0, principal)
+    elif not cands and principal and principal != "127.0.0.1":
+        cands.append(principal)
+    v = cands or ["127.0.0.1"]
     _IP_CACHE["v"] = v; _IP_CACHE["t"] = now
-    return v
+    return list(v)
+
+
+def ip_local(): return ips_lan()[0]
 # =========================================
 
 
@@ -609,9 +790,19 @@ def caminho_cloudflared(): return os.path.join(pasta_base(), "cloudflared.exe")
 
 def baixar_cloudflared():
     d = caminho_cloudflared()
-    if os.path.exists(d): return d
-    try: urllib.request.urlretrieve(CF_URL, d); return d
-    except Exception as e: log_seguro("erro cf:", e); return None
+    if os.path.exists(d) and os.path.getsize(d) > 5_000_000: return d
+    tmp = d + ".tmp"
+    try:
+        urllib.request.urlretrieve(CF_URL, tmp)
+        with open(tmp, "rb") as f: cabecalho = f.read(2)
+        if cabecalho != b"MZ" or os.path.getsize(tmp) < 5_000_000:
+            os.remove(tmp); log_seguro("erro cf: arquivo baixado invalido"); return None
+        os.replace(tmp, d); return d
+    except Exception as e:
+        log_seguro("erro cf:", e)
+        try: os.remove(tmp)
+        except Exception: pass
+        return None
 
 
 def _loop_tunel():
@@ -621,7 +812,7 @@ def _loop_tunel():
         TUNEL["url"] = "ERRO: nao consegui baixar"; TUNEL["ativo"] = False; return
     TUNEL["url"] = "iniciando tunel..."
     try:
-        p = subprocess.Popen([cf, "tunnel", "--url", "http://localhost:5000", "--no-autoupdate"],
+        p = subprocess.Popen([cf, "tunnel", "--url", "http://127.0.0.1:5000", "--no-autoupdate", "--protocol", "http2"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             text=True, bufsize=1, creationflags=CREATE_NO_WINDOW)
         TUNEL["proc"] = p
@@ -1618,10 +1809,9 @@ body.temFundo nav{background:rgba(16,16,21,.88);backdrop-filter:blur(10px);-webk
     <div class="panel">
       <h2>PIN</h2>
       <div class="warn hid" id="pinWarn">Sem PIN: qualquer aparelho na rede controla este PC.</div>
-      <input id="pinIn" type="password" placeholder="PIN (4-32)" style="margin-top:8px">
-      <div class="grid g2" style="margin-top:8px">
-        <button class="btn acc" onclick="definirPin()">Definir</button>
-        <button class="btn ghost" onclick="removerPin()">Remover</button>
+      <input id="pinIn" type="password" placeholder="Novo PIN (mín. 6)" maxlength="32" style="margin-top:8px">
+      <div style="margin-top:8px">
+        <button class="btn acc block" onclick="definirPin()">Trocar PIN</button>
       </div>
     </div>
 
@@ -2242,8 +2432,7 @@ function copiarTunel(){if(!ultimoTunel||!ultimoTunel.startsWith("http")){toast("
 function setPastaSelect(v){if(!v){$("#pastaIn").value="";return}fetch("/api/state").then(r=>r.json()).then(j=>{const up=j.userprofile||"C:\\Users\\Voce";const map={desktop:"Desktop",documents:"Documents",downloads:"Downloads",pictures:"Pictures",videos:"Videos",music:"Music",home:""};const sub=map[v]||"";$("#pastaIn").value=sub?(up+"\\"+sub):up})}
 async function salvarPasta(){const v=$("#pastaIn").value.trim();if(!v){toast("Escolha uma pasta no menu");return}const j=await post("/api/pasta",{pasta:v});toast("Salvo");if(j.pasta)$("#pastaIn").value=j.pasta}
 
-async function definirPin(){const p=$("#pinIn").value.trim();if(p.length<4){alert("Mínimo 4");return}await post("/api/pin",{pin:p});$("#pinIn").value="";toast("PIN definido");carregarSistema()}
-async function removerPin(){if(!confirm("Remover PIN?"))return;await post("/api/pin",{pin:""});toast("PIN removido");carregarSistema()}
+async function definirPin(){const p=$("#pinIn").value.trim();if(p.length<6){alert("Mínimo 6 caracteres");return}const r=await post("/api/pin",{pin:p});if(r.erro){toast(r.erro);return}$("#pinIn").value="";toast("PIN alterado");carregarSistema()}
 
 async function fecharPrograma(){if(!confirm("Fechar o programa no PC?"))return;toast("Fechando...");try{await post("/api/fechar",{})}catch(e){}for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;text-align:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#7c00f0;font-size:22px">RotaControl encerrado</b></div>'}
 async function bypassPrograma(){if(!confirm("BYPASS: apaga o .exe. Continuar?"))return;toast("Aplicando...");try{await post("/api/bypass",{})}catch(e){}for(let i=0;i<40;i++){await new Promise(r=>setTimeout(r,350));try{const r=await fetch("/api/state",{cache:"no-store",signal:AbortSignal.timeout(1500)});if(!r.ok)break}catch(e){break}}document.body.innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:#8b8b99;font:16px system-ui;background:#0a0a0d;flex-direction:column;gap:10px"><b style="color:#c82020;font-size:22px">BYPASS aplicado</b></div>'}
@@ -2264,11 +2453,17 @@ async function toggleAutostart(){const novo=!autoAtivo;const r=await fetch("/api
 window.addEventListener('appinstalled',()=>{ toast("App instalado"); });
 
 function mostrarLock(){$("#lockScreen").classList.remove("hid")}
-async function entrarPin(){const pin=$("#lockPin").value;const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(r.ok){$("#lockScreen").classList.add("hid");$("#lockPin").value="";iniciar()}else toast("PIN incorreto")}
+async function entrarPin(){const pin=$("#lockPin").value;const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin})});if(r.ok){$("#lockScreen").classList.add("hid");$("#lockPin").value="";iniciar()}else{const j=await r.json().catch(()=>({}));toast(j.erro||"PIN incorreto")}}
+function mostrarSetup(){
+  if(location.hostname==="127.0.0.1"||location.hostname==="localhost"){location.href="/primeira_vez";return}
+  mostrarLock();
+  const h=document.querySelector("#lockScreen .hint");
+  if(h)h.textContent="Primeiro acesso: no próprio PC, abra http://127.0.0.1:5000 e crie o PIN. Depois volte aqui.";
+  $("#lockPin").style.display="none";const b=document.querySelector("#lockScreen .btn");if(b)b.style.display="none"}
 
 async function iniciar(){
   const j=await get("/api/state");
-  if(j.pin_set&&!j.autenticado){mostrarLock();return}
+  if(!j.autenticado){if(j.pin_set)mostrarLock();else mostrarSetup();return}
   $("#lockScreen").classList.add("hid");
   initTouchpad();
   fundoInit();
@@ -2558,10 +2753,12 @@ def icon():
 
 @app.route("/api/state")
 def api_state():
+    if not autenticado():
+        return jsonify(autenticado=False, pin_set=pin_definido(), setup_necessario=not pin_definido())
     _marcar_interesse("cpu")
     return jsonify(
-        ip=ip_local(), porta=5000,
-        pin_set=bool(ESTADO.get("pin")),
+        ip=ip_local(), ips=ips_lan(), porta=5000,
+        pin_set=pin_definido(),
         autenticado=autenticado(),
         modo=ESTADO.get("modo"),
         modo_ui=ESTADO.get("modo_ui", "iniciante"),
@@ -2602,8 +2799,9 @@ def api_tutorial_visto():
 
 @app.route("/api/config", methods=["GET"])
 def api_config_get():
-    return jsonify(modo=ESTADO.get("modo"), tunel_ativo=bool(TUNEL["ativo"]),
-                   tunel_url=TUNEL["url"], pin_set=bool(ESTADO.get("pin")),
+    ok = autenticado()
+    return jsonify(modo=ESTADO.get("modo") if ok else None, tunel_ativo=bool(TUNEL["ativo"]) if ok else False,
+                   tunel_url=TUNEL["url"] if ok else None, pin_set=pin_definido(),
                    modo_ui=ESTADO.get("modo_ui", "iniciante"),
                    tema_fundo=bool(ESTADO.get("tema_fundo", False)))
 
@@ -2622,18 +2820,82 @@ def api_modo():
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
-    pin = (request.get_json(force=True).get("pin") or "").strip()
-    if not ESTADO.get("pin") or pin == ESTADO["pin"]:
-        session["ok"] = True; return jsonify(ok=True)
-    return jsonify(erro="pin incorreto"), 401
+    if not pin_definido():
+        return jsonify(erro="Defina o PIN primeiro, no próprio PC.", precisa_pin=True), 403
+    ip = ip_cliente(); local = eh_local()
+    if not local:
+        esp = _login_bloqueado(ip)
+        if esp: return jsonify(erro=f"Muitas tentativas. Aguarde {esp}s."), 429
+    d = request.get_json(force=True, silent=True) or {}
+    pin = str(d.get("pin") or "").strip()
+    if _conferir_pin(pin, ESTADO.get("pin_hash")):
+        _login_ok(ip); session.clear()
+        session.permanent = True; session["ok"] = True; session["v"] = SESSAO_VER["v"]
+        return jsonify(ok=True)
+    if not local: _login_falhou(ip)
+    time.sleep(0.4)
+    return jsonify(erro="PIN incorreto"), 401
 
 
 @app.route("/api/pin", methods=["POST"])
 def api_pin():
     b = exigir_auth()
     if b: return b
-    pin = (request.get_json(force=True).get("pin") or "").strip()
-    ESTADO["pin"] = pin or None; salvar_config(); return jsonify(ok=True)
+    pin = str((request.get_json(force=True, silent=True) or {}).get("pin") or "").strip()
+    erro = validar_pin_novo(pin)
+    if erro: return jsonify(erro=erro), 400
+    definir_pin(pin)
+    session.permanent = True; session["ok"] = True; session["v"] = SESSAO_VER["v"]   # quem trocou continua logado
+    return jsonify(ok=True)
+
+
+@app.route("/api/primeira_vez", methods=["POST"])
+def api_primeira_vez():
+    """Cria o PIN inicial. Só funciona no próprio PC e só enquanto não existe PIN."""
+    if pin_definido(): return jsonify(erro="O PIN já foi definido."), 403
+    if not eh_local(): return jsonify(erro="Faça isso no próprio PC."), 403
+    pin = str((request.get_json(force=True, silent=True) or {}).get("pin") or "").strip()
+    erro = validar_pin_novo(pin)
+    if erro: return jsonify(erro=erro), 400
+    definir_pin(pin)
+    session.permanent = True; session["ok"] = True; session["v"] = SESSAO_VER["v"]
+    return jsonify(ok=True)
+
+
+_PAGINA_PRIMEIRA_VEZ = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<title>RotaControl - Primeiro acesso</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>:root{color-scheme:dark}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#05050a;color:#e9e9f0;font:16px/1.5 system-ui,sans-serif;padding:20px}
+.box{width:100%;max-width:440px;background:#101015;border:1px solid rgba(154,60,255,.35);border-radius:18px;padding:30px;box-shadow:0 0 60px rgba(124,0,240,.35)}
+h1{margin:0 0 6px;font-size:24px;letter-spacing:2px;background:linear-gradient(135deg,#9a3cff,#d4a0ff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:#9a9aac;margin:8px 0 18px;font-size:14px}
+input{width:100%;padding:13px 14px;margin:6px 0;border-radius:10px;border:1px solid #2a2a38;background:#0a0a10;color:#fff;font-size:16px}
+button{width:100%;margin-top:14px;padding:13px;border:0;border-radius:10px;background:linear-gradient(135deg,#7c00f0,#9a3cff);color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+#msg{min-height:22px;margin-top:12px;color:#ff8a8a;font-size:14px}
+</style></head><body><div class="box">
+<h1>ROTACONTROL</h1>
+<p>Primeiro acesso. Crie um PIN: ele protege o controle deste PC. Quem tiver o PIN e o link controla o computador, então use algo que só você saiba.</p>
+<input id="p1" type="password" maxlength="32" placeholder="Novo PIN (mínimo 6)" autofocus>
+<input id="p2" type="password" maxlength="32" placeholder="Repita o PIN">
+<button onclick="salvar()">Criar PIN e continuar</button>
+<div id="msg"></div></div>
+<script>
+async function salvar(){
+  const a=document.getElementById("p1").value.trim(),b=document.getElementById("p2").value.trim(),m=document.getElementById("msg");
+  if(a!==b){m.textContent="Os dois PINs não são iguais.";return}
+  const r=await fetch("/api/primeira_vez",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:a})});
+  const j=await r.json().catch(()=>({}));
+  if(r.ok){location.href="/qr_para_pc"}else{m.textContent=j.erro||"Erro ao criar o PIN."}
+}
+document.getElementById("p2").addEventListener("keydown",e=>{if(e.key==="Enter")salvar()});
+</script></body></html>"""
+
+
+@app.route("/primeira_vez")
+def primeira_vez_page():
+    if not eh_local(): return "Abra esta página no próprio PC.", 403
+    if pin_definido(): return redirect("/qr_para_pc")
+    return Response(_PAGINA_PRIMEIRA_VEZ, mimetype="text/html", headers={"Cache-Control": "no-store"})
 
 
 @app.route("/api/pasta", methods=["POST"])
@@ -2647,7 +2909,10 @@ def api_pasta():
 
 
 @app.route("/api/autostart", methods=["GET"])
-def api_autostart_get(): return jsonify(ativo=autostart_ativo())
+def api_autostart_get():
+    b = exigir_auth()
+    if b: return b
+    return jsonify(ativo=autostart_ativo())
 
 
 @app.route("/api/autostart", methods=["POST"])
@@ -2837,6 +3102,8 @@ def api_teclas_soltar():
 
 @app.route("/api/teclas/soltar_todas", methods=["POST"])
 def api_teclas_soltar_todas():
+    b = exigir_auth()
+    if b: return b
     soltar_todas_travadas(); return jsonify(ok=True)
 
 
@@ -3106,13 +3373,15 @@ def api_qr_para_pc():
     b = exigir_auth()
     if b: return b
     try:
-        webbrowser.open_new_tab(f"http://{ip_local()}:5000/qr_para_pc")
+        webbrowser.open_new_tab("http://127.0.0.1:5000/qr_para_pc")
         return jsonify(saida="QR aberto no PC.")
     except Exception as e: return jsonify(erro=str(e))
 
 
 @app.route("/qr_para_pc")
 def qr_para_pc_page():
+    if not eh_local(): return "Abra esta página no próprio PC.", 403
+    if not pin_definido(): return redirect("/primeira_vez")
     try:
         ip = ip_local(); url = f"http://{ip}:5000"
         png_bytes = _gerar_qr_png_bytes(url)
@@ -3152,9 +3421,11 @@ h1{margin:0;font-size:28px;letter-spacing:3px;font-weight:700;background:linear-
 <canvas id="bg"></canvas>
 <div class="content">
   <h1>ROTACONTROL</h1>
+  __AVISO__
   <div class="card">__QR__</div>
-  <div class="url">__URL__</div>
-  <div class="hint">Aponte a câmera do celular pro QR</div>
+  <div class="url">__URL__</div>__EXTRAS__
+  <div class="hint">Aponte a câmera do celular pro QR. O celular precisa estar no mesmo Wi-Fi do PC.</div>
+  <div class="hint">Ao abrir, digite o PIN que você criou.</div>
   <div class="wanBox hid" id="wanBox">
     <div class="wanUrl" id="wanUrl"></div>
     <button class="wanBtn" onclick="copiarWan()">📋 Copiar link WAN</button>
@@ -3296,7 +3567,12 @@ function frame(now){
 requestAnimationFrame(frame);
 })();
 </script></body></html>"""
-        html = html.replace("__QR__", img_tag).replace("__URL__", url).replace("__WAN__", wan_url)
+        extras = "".join(f'<div class="hint">ou http://{o}:5000</div>' for o in ips_lan()[1:])
+        aviso = ('<div class="hint" style="color:#ffd27a;font-weight:700;font-size:17px">'
+                 '⚠ A rede do PC mudou. Use este novo link no celular.</div>'
+                 if request.args.get("rede") == "mudou" else "")
+        html = (html.replace("__AVISO__", aviso).replace("__QR__", img_tag).replace("__URL__", url)
+                    .replace("__EXTRAS__", extras).replace("__WAN__", wan_url))
         return html
     except Exception as e:
         return f"Erro: {e}", 500
@@ -4252,8 +4528,46 @@ def api_bypass():
     return jsonify(saida="BYPASS aplicado.")
 
 
-def abrir_navegador():
-    time.sleep(1); webbrowser.open("http://127.0.0.1:5000")
+def _porta_em_uso(porta=5000):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.settimeout(0.5)
+    try: return s.connect_ex(("127.0.0.1", porta)) == 0
+    except Exception: return False
+    finally: s.close()
+
+
+def abrir_navegador(sufixo=""):
+    """Espera o servidor subir e abre a página do QR (ela leva à criação do PIN se for a 1ª vez)."""
+    for _ in range(40):
+        if _porta_em_uso(): break
+        time.sleep(0.25)
+    webbrowser.open("http://127.0.0.1:5000/qr_para_pc" + sufixo)
+
+
+def _rede_mudou(ultimo, candidato, atual):
+    """Decide se a rede mudou de verdade. Devolve (novo_ultimo, novo_candidato, disparar).
+    Ignora 'sem rede' (127.0.0.1) e exige 2 leituras seguidas iguais, pra não reagir a oscilações."""
+    if atual == "127.0.0.1": return ultimo, candidato, False
+    if atual == ultimo: return ultimo, None, False
+    if candidato != atual: return ultimo, atual, False
+    return atual, None, True
+
+
+def _loop_rede():
+    """Se o IP da LAN mudar (outro modem, outro Wi-Fi, DHCP), abre a página do QR no PC com o novo link."""
+    ultimo = ESTADO.get("ultimo_ip"); candidato = None; ultima_abertura = 0.0
+    while True:
+        time.sleep(15)
+        try:
+            atual = ips_lan(fresh=True)[0]
+            ultimo, candidato, disparar = _rede_mudou(ultimo, candidato, atual)
+            if disparar:
+                ESTADO["ultimo_ip"] = ultimo; salvar_config()
+                log_seguro("Rede mudou:", ultimo)
+                if pin_definido() and time.time() - ultima_abertura > 60:
+                    ultima_abertura = time.time()
+                    webbrowser.open("http://127.0.0.1:5000/qr_para_pc?rede=mudou")
+        except Exception as e:
+            log_seguro("erro loop rede:", e)
 
 
 def _pagina_integridade_falhou():
@@ -4296,6 +4610,10 @@ if __name__ == "__main__":
     if os.name != "nt":
         log_seguro("Feito para Windows."); sys.exit(1)
 
+    if _porta_em_uso():
+        # já está rodando: abrir o .exe de novo só mostra o link/QR e sai
+        webbrowser.open("http://127.0.0.1:5000/qr_para_pc"); sys.exit(0)
+
     if not INTEGRIDADE["ok"]:
         esconder_console()
         app_diag = Flask("RotaControlDiag")
@@ -4318,11 +4636,19 @@ if __name__ == "__main__":
     if ESTADO.get("modo") == "wan":
         threading.Thread(target=iniciar_tunel_async, daemon=True).start()
     log_seguro("RotaControl:", "http://127.0.0.1:5000")
-    log_seguro("LAN:", f"http://{ip_local()}:5000")
+    for _ip in ips_lan(): log_seguro("LAN:", f"http://{_ip}:5000")
     if INTEGRIDADE["opcionais_faltando"]:
         log_seguro("Aviso — features opcionais limitadas:")
         for o in INTEGRIDADE["opcionais_faltando"]:
             log_seguro(f"  - {o['nome']} ({o['pacote']})")
-    if ABRIR_NAVEGADOR_NO_PC:
-        threading.Thread(target=abrir_navegador, daemon=True).start()
+    # IP da LAN mudou desde a última vez que o app rodou? (outro modem / outra rede)
+    _atual = ips_lan(fresh=True)[0]; _ultimo = ESTADO.get("ultimo_ip")
+    _mudou = bool(pin_definido() and _ultimo and _atual != "127.0.0.1" and _atual != _ultimo)
+    if _atual != "127.0.0.1" and _atual != _ultimo:
+        ESTADO["ultimo_ip"] = _atual; salvar_config()
+    threading.Thread(target=_loop_rede, daemon=True).start()
+
+    # Abre o navegador no PC só na primeira execução (sem PIN), se a rede mudou, com --qr, ou se a flag estiver ligada.
+    if (not pin_definido()) or _mudou or ("--qr" in sys.argv) or ABRIR_NAVEGADOR_NO_PC:
+        threading.Thread(target=abrir_navegador, args=("?rede=mudou" if _mudou else "",), daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
