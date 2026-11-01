@@ -1514,6 +1514,18 @@ body.vidro .btn{background:linear-gradient(160deg,rgba(255,255,255,.18),rgba(255
 body.vidro .btn.acc,body.vidro .btn.on{background:linear-gradient(160deg,rgba(160,60,255,.6),rgba(110,30,200,.38));border-color:rgba(200,150,255,.5)}
 body.vidro nav button.on{background:rgba(255,255,255,.14);border-radius:10px}
 body.vidro.temFundo header,body.vidro.temFundo nav{background:rgba(255,255,255,.07)}
+.telaWrap.fsOn{position:fixed;inset:0;z-index:90;border:0;border-radius:0;display:flex;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none;background:#000}
+.fsOn #tela{width:auto;height:auto;max-width:100%;max-height:100%;transform-origin:0 0;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}
+#fsBar{display:none}
+.fsOn #fsBar{display:flex;position:absolute;top:calc(8px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));gap:8px;z-index:3}
+#fsBar button{width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(20,20,28,.65);color:#fff;font-size:17px;opacity:.65;padding:0}
+#fsKb{position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0;z-index:-1}
+#fsDot{display:none;position:fixed;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid #fff;background:rgba(160,60,255,.35);pointer-events:none;z-index:95}
+#fsDot.on{display:block;animation:fsPing .45s ease-out forwards}
+#fsDot.seg{animation:none;opacity:.8}
+@keyframes fsPing{from{transform:scale(.5);opacity:1}to{transform:scale(1.5);opacity:0}}
+body.fsLock{overflow:hidden}
+.audioItem{display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left}
 #fundoCanvas{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .6s}
 #fundoCanvas.on{opacity:1}
 body.temFundo{background:transparent}
@@ -1679,6 +1691,13 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       </div>
     </div>
     <div class="panel">
+      <h2>Saída de áudio</h2>
+      <div class="hint" id="audioAtual">—</div>
+      <button class="btn acc block" style="margin-top:8px" onclick="audioAlternar()">🔁 Alternar saída (caixa ⇄ fone)</button>
+      <div class="grid" id="audioLista" style="margin-top:10px;gap:8px"></div>
+      <div class="hint" id="audioDica"></div>
+    </div>
+    <div class="panel">
       <h2>Volume do sistema</h2>
       <div class="volRow">
         <input type="range" id="volMestre" min="0" max="100" step="1" value="50" aria-label="Volume do PC">
@@ -1732,10 +1751,14 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
         <button class="btn ghost" onclick="atualizarAgora()">Atualizar agora</button>
         <button class="btn acc" id="btnAuto" onclick="toggleAuto()">Ver ao vivo</button>
       </div>
-      <div class="telaWrap">
-        <img id="tela" alt="">
+      <div class="telaWrap" id="telaWrap">
+        <img id="tela" alt="" draggable="false">
         <div id="telaOff" class="telaOff">Tela desligada — clique em "Ver ao vivo"</div>
+        <div id="fsBar"><button onclick="fsTeclado()" title="Teclado">⌨</button><button onclick="fsZoomReset()" title="Zoom 1x">1×</button><button onclick="fsSair()" title="Sair">✕</button></div>
+        <input id="fsKb" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" aria-hidden="true">
+        <div id="fsDot"></div>
       </div>
+      <button class="btn acc block" style="margin-top:10px" onclick="fsEntrar()">⛶ Tela cheia com toque</button>
       <video id="pipVideo" muted playsinline style="display:none"></video>
       <canvas id="pipCanvas" style="display:none"></canvas>
       <div class="grid g2" style="margin-top:10px">
@@ -2253,6 +2276,128 @@ async function medirLink(){
   LINK.h.push(v);if(LINK.h.length>8)LINK.h.shift();mostrarQualidade("stLinkQ","stLinkQInfo",qualidadeDe(LINK.h));LINK.busy=false;
 }
 
+/* ===== SAÍDA DE ÁUDIO ===== */
+async function audioCarregar(){
+  const box=$("#audioLista");if(!box)return;const j=await get("/api/audio_saidas");
+  box.innerHTML="";
+  if(j.erro){$("#audioAtual").textContent="Indisponível";$("#audioDica").textContent=j.erro.indexOf("pycaw")>=0?"Precisa do pycaw instalado no PC.":("Erro: "+j.erro);return}
+  $("#audioDica").textContent="";
+  const at=(j.lista||[]).find(x=>x.atual);$("#audioAtual").textContent="Tocando em: "+(at?at.nome:"—");
+  (j.lista||[]).forEach(x=>{const b=document.createElement("button");b.className="btn audioItem"+(x.atual?" on":"");b.innerHTML=`<span>${esc(x.nome)}</span><span>${x.atual?"✔":""}</span>`;b.onclick=()=>audioTrocar(x.id);box.appendChild(b)});
+}
+async function audioTrocar(id){const r=await post("/api/audio_saida",{id});if(r.erro){toast("Erro: "+r.erro);return}toast("Saída: "+r.nome,2200);setTimeout(()=>{audioCarregar();volCarregar()},500)}
+function audioAlternar(){audioTrocar("proximo")}
+
+/* ===== TELA CHEIA + TOQUE DIRETO ===== */
+const FS={on:false,z:1,tx:0,ty:0,q:[],busy:false,g:null,lp:null,lastMove:0,lastTap:0,lastTapX:0,lastTapY:0,kb:false,dotT:null};
+function fsSend(o){const q=FS.q;if(o.acao==="move"&&q.length&&q[q.length-1].acao==="move")q[q.length-1]=o;else q.push(o);if(!FS.busy)fsDrain()}
+async function fsDrain(){FS.busy=true;while(FS.q.length){const o=FS.q.shift();try{const r=await fetch("/api/mouse_abs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(o)});if(r.status===401){FS.q=[];mostrarLock();break}}catch(e){await new Promise(r=>setTimeout(r,200))}}FS.busy=false}
+function fsPonto(cx,cy,prender){
+  const r=$("#tela").getBoundingClientRect();if(!r.width||!r.height)return null;
+  let fx=(cx-r.left)/r.width,fy=(cy-r.top)/r.height;
+  if(fx<0||fx>1||fy<0||fy>1){if(!prender)return null;fx=Math.max(0,Math.min(1,fx));fy=Math.max(0,Math.min(1,fy))}
+  return{fx,fy,mon:ESTADO_MONITOR_ATUAL};
+}
+function fsDot(x,y,fixo){const d=$("#fsDot");if(!d)return;d.style.left=x+"px";d.style.top=y+"px";d.classList.remove("on","seg");void d.offsetWidth;d.classList.add(fixo?"seg":"on");if(fixo)d.classList.add("on");clearTimeout(FS.dotT);if(!fixo)FS.dotT=setTimeout(()=>d.classList.remove("on"),500)}
+function fsDotOff(){const d=$("#fsDot");if(d)d.classList.remove("on","seg")}
+function fsAplicar(){const im=$("#tela");if(im)im.style.transform=FS.z<=1.01?"":("translate("+FS.tx+"px,"+FS.ty+"px) scale("+FS.z+")")}
+function fsZoomReset(){FS.z=1;FS.tx=0;FS.ty=0;fsAplicar()}
+async function fsEntrar(){
+  if(FS.on)return;if(!telaAtiva)toggleAuto();
+  const w=$("#telaWrap");FS.on=true;w.classList.add("fsOn");document.body.classList.add("fsLock");
+  try{const f=w.requestFullscreen||w.webkitRequestFullscreen;if(f)await f.call(w)}catch(e){}
+  try{await screen.orientation.lock("landscape")}catch(e){}
+  fsZoomReset();toast("1 toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar ou zoom",4500);
+}
+function fsSair(){
+  if(!FS.on)return;FS.on=false;clearTimeout(FS.lp);
+  if(FS.g&&FS.g.mode==="arrasta"&&FS.g.ult)fsSend({...FS.g.ult,acao:"up"});FS.g=null;fsDotOff();
+  $("#telaWrap").classList.remove("fsOn");document.body.classList.remove("fsLock");
+  try{if(document.fullscreenElement||document.webkitFullscreenElement)(document.exitFullscreen||document.webkitExitFullscreen).call(document)}catch(e){}
+  try{screen.orientation.unlock()}catch(e){}
+  fsZoomReset();const k=$("#fsKb");if(k)k.blur();FS.kb=false;
+}
+["fullscreenchange","webkitfullscreenchange"].forEach(ev=>document.addEventListener(ev,()=>{if(FS.on&&!document.fullscreenElement&&!document.webkitFullscreenElement)fsSair()}));
+function fsTeclado(){const k=$("#fsKb");if(!k)return;if(FS.kb){k.blur();FS.kb=false;return}FS.kb=true;k.value="​​";k.focus()}
+(function(){
+  const k=document.getElementById("fsKb");if(!k)return;
+  k.addEventListener("input",e=>{
+    const t=e.inputType||"";
+    if(t==="deleteContentBackward")enviarChar("backspace");
+    else if(t==="insertLineBreak"||t==="insertParagraph")enviarChar("enter");
+    else if(e.data){for(const ch of e.data){if(ch===" ")enviarChar("space");else enviarChar(ch)}}
+    k.value="​​";
+  });
+  k.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();enviarChar("enter")}else if(e.key==="Tab"){e.preventDefault();enviarChar("tab")}else if(e.key==="Escape"){e.preventDefault();enviarChar("esc")}});
+  k.addEventListener("blur",()=>{FS.kb=false});
+})();
+function fsDist(t){return Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY)}
+function fsCentro(t){return{x:(t[0].clientX+t[1].clientX)/2,y:(t[0].clientY+t[1].clientY)/2}}
+function fsStart(ev){
+  if(!FS.on)return;if(ev.target.closest&&ev.target.closest("#fsBar"))return;
+  ev.preventDefault();const t=ev.touches,n=t.length;clearTimeout(FS.lp);
+  if(n===1){
+    const g=FS.g={mode:"um",x0:t[0].clientX,y0:t[0].clientY,t0:Date.now(),ult:null};
+    FS.lp=setTimeout(()=>{if(FS.g===g&&g.mode==="um"){g.mode="feito";const p=fsPonto(g.x0,g.y0);if(p){fsSend({...p,acao:"right"});fsDot(g.x0,g.y0);if(navigator.vibrate)navigator.vibrate(25)}}},550);
+  }else if(n>=2){
+    if(FS.g&&FS.g.mode==="arrasta"&&FS.g.ult){fsSend({...FS.g.ult,acao:"up"});fsDotOff()}
+    const c=fsCentro(t);FS.g={mode:"dois",d:fsDist(t),cx:c.x,cy:c.y,t0:Date.now(),decidido:null,movido:false};
+  }
+}
+function fsMove(ev){
+  if(!FS.on||!FS.g)return;if(ev.target.closest&&ev.target.closest("#fsBar"))return;
+  ev.preventDefault();const t=ev.touches,g=FS.g;
+  if(g.mode==="um"&&t.length===1){
+    const x=t[0].clientX,y=t[0].clientY;
+    if(Math.hypot(x-g.x0,y-g.y0)>10){
+      clearTimeout(FS.lp);const p0=fsPonto(g.x0,g.y0);
+      if(!p0){g.mode="feito";return}
+      fsSend({...p0,acao:"move"});fsSend({...p0,acao:"down"});g.mode="arrasta";g.ult=p0;
+    }
+  }
+  if(g.mode==="arrasta"&&t.length===1){
+    const x=t[0].clientX,y=t[0].clientY;fsDot(x,y,true);
+    const agora=Date.now();if(agora-FS.lastMove<35)return;FS.lastMove=agora;
+    const p=fsPonto(x,y,true);if(p){g.ult=p;fsSend({...p,acao:"move"})}
+  }else if(g.mode==="dois"&&t.length>=2){
+    const d=fsDist(t),c=fsCentro(t);
+    if(!g.decidido){
+      if(Math.abs(d-g.d)>14)g.decidido="zoom";else if(Math.abs(c.y-g.cy)>10)g.decidido="rola";
+      if(g.decidido){g.movido=true}
+    }
+    if(g.decidido==="zoom"){
+      const im=$("#tela"),r=im.getBoundingClientRect();
+      let nz=Math.max(1,Math.min(6,FS.z*(d/g.d)));const k=nz/FS.z;
+      FS.tx+=(c.x-r.left)*(1-k)+(c.x-g.cx);FS.ty+=(c.y-r.top)*(1-k)+(c.y-g.cy);FS.z=nz;
+      if(nz<=1.01){FS.tx=0;FS.ty=0}
+      fsAplicar();g.d=d;g.cx=c.x;g.cy=c.y;
+    }else if(g.decidido==="rola"){
+      const dy=g.cy-c.y;if(Math.abs(dy)>2){mouseScroll(Math.round(dy*4));g.cy=c.y}g.cx=c.x;
+    }
+  }
+}
+function fsEnd(ev){
+  if(!FS.on||!FS.g)return;if(ev.target.closest&&ev.target.closest("#fsBar"))return;
+  ev.preventDefault();const g=FS.g,resta=ev.touches.length;clearTimeout(FS.lp);
+  if(resta>0){if(g.mode==="dois")g.mode="feito";return}
+  if(g.mode==="um"){
+    const p=fsPonto(g.x0,g.y0);
+    if(p){const agora=Date.now();fsSend({...p,acao:"click"});fsDot(g.x0,g.y0);if(navigator.vibrate)navigator.vibrate(8);FS.lastTap=agora}
+  }else if(g.mode==="arrasta"){
+    if(g.ult)fsSend({...g.ult,acao:"up"});fsDotOff();
+  }else if(g.mode==="dois"&&!g.decidido&&Date.now()-g.t0<350){
+    const p=fsPonto(g.cx,g.cy);if(p){fsSend({...p,acao:"right"});fsDot(g.cx,g.cy)}
+  }
+  FS.g=null;
+}
+(function(){
+  const w=document.getElementById("telaWrap");if(!w)return;
+  w.addEventListener("touchstart",fsStart,{passive:false});
+  w.addEventListener("touchmove",fsMove,{passive:false});
+  w.addEventListener("touchend",fsEnd,{passive:false});
+  w.addEventListener("touchcancel",fsEnd,{passive:false});
+})();
+
 /* ===== VOLUME DO PC (barra) ===== */
 const VOL={drag:false,envio:null,ultimo:0,timer:null,solto:null};
 async function volCarregar(){
@@ -2392,9 +2537,11 @@ const TUT=[
 {t:"🎵 Mídia",h:`<h4>O que tem</h4><ul>
 <li><b>Tocando agora</b> — título e capa do que está tocando.</li>
 <li><b>Controles</b> — anterior, play/pause, próxima.</li>
+<li><b>Saída de áudio</b> — mostra onde o som está saindo e troca entre caixa de som e fone.</li>
 <li><b>Volume do sistema</b> — barra arrastável e botões (menos, mudo, mais).</li>
 <li><b>Volume por app</b> — cada programa com seu próprio volume.</li></ul>
 <h4>Como usar</h4><ol>
+<li>Em <b>Saída de áudio</b>, toque em <b>🔁 Alternar saída</b> pra ir pro próximo dispositivo, ou toque direto no que quiser. Só aparecem dispositivos conectados.</li>
 <li><b>Toque na porcentagem</b> pra digitar o valor exato. Ou <b>arraste a barra</b> pro volume que quiser: o PC acompanha na hora. Mexer na barra tira do mudo.</li>
 <li>A barra mostra o volume atual do PC e se atualiza sozinha quando você muda por outro lugar.</li>
 <li>Em <b>Volume por app</b>, toque em <b>Atualizar lista</b> e ajuste cada programa que estiver com som aberto.</li></ol>
@@ -2413,6 +2560,7 @@ const TUT=[
 {t:"🖥 Tela",h:`<h4>O que tem</h4><ul>
 <li><b>Ver ao vivo</b> — mostra a tela do PC em tempo real. Se tiver mais de um monitor, escolha qual.</li>
 <li><b>Qualidade da imagem</b> — Auto, Eco, Normal, Alta e Máx.</li>
+<li><b>Tela cheia com toque</b> — a tela ao vivo ocupa o celular inteiro e você controla o PC tocando direto nela.</li>
 <li><b>Picture-in-Picture (PiP)</b> — janelinha flutuante com a tela.</li>
 <li><b>Print, Copiar print, Baixar print</b>.</li></ul>
 <h4>Qualidade</h4><ul>
@@ -2425,6 +2573,13 @@ const TUT=[
 <li>Toque em <b>Ver ao vivo</b>. A tela só roda enquanto você está nesta aba (economiza internet e bateria).</li>
 <li>Pra ver a tela em cima de outros apps: toque em <b>Picture-in-Picture</b>. Se pedir, toque mais uma vez.</li>
 <li><b>Print</b> tira uma foto da tela; <b>Copiar print</b> manda pra área de transferência; <b>Baixar print</b> salva no celular.</li></ol>
+<h4>Tela cheia com toque</h4><ol>
+<li>Toque em <b>⛶ Tela cheia com toque</b>. No Android ela vira tela cheia de verdade; no iPhone o app cobre a tela toda.</li>
+<li><b>Um toque</b> = clique no ponto tocado. <b>Segurar o dedo</b> = clique direito. <b>Dois dedos parados e rápidos</b> = clique direito também.</li>
+<li><b>Tocar e arrastar</b> = arrasta (janelas, seleção de texto, barras).</li>
+<li><b>Dois dedos pra cima/baixo</b> = rolar. <b>Pinça</b> = zoom na imagem (dois dedos movem a imagem ampliada).</li>
+<li>Botões no canto: <b>⌨</b> abre o teclado do celular (o que você digita vai pro PC), <b>1×</b> volta o zoom, <b>✕</b> sai.</li></ol>
+<p class="hint">Dica: gire o celular pra horizontal. Se o toque cair no lugar errado, confira se o monitor escolhido na lista é o que aparece na imagem.</p>
 <p class="hint">PiP no iPhone: funciona no Safari, mas <b>não</b> no app adicionado à tela de início (limitação da Apple). No PC (Chrome/Edge) abre uma janela flutuante.</p>`},
 
 {t:"📁 Arquivos",h:`<h4>O que tem</h4><ul>
@@ -2529,7 +2684,7 @@ function show(nome){
   if(nome==="extra"){carregarTimers()}
   if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos();iniciarPollTopProcs()}else{pararPollStatus();pararPollTopProcs()}
   if(nome==="mouse")initTouchpad();
-  if(nome==="midia"){carregarMixer();iniciarPollMixer();iniciarPollSmtc();volIniciarPoll()}else{pararPollMixer();pararPollSmtc();volPararPoll()}
+  if(nome==="midia"){audioCarregar();carregarMixer();iniciarPollMixer();iniciarPollSmtc();volIniciarPoll()}else{pararPollMixer();pararPollSmtc();volPararPoll()}
   if(nome==="texto"){carregarClipHist();iniciarPollClipHist();carregarTeclasPersistentes();carregarPerfis()}else{pararPollClipHist()}
 }
 $$("nav button").forEach(b=>b.onclick=()=>show(b.dataset.t));
@@ -3574,6 +3729,52 @@ def api_mouse_drag():
     if tipo == "drag_down": u.mouse_event(0x0002,0,0,0,0)
     elif tipo == "drag_up": u.mouse_event(0x0004,0,0,0,0)
     return jsonify(ok=True)
+
+
+# ============ MOUSE POR POSIÇÃO (toque direto na tela ao vivo) ============
+_MON_CACHE = {"t": 0, "v": None}
+def _retangulo_monitor(idx):
+    """(esquerda, topo, largura, altura) do monitor que aparece na tela ao vivo (0 = todas juntas)."""
+    now = time.time()
+    if TEM_MSS and (_MON_CACHE["v"] is None or now - _MON_CACHE["t"] > 5):
+        try:
+            with _mss.mss() as sct: _MON_CACHE["v"] = [dict(m) for m in sct.monitors]
+            _MON_CACHE["t"] = now
+        except Exception: _MON_CACHE["v"] = None
+    mons = _MON_CACHE["v"]
+    if mons:
+        if idx < 0 or idx >= len(mons): idx = 0
+        m = mons[idx]; return int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"])
+    u = ctypes.windll.user32
+    if idx == 0: return u.GetSystemMetrics(76), u.GetSystemMetrics(77), u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+    return 0, 0, u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+
+
+@app.route("/api/mouse_abs", methods=["POST"])
+def api_mouse_abs():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True, silent=True) or {}
+    acao = d.get("acao", "move")
+    if acao not in ("move", "down", "up", "click", "right", "double"): return jsonify(erro="acao invalida")
+    try:
+        fx = min(1.0, max(0.0, float(d.get("fx", 0)))); fy = min(1.0, max(0.0, float(d.get("fy", 0))))
+        mon = int(d.get("mon", ESTADO.get("monitor_escolhido", 0)))
+    except Exception: return jsonify(erro="parametros invalidos")
+    try:
+        u = ctypes.windll.user32
+        l, t, w, h = _retangulo_monitor(mon)
+        x = int(l + fx * (max(w, 1) - 1)); y = int(t + fy * (max(h, 1) - 1))
+        u.SetCursorPos(x, y)
+        LD=0x0002; LU=0x0004; RD=0x0008; RU=0x0010
+        if acao == "down": u.mouse_event(LD,0,0,0,0)
+        elif acao == "up": u.mouse_event(LU,0,0,0,0)
+        elif acao == "click": u.mouse_event(LD,0,0,0,0); u.mouse_event(LU,0,0,0,0)
+        elif acao == "right": u.mouse_event(RD,0,0,0,0); u.mouse_event(RU,0,0,0,0)
+        elif acao == "double":
+            for _ in range(2): u.mouse_event(LD,0,0,0,0); u.mouse_event(LU,0,0,0,0); time.sleep(0.04)
+        return jsonify(ok=True, x=x, y=y)
+    except Exception as e: return jsonify(erro=str(e))
 
 
 @app.route("/api/monitor", methods=["POST"])
@@ -4910,6 +5111,73 @@ def api_volume_mestre_set():
             if v > 0 and ev.GetMute(): ev.SetMute(0, None)       # mexer na barra tira do mudo
         if d.get("mudo") is not None: ev.SetMute(1 if d.get("mudo") else 0, None)
         return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
+
+
+# ============ SAÍDA DE ÁUDIO (trocar fone / caixa de som) ============
+def _audio_saidas_lista():
+    if not PYCAW_OK: raise Exception("pycaw nao instalado")
+    _com_init()
+    atual = None
+    try: atual = str(AudioUtilities.GetSpeakers().GetId())
+    except Exception: pass
+    lista = []
+    for dv in AudioUtilities.GetAllDevices():
+        did = str(getattr(dv, "id", "") or "")
+        if not did.startswith("{0.0.0."): continue            # só dispositivos de saída (reprodução)
+        st = getattr(dv, "state", None)
+        try: ativo = (st is None) or int(getattr(st, "value", st)) == 1
+        except Exception: ativo = "Active" in str(st)
+        if not ativo: continue
+        nome = str(getattr(dv, "FriendlyName", "") or did)
+        lista.append({"id": did, "nome": nome, "atual": did == atual})
+    return lista
+
+
+_POLICY = {}
+def _audio_definir_padrao(did):
+    """Define a saída padrão (todas as funções) via IPolicyConfig — interface interna do Windows."""
+    import ctypes as _ct
+    from comtypes import GUID, COMMETHOD, HRESULT, IUnknown
+    if "cls" not in _POLICY:
+        vazios = tuple(COMMETHOD([], HRESULT, n) for n in (
+            "GetMixFormat", "GetDeviceFormat", "ResetDeviceFormat", "SetDeviceFormat", "GetProcessingPeriod",
+            "SetProcessingPeriod", "GetShareMode", "SetShareMode", "GetPropertyValue", "SetPropertyValue"))
+        setdef = (COMMETHOD([], HRESULT, "SetDefaultEndpoint", (["in"], _ct.c_wchar_p, "wszDeviceId"), (["in"], _ct.c_int, "eRole")),)
+        class IPolicyConfig(IUnknown):
+            _iid_ = GUID("{F8679F50-850A-41CF-9C72-430F290290C8}")
+            _methods_ = vazios + setdef
+        _POLICY["cls"] = IPolicyConfig
+    _com_init()
+    pc = comtypes.CoCreateInstance(GUID("{870AF99C-171D-4F9E-AF0D-E63DF40C2BC9}"), _POLICY["cls"], CLSCTX_ALL)
+    for role in (0, 1, 2): pc.SetDefaultEndpoint(did, role)    # console, multimídia, comunicações
+
+
+@app.route("/api/audio_saidas")
+def api_audio_saidas():
+    b = exigir_auth()
+    if b: return b
+    try: return jsonify(lista=_audio_saidas_lista())
+    except Exception as e: return jsonify(erro=str(e), lista=[])
+
+
+@app.route("/api/audio_saida", methods=["POST"])
+def api_audio_saida():
+    b = exigir_auth()
+    if b: return b
+    d = request.get_json(force=True, silent=True) or {}
+    alvo = str(d.get("id", ""))
+    try:
+        lista = _audio_saidas_lista()
+        if not lista: return jsonify(erro="nenhuma saida de audio ativa")
+        if alvo == "proximo":
+            i = next((k for k, x in enumerate(lista) if x["atual"]), -1)
+            esc = lista[(i + 1) % len(lista)]
+        else:
+            esc = next((x for x in lista if x["id"] == alvo), None)
+            if not esc: return jsonify(erro="saida nao encontrada")
+        if not esc["atual"]: _audio_definir_padrao(esc["id"])
+        return jsonify(ok=True, nome=esc["nome"], id=esc["id"])
     except Exception as e: return jsonify(erro=str(e))
 
 
