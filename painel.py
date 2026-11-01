@@ -1,13 +1,14 @@
 """
 RotaControl v2.15
-pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests
+pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests PyAudioWPatch
 Compilar:
-    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
+    pyinstaller --onefile --noconsole --name RotaControl --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk --collect-all pyaudiowpatch painel.py
 """
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv, asyncio
 import logging, tempfile, threading, subprocess, webbrowser, urllib.request
 from collections import deque
-import hashlib, hmac, ipaddress, zipfile
+import hashlib, hmac, ipaddress, zipfile, queue
+from array import array
 from urllib.parse import quote as _urlquote
 from datetime import timedelta
 from urllib.parse import urlparse
@@ -26,6 +27,8 @@ except Exception:
 
 try: from PIL import ImageGrab
 except Exception: ImageGrab = None
+try: import pyaudiowpatch as _pyaw
+except Exception: _pyaw = None
 try:
     from PIL import Image as _PIL, ImageOps as _PILOps
 except Exception:
@@ -86,6 +89,7 @@ def _checar_integridade():
         ("qrcode",   "Gerar QR Code",                 "qrcode[pil]"),
         ("requests", "Assistente IA (Groq)",          "requests"),
         ("winsdk",   "Tocando agora (título/capa)",   "winsdk"),
+        ("pyaudiowpatch", "Som do PC no celular",      "PyAudioWPatch"),
     ]
     import importlib
     falt_obr = []
@@ -1125,6 +1129,52 @@ def _clip_set_imagem_png(png_bytes):
         except Exception: pass
 
 
+_CLIP_IMG = {"seq": -1, "n": 0, "dados": {}, "hash": None}   # id -> (bytes, mimetype, largura, altura)
+_CLIP_IMG_MAX = 16 * 1024 * 1024
+
+def _clip_hist_add(item):
+    CLIP_HIST.appendleft(item)
+    vivos = {i.get("id") for i in CLIP_HIST if i.get("tipo") == "img"}
+    for k in list(_CLIP_IMG["dados"]):
+        if k not in vivos: _CLIP_IMG["dados"].pop(k, None)
+
+
+def _clip_imagem():
+    """Imagem que está na área de transferência do PC (PIL.Image) ou None."""
+    try:
+        if ImageGrab is None or not _user32.IsClipboardFormatAvailable(CF_DIB): return None
+        im = ImageGrab.grabclipboard()
+        return im if (hasattr(im, "size") and hasattr(im, "save")) else None     # lista = arquivos copiados: ignora
+    except Exception: return None
+
+
+def _clip_capturar():
+    """Registra no histórico o que foi copiado agora (texto ou imagem). Só olha imagem quando o clipboard mudou."""
+    t = _clip_get()
+    if t and t.strip():
+        if t != CLIP_ULTIMO["txt"] or not CLIP_HIST:
+            CLIP_ULTIMO["txt"] = t
+            if not CLIP_HIST or CLIP_HIST[0].get("texto") != t:
+                _clip_hist_add({"texto": t[:500], "hora": time.time()})
+        return
+    seq = _user32.GetClipboardSequenceNumber()
+    if seq == _CLIP_IMG["seq"]: return
+    _CLIP_IMG["seq"] = seq
+    im = _clip_imagem()
+    if im is None: return
+    try:
+        h = hashlib.md5(im.convert("RGB").tobytes()).hexdigest()
+        if h == _CLIP_IMG["hash"]: return
+        _CLIP_IMG["hash"] = h
+        buf = io.BytesIO(); mime = "image/png"; im.save(buf, "PNG")
+        if buf.tell() > _CLIP_IMG_MAX:
+            buf = io.BytesIO(); im.convert("RGB").save(buf, "JPEG", quality=90); mime = "image/jpeg"
+        _CLIP_IMG["n"] += 1; i = _CLIP_IMG["n"]
+        _CLIP_IMG["dados"][i] = (buf.getvalue(), mime, im.size[0], im.size[1])
+        _clip_hist_add({"tipo": "img", "id": i, "w": im.size[0], "h": im.size[1], "texto": "", "hora": time.time()})
+    except Exception: pass
+
+
 def _loop_clipboard():
     """Polling de clipboard. Fica mais lento (2.5s) quando a aba Texto não está aberta."""
     seq_ant = 0
@@ -1134,11 +1184,7 @@ def _loop_clipboard():
             seq = _user32.GetClipboardSequenceNumber()
             if seq != seq_ant:
                 seq_ant = seq
-                t = _clip_get()
-                if t and t.strip():
-                    CLIP_ULTIMO["txt"] = t
-                    if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
-                        CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
+                _clip_capturar()
         except Exception: pass
         time.sleep(0.8 if ativo else 2.5)
 
@@ -1670,8 +1716,10 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
 
     <div class="panel">
       <h2>Pegar do PC</h2>
-      <button class="btn acc block" onclick="pegarClipboard()">Ler área de transferência</button>
+      <button class="btn acc block" id="btnLerClip" onclick="clipBtnClique()">Ler área de transferência</button>
+      <div class="hint" id="clipAutoInfo" style="margin-top:6px">Segure o botão por 3 segundos pra ligar/desligar a leitura automática.</div>
       <textarea id="txtRec" style="margin-top:10px" readonly placeholder="(vazio)"></textarea>
+      <div id="recImgBox" class="hid"><img id="recImg" class="prevBig" alt=""><div class="grid g2"><a class="btn ghost" id="recImgBaixar" style="text-align:center;text-decoration:none">⬇ Baixar</a><button class="btn ghost" id="recImgUsar">Copiar de novo no PC</button></div></div>
       <div class="grid g2" style="margin-top:6px">
         <button class="btn ghost" onclick="copiarTextoRec()">Copiar (celular)</button>
         <button class="btn ghost" onclick="limparCampo('txtRec')">Limpar</button>
@@ -1769,11 +1817,12 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       <div class="telaWrap" id="telaWrap">
         <img id="tela" alt="" draggable="false">
         <div id="telaOff" class="telaOff">Tela desligada — clique em "Ver ao vivo"</div>
-        <div id="fsBar"><button onclick="fsTeclado()" title="Teclado">⌨</button><button onclick="fsZoomReset()" title="Zoom 1x">1×</button><button onclick="fsSair()" title="Sair">✕</button></div>
+        <div id="fsBar"><button onclick="somToggle()" id="fsSom" title="Som do PC">🔇</button><button onclick="fsTeclado()" title="Teclado">⌨</button><button onclick="fsZoomReset()" title="Zoom 1x">1×</button><button onclick="fsSair()" title="Sair">✕</button></div>
         <input id="fsKb" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" aria-hidden="true">
         <div id="fsDot"></div>
       </div>
       <button class="btn acc block" style="margin-top:10px" onclick="fsEntrar()">⛶ Tela cheia com toque</button>
+      <button class="btn ghost block" id="btnSom" style="margin-top:8px" onclick="somToggle()">🔇 Som do PC no celular: DESLIGADO</button>
       <video id="pipVideo" muted playsinline style="display:none"></video>
       <canvas id="pipCanvas" style="display:none"></canvas>
       <div class="grid g2" style="margin-top:10px">
@@ -2028,6 +2077,8 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       <button class="btn ghost block" id="btnTema" onclick="toggleTema()">🎨 Ativar fundo animado</button>
       <div class="hint" id="temaComboHint" style="margin-top:8px"></div>
       <button class="btn ghost block" id="btnVidro" style="margin-top:10px" onclick="toggleVidro()">🪟 Ativar efeito vidro</button>
+      <button class="btn ghost block" id="btnWake" style="margin-top:10px" onclick="toggleWake()">💡 Manter tela ligada</button>
+      <div class="hint" style="margin-top:6px">Com "SIM", a tela deste aparelho não apaga enquanto o painel estiver aberto e visível (gasta mais bateria). Vale só pra este aparelho.</div>
       <button class="btn ghost block" style="margin-top:10px" onclick="ordRestaurar()">↩ Restaurar ordem das abas e categorias</button>
       <div class="hint" style="margin-top:8px">Vidro só nas barras e botões. Dá pra combinar com o fundo animado. Vale só pra este aparelho; se ficar pesado no PC, desligue.</div>
     </div>
@@ -2198,6 +2249,79 @@ async function toggleTema(){
   toast(novo?"Fundo animado ativado":"Fundo animado desativado");
 }
 /* ===== FIM TEMAS ===== */
+
+/* ===== SOM DO PC NO CELULAR ===== */
+const SOM={on:false,ctx:null,next:0,ctrl:null,tent:0};
+function somAtualizarBtn(){
+  const b=$("#btnSom"),f=$("#fsSom");
+  if(b){b.textContent=SOM.on?"🔊 Som do PC no celular: LIGADO":"🔇 Som do PC no celular: DESLIGADO";b.classList.toggle("ghost",!SOM.on);b.classList.toggle("on",SOM.on)}
+  if(f)f.textContent=SOM.on?"🔊":"🔇";
+}
+async function somToggle(){
+  if(SOM.on){somParar();return}
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC){toast("Este navegador não toca o som ao vivo");return}
+  try{
+    if(!SOM.ctx)SOM.ctx=new AC({latencyHint:"interactive"});
+    await SOM.ctx.resume();
+    const b=SOM.ctx.createBuffer(1,1,22050),sr=SOM.ctx.createBufferSource();sr.buffer=b;sr.connect(SOM.ctx.destination);sr.start(0);   // destrava o áudio no iPhone
+  }catch(e){}
+  SOM.on=true;SOM.tent=0;somAtualizarBtn();toast("Som ligado — use o volume do celular",2500);somConectar();
+}
+function somParar(){SOM.on=false;try{if(SOM.ctrl)SOM.ctrl.abort()}catch(e){}SOM.ctrl=null;try{if(SOM.ctx)SOM.ctx.suspend()}catch(e){}somAtualizarBtn()}
+async function somConectar(){
+  if(!SOM.on)return;
+  const ctrl=new AbortController();SOM.ctrl=ctrl;
+  try{
+    if(SOM.ctx&&SOM.ctx.state==="suspended")await SOM.ctx.resume();
+    const r=await fetch("/api/audio_stream?q="+(perfilEfetivo()==="eco"?"eco":"boa")+"&t="+Date.now(),{signal:ctrl.signal,cache:"no-store"});
+    if(r.status===401){mostrarLock();somParar();return}
+    if(!r.ok){let m="";try{m=(await r.json()).erro}catch(e){}toast("Som indisponível: "+(m||r.status),4500);somParar();return}
+    const rate=+r.headers.get("X-Rate"),ch=+r.headers.get("X-Ch");if(!rate||!ch){somParar();return}
+    const rd=r.body.getReader();let resto=new Uint8Array(0);SOM.next=0;SOM.tent=0;
+    while(SOM.on){
+      const {value,done}=await rd.read();if(done)break;
+      let buf=value;if(resto.length){buf=new Uint8Array(resto.length+value.length);buf.set(resto);buf.set(value,resto.length)}
+      const fb=2*ch,uteis=Math.floor(buf.length/fb)*fb;resto=buf.slice(uteis);if(!uteis)continue;
+      somTocar(new Int16Array(buf.buffer.slice(buf.byteOffset,buf.byteOffset+uteis)),rate,ch);
+    }
+  }catch(e){if(e&&e.name==="AbortError")return}
+  if(SOM.on){SOM.tent++;setTimeout(somConectar,Math.min(5000,400*SOM.tent))}      // caiu ou trocou a saída: reconecta
+}
+function somTocar(pcm,rate,ch){
+  const ctx=SOM.ctx;if(!ctx)return;const n=pcm.length/ch,ab=ctx.createBuffer(ch,n,rate);
+  for(let c=0;c<ch;c++){const d=ab.getChannelData(c);for(let i=0,j=c;i<n;i++,j+=ch)d[i]=pcm[j]/32768}
+  const agora=ctx.currentTime;
+  if(SOM.next<agora+0.04)SOM.next=agora+0.2;           // (re)começa com ~200 ms de folga
+  if(SOM.next-agora>1.2)return;                         // atrasou demais: descarta pra não acumular atraso
+  const s=ctx.createBufferSource();s.buffer=ab;s.connect(ctx.destination);s.start(SOM.next);SOM.next+=ab.duration;
+}
+
+/* ===== MANTER A TELA DO CELULAR LIGADA ===== */
+const WAKE={lock:null,v:null,t:null};
+function wakeAtivo(){try{return localStorage.getItem("rotacontrol_wake")!=="0"}catch(e){return true}}
+function wakeVideo(){
+  if(WAKE.v){WAKE.v.play().catch(()=>{});return}
+  try{
+    const c=document.createElement("canvas");c.width=c.height=16;const x=c.getContext("2d");
+    const v=document.createElement("video");v.muted=true;v.loop=true;v.playsInline=true;v.setAttribute("playsinline","");
+    v.style.cssText="position:fixed;left:0;top:0;width:2px;height:2px;opacity:.02;pointer-events:none;z-index:-1";
+    v.srcObject=c.captureStream(5);document.body.appendChild(v);let n=0;
+    WAKE.t=setInterval(()=>{x.fillStyle=(n++%2)?"#010101":"#000";x.fillRect(0,0,16,16)},500);WAKE.v=v;v.play().catch(()=>{});
+  }catch(e){}
+}
+async function wakeLigar(){
+  if(!wakeAtivo()||document.hidden)return;
+  if(navigator.wakeLock){try{if(!WAKE.lock){WAKE.lock=await navigator.wakeLock.request("screen");WAKE.lock.addEventListener("release",()=>{WAKE.lock=null})}return}catch(e){}}
+  wakeVideo();   // sem Wake Lock (site em http): truque do vídeo mudo, que também impede a tela de apagar
+}
+function wakeParar(){
+  if(WAKE.lock){try{WAKE.lock.release()}catch(e){}WAKE.lock=null}
+  if(WAKE.v){try{WAKE.v.pause();WAKE.v.srcObject=null;WAKE.v.remove()}catch(e){}WAKE.v=null;clearInterval(WAKE.t)}
+}
+function wakeAtualizarBtn(){const b=$("#btnWake"),on=wakeAtivo();if(!b)return;b.textContent=on?"💡 Manter tela ligada: SIM":"💡 Manter tela ligada: NÃO";b.classList.toggle("ghost",!on);b.classList.toggle("on",on)}
+function toggleWake(){const on=!wakeAtivo();try{localStorage.setItem("rotacontrol_wake",on?"1":"0")}catch(e){}if(on)wakeLigar();else wakeParar();wakeAtualizarBtn();toast(on?"A tela do celular não apaga enquanto o painel estiver aberto":"A tela volta a apagar normalmente",2500)}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)wakeLigar()});
+document.addEventListener("pointerdown",()=>{if(wakeAtivo()&&!WAKE.lock&&!(WAKE.v&&!WAKE.v.paused))wakeLigar()},{passive:true});
 
 /* ===== ORDEM PERSONALIZADA (segurar 3 s e arrastar) ===== */
 const HOLD_MS=3000;   // tempo segurando antes de poder arrastar
@@ -2638,7 +2762,7 @@ const TUT=[
 <li>Toque em <b>Ativar digitação ao vivo</b> e digite: cada tecla vai direto pro PC. O botão 🎤 dita por voz (precisa de conexão HTTPS).</li>
 <li>Prefere escrever tudo antes? Digite o texto e use <b>Enviar bloco</b> (digita tudo no PC) ou <b>Copiar no PC</b> (só coloca na área de transferência do PC).</li>
 <li>Pra combos como Ctrl+C: toque numa tecla travável (ela fica pressionada), depois na tecla solta. Ela destrava sozinha em 60 s; <b>Soltar todas</b> libera na hora.</li>
-<li><b>Ler área de transferência</b> mostra o texto copiado no PC; <b>Copiar (celular)</b> copia pro celular.</li></ol>`},
+<li><b>Ler área de transferência</b> mostra o texto (ou a <b>imagem</b>) copiado no PC. <b>Segure o botão por 3 segundos</b> pra ligar a leitura <b>automática</b>: tudo que você copiar no PC aparece aqui sozinho e entra no histórico. Segure 3 s de novo pra voltar ao normal; a escolha fica salva neste aparelho. O histórico guarda os últimos 10 itens (texto e imagens) só enquanto o app está aberto no PC; <b>Copiar (celular)</b> copia pro celular.</li></ol>`},
 
 {t:"🎵 Mídia",h:`<h4>O que tem</h4><ul>
 <li><b>Tocando agora</b> — título e capa do que está tocando.</li>
@@ -2667,6 +2791,7 @@ const TUT=[
 <li><b>Ver ao vivo</b> — mostra a tela do PC em tempo real. Se tiver mais de um monitor, escolha qual.</li>
 <li><b>Qualidade da imagem</b> — Auto, Eco, Normal, Alta e Máx.</li>
 <li><b>Tela cheia com toque</b> — a tela ao vivo ocupa o celular inteiro e você controla o PC tocando direto nela.</li>
+<li><b>Som do PC no celular</b> — toque em <b>🔇 Som do PC no celular</b> pra ouvir pelo celular o que está tocando no PC (use o volume do celular). Também tem o botão 🔊 na tela cheia.</li>
 <li><b>Picture-in-Picture (PiP)</b> — janelinha flutuante com a tela.</li>
 <li><b>Print, Copiar print, Baixar print</b>.</li></ul>
 <h4>Qualidade</h4><ul>
@@ -2724,7 +2849,7 @@ const TUT=[
 <li><b>Pasta padrão</b> — onde caem uploads e prints.</li>
 <li><b>Diagnóstico</b> — testa o PC e mostra alertas.</li>
 <li><b>Encerrar</b> — fechar o programa. O botão <b>BYPASS</b> <b>apaga o .exe</b> (desinstala): use só se for isso mesmo.</li>
-<li><b>Aparência</b> — fundo animado e efeito vidro (barras e botões translúcidos; dá pra usar os dois juntos).</li></ul>
+<li><b>Aparência</b> — <b>manter tela ligada</b> (a tela do celular não apaga com o painel aberto, ótimo pra acompanhar o status do PC), fundo animado e efeito vidro (barras e botões translúcidos; dá pra usar os dois juntos).</li></ul>
 <h4>Dicas</h4><ul>
 <li><b>Mudar a ordem:</b> segure 3 segundos numa aba do menu de baixo e arraste pro lado. Dentro de cada aba, segure 3 segundos no título de uma categoria (ex.: "Ações rápidas") e arraste pra cima ou pra baixo. Ao soltar, a ordem fica salva <b>neste aparelho</b>, e o app abre na primeira aba da sua ordem. Pra desfazer: Sistema → Aparência → <b>Restaurar ordem</b>.</li>
 <li>O PIN fica salvo neste aparelho por 90 dias: você só digita uma vez. Trocar o PIN desconecta os outros aparelhos.</li>
@@ -2893,9 +3018,63 @@ async function travarTecla(nome){const j=await post("/api/teclas/travar",{nome})
 async function soltarTecla(nome){await post("/api/teclas/soltar",{nome});toast("Solto: "+nome);carregarTeclasPersistentes()}
 async function soltarTodas(){await post("/api/teclas/soltar_todas",{});toast("Todas soltas");carregarTeclasPersistentes();if(navigator.vibrate)navigator.vibrate(30)}
 
-async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";toast("Lido")}
+function clipMostrarImg(im){
+  const box=$("#recImgBox");if(!im){box.classList.add("hid");return}
+  $("#recImg").src="/api/clip_img?id="+im.id+"&t=1";$("#recImgBaixar").href="/api/clip_img?id="+im.id+"&d=1";$("#recImgBaixar").setAttribute("download","");
+  $("#recImgUsar").onclick=()=>usarClipImg(im.id);box.classList.remove("hid");
+}
+async function pegarClipboard(){const j=await get("/api/clipboard");if(j.erro){toast(j.erro);return}$("#txtRec").value=j.texto||"";clipMostrarImg(j.imagem||null);toast(j.imagem?"Imagem lida":"Lido")}
+async function usarClipImg(id){const j=await post("/api/clip_img_usar",{id});toast(j.erro?("Erro: "+j.erro):"Imagem copiada de novo no PC")}
+/* leitura automática: segure o botão 3 s */
+const CLIPAUTO={on:false,timer:null,ultimo:"",hold:null,just:0};
+try{CLIPAUTO.on=localStorage.getItem("rotacontrol_clipauto")==="1"}catch(e){}
+function clipChave(it){return it?(it.tipo==="img"?("i"+it.id):("t"+it.hora+"|"+(it.texto||"").length)):""}
+function clipAutoUI(){
+  const b=$("#btnLerClip"),i=$("#clipAutoInfo");if(!b)return;
+  b.textContent=CLIPAUTO.on?"Ler área de transferência (AUTOMÁTICO ✔)":"Ler área de transferência";b.classList.toggle("on",CLIPAUTO.on);
+  if(i)i.textContent=CLIPAUTO.on?"Automático ligado: tudo que for copiado no PC aparece aqui e entra no histórico. Segure 3 s pra desligar.":"Segure o botão por 3 segundos pra ligar a leitura automática.";
+}
+async function clipAutoTick(){
+  if(!CLIPAUTO.on||document.hidden)return;
+  const j=await get("/api/clip_hist");if(j.erro||!j.itens)return;const topo=(j.itens||[])[0],k=clipChave(topo);
+  if(k&&k!==CLIPAUTO.ultimo){
+    CLIPAUTO.ultimo=k;
+    if(topo.tipo==="img"){$("#txtRec").value="";clipMostrarImg(topo)}else{$("#txtRec").value=topo.texto||"";clipMostrarImg(null)}
+    toast("Novo copiado no PC",1200);if(ABA_ATUAL==="texto")carregarClipHist();
+  }
+}
+async function clipAutoLigar(on){
+  CLIPAUTO.on=on;try{localStorage.setItem("rotacontrol_clipauto",on?"1":"0")}catch(e){}
+  clearInterval(CLIPAUTO.timer);CLIPAUTO.timer=null;
+  if(on){const j=await get("/api/clip_hist");CLIPAUTO.ultimo=clipChave((j.itens||[])[0]);CLIPAUTO.timer=setInterval(clipAutoTick,2000)}
+  clipAutoUI();
+}
+function clipBtnClique(){if(Date.now()-CLIPAUTO.just<700)return;pegarClipboard()}
+(function(){
+  const b=document.getElementById("btnLerClip");if(!b)return;
+  const ini=()=>{b.style.setProperty("--hold","3000ms");b.classList.add("segurando");CLIPAUTO.hold=setTimeout(()=>{b.classList.remove("segurando");CLIPAUTO.just=Date.now();if(navigator.vibrate)navigator.vibrate(40);clipAutoLigar(!CLIPAUTO.on);toast(CLIPAUTO.on?"Leitura automática DESLIGADA":"Leitura automática LIGADA",2500)},3000)};
+  const fim=()=>{clearTimeout(CLIPAUTO.hold);CLIPAUTO.hold=null;b.classList.remove("segurando")};
+  b.addEventListener("touchstart",ini,{passive:true});["touchend","touchcancel","touchmove"].forEach(e=>b.addEventListener(e,fim,{passive:true}));
+  b.addEventListener("mousedown",ini);["mouseup","mouseleave"].forEach(e=>b.addEventListener(e,fim));
+  b.addEventListener("contextmenu",e=>e.preventDefault());
+})();
 function copiarTextoRec(){const t=$("#txtRec");copiar(t.value||"","clipboard")}
-async function carregarClipHist(){const j=await get("/api/clip_hist");const box=$("#listaClip");box.innerHTML="";(j.itens||[]).forEach(it=>{const hora=new Date(it.hora*1000).toLocaleTimeString();const d=document.createElement("div");d.className="arq";d.style.alignItems="flex-start";d.innerHTML=`<span class="nome" style="white-space:pre-wrap;word-break:break-all;font-size:12px">${esc(it.texto)}</span><span class="tam">${hora}</span>`;const b=document.createElement("button");b.textContent="Usar";b.onclick=()=>usarClip(it.texto);d.appendChild(b);box.appendChild(d)});if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>'}
+async function carregarClipHist(){
+  const j=await get("/api/clip_hist");const box=$("#listaClip");box.innerHTML="";
+  (j.itens||[]).forEach(it=>{
+    const hora=new Date(it.hora*1000).toLocaleTimeString();const d=document.createElement("div");d.className="arq";d.style.alignItems="flex-start";
+    if(it.tipo==="img"){
+      d.innerHTML=`<span class="nome" style="flex:1;display:block"><img class="prevBig" style="margin:0;max-height:160px" alt="" src="/api/clip_img?id=${it.id}&t=1"><span class="hint">Imagem ${it.w}×${it.h}</span></span><span class="tam">${hora}</span>`;
+      const bx=document.createElement("a");bx.className="btn";bx.textContent="Baixar";bx.href="/api/clip_img?id="+it.id+"&d=1";bx.setAttribute("download","");bx.style.cssText="padding:6px 10px;font-size:12px;text-decoration:none";d.appendChild(bx);
+      const b=document.createElement("button");b.textContent="Usar";b.onclick=()=>usarClipImg(it.id);d.appendChild(b);
+    }else{
+      d.innerHTML=`<span class="nome" style="white-space:pre-wrap;word-break:break-all;font-size:12px">${esc(it.texto)}</span><span class="tam">${hora}</span>`;
+      const b=document.createElement("button");b.textContent="Usar";b.onclick=()=>usarClip(it.texto);d.appendChild(b);
+    }
+    box.appendChild(d);
+  });
+  if(!(j.itens||[]).length)box.innerHTML='<div class="hint">(vazio)</div>';
+}
 async function usarClip(t){await post("/api/texto",{texto:t,modo:"clipboard"});toast("Copiado de novo")}
 async function limparClipHist(){if(!confirm("Limpar histórico?"))return;await post("/api/clip_hist_limpar",{});carregarClipHist()}
 
@@ -3236,6 +3415,7 @@ async function iniciar(){
   fundoInit();
   qualAtualizarUI();
   ordIniciarTudo();
+  wakeAtualizarBtn();wakeLigar();somAtualizarBtn();clipAutoUI();if(CLIPAUTO.on)clipAutoLigar(true);
   carregarModoUI();
   carregarTemas();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
@@ -5332,7 +5512,13 @@ def api_clipboard():
     b = exigir_auth()
     if b: return b
     _marcar_interesse("clip")
-    try: return jsonify(texto=ler_pc())
+    try:
+        t = ler_pc()
+        if t and t.strip(): return jsonify(texto=t)
+        _CLIP_IMG["seq"] = -1; _clip_capturar()                    # sem texto: vê se tem imagem copiada
+        img = next((i for i in CLIP_HIST if i.get("tipo") == "img"), None)
+        if img and _clip_imagem() is not None: return jsonify(texto="", imagem={"id": img["id"], "w": img["w"], "h": img["h"]})
+        return jsonify(texto=t or "")
     except Exception as e: return jsonify(erro=str(e))
 
 
@@ -5341,14 +5527,45 @@ def api_clip_hist():
     b = exigir_auth()
     if b: return b
     _marcar_interesse("clip")
-    try:
-        t = _clip_get()
-        if t and t.strip() and t != CLIP_ULTIMO["txt"]:
-            CLIP_ULTIMO["txt"] = t
-            if not CLIP_HIST or CLIP_HIST[0]["texto"] != t:
-                CLIP_HIST.appendleft({"texto": t[:500], "hora": time.time()})
+    try: _clip_capturar()
     except Exception: pass
     return jsonify(itens=list(CLIP_HIST))
+
+
+@app.route("/api/clip_img")
+def api_clip_img():
+    b = exigir_auth()
+    if b: return b
+    try: i = int(request.args.get("id", 0))
+    except Exception: return jsonify(erro="id invalido"), 400
+    d = _CLIP_IMG["dados"].get(i)
+    if not d: return jsonify(erro="imagem nao esta mais no historico"), 404
+    dados, mime, w, h = d
+    if request.args.get("t") == "1" and _PIL is not None:               # miniatura
+        try:
+            im = _PIL.open(io.BytesIO(dados)); im.thumbnail((360, 360))
+            fundo = _PIL.new("RGB", im.size, (20, 20, 28))
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGBA"); fundo.paste(im, mask=im.split()[-1])
+            else: fundo.paste(im.convert("RGB"))
+            out = io.BytesIO(); fundo.save(out, "JPEG", quality=75); dados, mime = out.getvalue(), "image/jpeg"
+        except Exception: pass
+    cab = {"Cache-Control": "private, max-age=600"}
+    if request.args.get("d") == "1":
+        cab["Content-Disposition"] = f'attachment; filename="copiado_{i}.{"jpg" if mime.endswith("jpeg") else "png"}"'
+    return Response(dados, mimetype=mime, headers=cab)
+
+
+@app.route("/api/clip_img_usar", methods=["POST"])
+def api_clip_img_usar():
+    b = exigir_auth()
+    if b: return b
+    try: i = int((request.get_json(force=True, silent=True) or {}).get("id", 0))
+    except Exception: return jsonify(erro="id invalido")
+    d = _CLIP_IMG["dados"].get(i)
+    if not d: return jsonify(erro="imagem nao esta mais no historico")
+    try: _clip_set_imagem_png(d[0]); _CLIP_IMG["seq"] = _user32.GetClipboardSequenceNumber(); return jsonify(ok=True)
+    except Exception as e: return jsonify(erro=str(e))
 
 
 @app.route("/api/clip_hist_limpar", methods=["POST"])
@@ -5448,6 +5665,117 @@ def _audio_definir_padrao(did):
     for role in (0, 1, 2): pc.SetDefaultEndpoint(did, role)    # console, multimídia, comunicações
 
 
+# ============ SOM DO PC NO CELULAR (WASAPI loopback) ============
+_AUD = {"lock": threading.Lock(), "ouv": [], "pa": None, "st": None, "info": None}
+
+def _aud_abrir():
+    if _pyaw is None: raise Exception("pyaudiowpatch nao instalado (pip install PyAudioWPatch)")
+    pa = _pyaw.PyAudio()
+    try:
+        w = pa.get_host_api_info_by_type(_pyaw.paWASAPI)
+        spk = pa.get_device_info_by_index(w["defaultOutputDevice"])
+        if not spk.get("isLoopbackDevice"):
+            for lb in pa.get_loopback_device_info_generator():
+                if spk["name"] in lb["name"]: spk = lb; break
+            else: raise Exception("a saida padrao nao permite captura de som")
+        ch = max(1, int(spk["maxInputChannels"])); rate = int(spk["defaultSampleRate"])
+        def cb(dados, frames, ti, status):
+            for q in list(_AUD["ouv"]):
+                try: q.put_nowait(dados)
+                except queue.Full:
+                    try: q.get_nowait(); q.put_nowait(dados)
+                    except Exception: pass
+            return (None, _pyaw.paContinue)
+        st = pa.open(format=_pyaw.paInt16, channels=ch, rate=rate, input=True,
+                     frames_per_buffer=max(256, rate // 50), input_device_index=int(spk["index"]), stream_callback=cb)
+    except Exception:
+        try: pa.terminate()
+        except Exception: pass
+        raise
+    return pa, st, {"rate": rate, "ch": ch}
+
+def _aud_fechar():
+    st, pa = _AUD["st"], _AUD["pa"]
+    _AUD["st"] = None; _AUD["pa"] = None; _AUD["info"] = None
+    try:
+        if st is not None: st.stop_stream(); st.close()
+    except Exception: pass
+    try:
+        if pa is not None: pa.terminate()
+    except Exception: pass
+
+def _aud_registrar():
+    with _AUD["lock"]:
+        if len(_AUD["ouv"]) >= 3: raise Exception("ouvintes demais ao mesmo tempo")
+        if _AUD["st"] is None:
+            pa, st, info = _aud_abrir(); _AUD["pa"] = pa; _AUD["st"] = st; _AUD["info"] = info
+        q = queue.Queue(maxsize=100); _AUD["ouv"].append(q)
+        return q, dict(_AUD["info"])
+
+def _aud_remover(q):
+    with _AUD["lock"]:
+        if q in _AUD["ouv"]: _AUD["ouv"].remove(q)
+        if not _AUD["ouv"] and _AUD["st"] is not None: _aud_fechar()
+
+def _aud_reabrir():
+    """A saída padrão mudou: fecha a captura (os celulares reconectam sozinhos na nova saída)."""
+    with _AUD["lock"]:
+        for q in _AUD["ouv"]:
+            try: q.put_nowait(None)
+            except Exception: pass
+        _AUD["ouv"] = []
+        _aud_fechar()
+
+def _aud_formato(info, modo):
+    """(canais, taxa) que serão enviados ao celular."""
+    if modo == "eco": return 1, max(8000, info["rate"] // 2)
+    return (2 if info["ch"] >= 2 else 1), info["rate"]
+
+def _aud_converter(d, ch, modo):
+    n = len(d) // (2 * ch) * (2 * ch)
+    if n <= 0: return b""
+    a = array("h"); a.frombytes(d[:n])
+    if modo == "eco": return a[0::2 * ch].tobytes()          # mono, metade da taxa: 1/4 do tráfego
+    if ch <= 2: return a.tobytes()
+    est = array("h", bytes(2 * 2 * (len(a) // ch)))          # surround -> estéreo (frente esquerda/direita)
+    est[0::2] = a[0::ch]; est[1::2] = a[1::ch]
+    return est.tobytes()
+
+def _gerar_audio(q, info, modo):
+    ch_out, rate_out = _aud_formato(info, modo)
+    silencio = bytes(2 * ch_out * (rate_out // 20))
+    try:
+        while True:
+            try: d = q.get(timeout=1.0)
+            except queue.Empty:
+                yield silencio; continue                      # nada tocando: manda silêncio (mantém a conexão viva)
+            if d is None: return
+            time.sleep(0.04)                                  # junta ~60 ms por envio
+            while True:
+                try:
+                    x = q.get_nowait()
+                    if x is None: return
+                    d += x
+                except queue.Empty: break
+            out = _aud_converter(d, info["ch"], modo)
+            if out: yield out
+    finally:
+        _aud_remover(q)
+
+
+@app.route("/api/audio_stream")
+def api_audio_stream():
+    b = exigir_auth()
+    if b: return b
+    modo = "eco" if request.args.get("q") == "eco" else "boa"
+    try: q, info = _aud_registrar()
+    except Exception as e: return jsonify(erro=str(e)), 503
+    ch_out, rate_out = _aud_formato(info, modo)
+    return Response(stream_with_context(_gerar_audio(q, info, modo)), mimetype="application/octet-stream",
+                    headers={"X-Rate": str(rate_out), "X-Ch": str(ch_out), "Cache-Control": "no-store",
+                             "Access-Control-Expose-Headers": "X-Rate, X-Ch"})
+
+
 @app.route("/api/audio_saidas")
 def api_audio_saidas():
     b = exigir_auth()
@@ -5471,7 +5799,8 @@ def api_audio_saida():
         else:
             esc = next((x for x in lista if x["id"] == alvo), None)
             if not esc: return jsonify(erro="saida nao encontrada")
-        if not esc["atual"]: _audio_definir_padrao(esc["id"])
+        if not esc["atual"]:
+            _audio_definir_padrao(esc["id"]); _aud_reabrir()
         return jsonify(ok=True, nome=esc["nome"], id=esc["id"])
     except Exception as e: return jsonify(erro=str(e))
 
