@@ -1439,6 +1439,7 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .thWrap img{width:100%;height:100%;object-fit:cover;display:block}
 .thWrap.vid::after{content:"▶";position:absolute;right:3px;bottom:2px;font-size:11px;color:#fff;text-shadow:0 0 4px #000}
 .prevBig{max-width:100%;max-height:70vh;display:block;margin:10px auto;border-radius:8px}
+.thWrap video{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;background:#000}
 .breadcrumb{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px;margin-bottom:8px;color:var(--mut)}
 .breadcrumb span{cursor:pointer;padding:3px 6px;border-radius:6px;background:#0d0d14}
 .breadcrumb span:hover{background:#1f1f2a;color:var(--fg)}
@@ -1535,6 +1536,11 @@ body.vidro.temFundo header,body.vidro.temFundo nav{background:rgba(255,255,255,.
 @keyframes fsPing{from{transform:scale(.5);opacity:1}to{transform:scale(1.5);opacity:0}}
 body.fsLock{overflow:hidden}
 .audioItem{display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left}
+nav button,.panel h2{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+@keyframes ordHold{from{box-shadow:0 0 0 0 rgba(160,60,255,0)}to{box-shadow:0 0 0 4px rgba(160,60,255,.95)}}
+.segurando{animation:ordHold var(--hold,3s) linear forwards}
+.arrastando{position:relative;z-index:60;transition:none!important;box-shadow:0 12px 32px rgba(0,0,0,.65),0 0 0 2px var(--acc2)!important}
+nav button.arrastando{background:var(--panel)}
 #fundoCanvas{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .6s}
 #fundoCanvas.on{opacity:1}
 body.temFundo{background:transparent}
@@ -2022,6 +2028,7 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
       <button class="btn ghost block" id="btnTema" onclick="toggleTema()">🎨 Ativar fundo animado</button>
       <div class="hint" id="temaComboHint" style="margin-top:8px"></div>
       <button class="btn ghost block" id="btnVidro" style="margin-top:10px" onclick="toggleVidro()">🪟 Ativar efeito vidro</button>
+      <button class="btn ghost block" style="margin-top:10px" onclick="ordRestaurar()">↩ Restaurar ordem das abas e categorias</button>
       <div class="hint" style="margin-top:8px">Vidro só nas barras e botões. Dá pra combinar com o fundo animado. Vale só pra este aparelho; se ficar pesado no PC, desligue.</div>
     </div>
   </section>
@@ -2191,6 +2198,99 @@ async function toggleTema(){
   toast(novo?"Fundo animado ativado":"Fundo animado desativado");
 }
 /* ===== FIM TEMAS ===== */
+
+/* ===== ORDEM PERSONALIZADA (segurar 3 s e arrastar) ===== */
+const HOLD_MS=3000;   // tempo segurando antes de poder arrastar
+const ORD={alvo:null,hold:null,ativo:false,x0:0,y0:0,ult:{x:0,y:0},gx:0,gy:0,raf:0,just:0};
+function ordLer(k,pad){try{const v=JSON.parse(localStorage.getItem(k));return v||pad}catch(e){return pad}}
+function ordSalvar(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+function ordChaves(){
+  $$("main > section.page").forEach(sec=>{
+    const vistos=new Set();
+    [...sec.children].filter(c=>c.classList.contains("panel")).forEach((p,i)=>{const h=p.querySelector("h2");let k=h?h.textContent.trim():("#"+i);while(vistos.has(k))k+="'";vistos.add(k);p.dataset.k=k});
+  });
+}
+function ordAplicar(){
+  const nav=$("nav"),abas=ordLer("rotacontrol_ordem_abas",null);
+  if(nav&&abas){const bs=[...nav.children].filter(b=>b.dataset.t);bs.sort((a,b)=>{const x=abas.indexOf(a.dataset.t),y=abas.indexOf(b.dataset.t);return (x<0?999:x)-(y<0?999:y)});bs.forEach(b=>nav.appendChild(b))}
+  const pans=ordLer("rotacontrol_ordem_pan",{});
+  $$("main > section.page").forEach(sec=>{
+    const ord=pans[sec.id];if(!ord)return;
+    const ps=[...sec.children].filter(c=>c.classList.contains("panel"));if(ps.length<2)return;
+    const marca=document.createComment("");sec.insertBefore(marca,ps[0]);
+    const idx=new Map(ps.map((p,i)=>[p,i]));
+    ps.sort((a,b)=>{const x=ord.indexOf(a.dataset.k),y=ord.indexOf(b.dataset.k);return ((x<0?999:x)-(y<0?999:y))||(idx.get(a)-idx.get(b))});
+    let ref=marca;ps.forEach(p=>{ref.after(p);ref=p});marca.remove();
+  });
+}
+function ordSalvarTudo(){
+  const nav=$("nav");ordSalvar("rotacontrol_ordem_abas",[...nav.children].filter(b=>b.dataset.t).map(b=>b.dataset.t));
+  const pans={};$$("main > section.page").forEach(sec=>{pans[sec.id]=[...sec.children].filter(c=>c.classList.contains("panel")).map(p=>p.dataset.k)});
+  ordSalvar("rotacontrol_ordem_pan",pans);
+}
+function ordRestaurar(){if(!confirm("Voltar as abas e categorias pra ordem original?"))return;try{localStorage.removeItem("rotacontrol_ordem_abas");localStorage.removeItem("rotacontrol_ordem_pan")}catch(e){}location.reload()}
+function ordCancelarHold(){clearTimeout(ORD.hold);ORD.hold=null;if(ORD.alvo&&!ORD.ativo){ORD.alvo.el.classList.remove("segurando");ORD.alvo=null}}
+function ordIniciar(x,y,alvo){
+  if(ORD.alvo)return;ORD.alvo=alvo;ORD.x0=x;ORD.y0=y;ORD.ult={x,y};
+  alvo.el.style.setProperty("--hold",HOLD_MS+"ms");alvo.el.classList.add("segurando");
+  ORD.hold=setTimeout(ordAtivar,HOLD_MS);
+}
+function ordAtivar(){
+  const a=ORD.alvo;if(!a)return;a.el.classList.remove("segurando");a.el.classList.add("arrastando");
+  ORD.ativo=true;const r=a.el.getBoundingClientRect();ORD.gx=ORD.ult.x-r.left;ORD.gy=ORD.ult.y-r.top;
+  if(navigator.vibrate)navigator.vibrate(40);toast(a.eixo==="x"?"Arraste pro lado e solte":"Arraste pra cima ou pra baixo e solte",2500);
+  ORD.raf=requestAnimationFrame(ordLoop);
+}
+function ordLoop(){
+  if(!ORD.ativo||!ORD.alvo)return;const a=ORD.alvo,el=a.el,x=ORD.ult.x,y=ORD.ult.y,nav=a.pai;
+  if(a.eixo==="y"){if(y<90)window.scrollBy(0,-14);else if(y>innerHeight-90)window.scrollBy(0,14)}
+  else{if(x<50)nav.scrollLeft-=10;else if(x>innerWidth-50)nav.scrollLeft+=10}
+  el.style.transform="none";
+  const r=el.getBoundingClientRect(),sel=a.eixo==="x"?"button":".panel";
+  const sibs=[...nav.children].filter(c=>c!==el&&c.matches(sel)&&c.offsetParent!==null);
+  const c=a.eixo==="x"?(x-ORD.gx+r.width/2):(y-ORD.gy+r.height/2);
+  let alvoIns=null;
+  for(const s of sibs){const q=s.getBoundingClientRect();const m=a.eixo==="x"?(q.left+q.width/2):(q.top+q.height/2);if(m>c){alvoIns=s;break}}
+  const prox=(()=>{let n=el.nextElementSibling;while(n&&!(n!==el&&n.matches(sel)&&n.offsetParent!==null))n=n.nextElementSibling;return n})();
+  if(alvoIns!==prox){if(alvoIns)nav.insertBefore(el,alvoIns);else{const ult=sibs[sibs.length-1];if(ult)ult.after(el)}}
+  const n=el.getBoundingClientRect();
+  el.style.transform=a.eixo==="x"?("translateX("+(x-ORD.gx-n.left)+"px)"):("translateY("+(y-ORD.gy-n.top)+"px)");
+  ORD.raf=requestAnimationFrame(ordLoop);
+}
+function ordFim(){
+  clearTimeout(ORD.hold);ORD.hold=null;const a=ORD.alvo;
+  if(a){a.el.classList.remove("segurando","arrastando");a.el.style.transform="";a.el.style.removeProperty("--hold")}
+  if(ORD.ativo){cancelAnimationFrame(ORD.raf);ordSalvarTudo();ORD.just=Date.now();toast("Ordem salva",1500)}
+  ORD.ativo=false;ORD.alvo=null;
+}
+function ordMover(x,y,ev){
+  ORD.ult={x,y};
+  if(ORD.ativo){if(ev&&ev.cancelable)ev.preventDefault();return}
+  if(ORD.alvo&&Math.hypot(x-ORD.x0,y-ORD.y0)>12)ordCancelarHold();
+}
+function ordLigar(el,mk){
+  el.addEventListener("touchstart",e=>{if(e.touches.length!==1)return;ordIniciar(e.touches[0].clientX,e.touches[0].clientY,mk())},{passive:true});
+  el.addEventListener("touchmove",e=>{if(e.touches.length)ordMover(e.touches[0].clientX,e.touches[0].clientY,e)},{passive:false});
+  el.addEventListener("touchend",e=>{if(ORD.ativo&&e.cancelable)e.preventDefault();ordFim()});
+  el.addEventListener("touchcancel",ordFim);
+  el.addEventListener("contextmenu",e=>e.preventDefault());
+  el.addEventListener("mousedown",e=>{
+    if(e.button!==0)return;ordIniciar(e.clientX,e.clientY,mk());
+    const mv=ev=>ordMover(ev.clientX,ev.clientY,ev);
+    const up=()=>{document.removeEventListener("mousemove",mv);document.removeEventListener("mouseup",up);ordFim()};
+    document.addEventListener("mousemove",mv);document.addEventListener("mouseup",up);
+  });
+}
+function ordIniciarTudo(){
+  ordChaves();ordAplicar();
+  const nav=$("nav");
+  $$("nav button").forEach(b=>ordLigar(b,()=>({el:b,eixo:"x",pai:nav})));
+  $$("main > section.page").forEach(sec=>{
+    [...sec.children].filter(c=>c.classList.contains("panel")).forEach(p=>{const h=p.querySelector("h2");if(h)ordLigar(h,()=>({el:p,eixo:"y",pai:sec}))});
+  });
+  document.addEventListener("click",e=>{if(Date.now()-ORD.just<600){e.stopPropagation();e.preventDefault()}},true);
+  const primeira=[...nav.children].find(b=>b.dataset.t);if(primeira&&primeira.dataset.t!=="acoes")show(primeira.dataset.t);
+}
 
 /* ===== QUALIDADE DA TELA / FLUXO AO VIVO ===== */
 const PERFIS_INFO={eco:"Econômico: 800 px • 8 fps — gasta pouco",normal:"Normal: 1100 px • 15 fps",alta:"Alta: 1600 px • 24 fps — bem mais nítido e fluido",maxima:"Máxima: até 2560 px • 30 fps — só em rede rápida"};
@@ -2594,7 +2694,7 @@ const TUT=[
 <h4>Como usar</h4><ol>
 <li>Toque em <b>Enviar arquivo(s)</b>, escolha e aguarde a confirmação.</li>
 <li class="avancado"><b>Avançado:</b> toque numa pasta pra abrir; use o caminho no topo pra voltar. <b>🔍 Buscar</b> procura por nome; <b>⬆ Subir</b> volta uma pasta; <b>+ Pasta</b> cria; <b>📋 Caminho</b> copia o endereço atual.</li>
-<li class="avancado"><b>Miniaturas:</b> toque na imagem pequena pra ver maior (e baixar dali). Vídeos mostram um quadro só se o <code>ffmpeg</code> estiver instalado no PC; senão aparece o ícone 🎬.</li>
+<li class="avancado"><b>Miniaturas:</b> toque na imagem pequena pra ver maior (e baixar dali). Em vídeos, tocar abre um <b>player</b>. A miniatura do vídeo é um quadro do início (usa o <code>ffmpeg</code> se estiver no PC; senão o próprio navegador mostra o quadro).</li>
 <li class="avancado"><b>📦 Baixar esta pasta (.zip)</b> junta tudo da pasta atual (com subpastas) num zip e baixa de uma vez. Limite: 5000 arquivos ou 4 GB.</li>
 <li class="avancado">Em cada arquivo: <b>Baixar</b> (pro celular), <b>↔</b> (copiar ou mover) e <b>x</b> (apagar). Pastas só podem ser apagadas se estiverem vazias.</li></ol>`},
 
@@ -2626,6 +2726,7 @@ const TUT=[
 <li><b>Encerrar</b> — fechar o programa. O botão <b>BYPASS</b> <b>apaga o .exe</b> (desinstala): use só se for isso mesmo.</li>
 <li><b>Aparência</b> — fundo animado e efeito vidro (barras e botões translúcidos; dá pra usar os dois juntos).</li></ul>
 <h4>Dicas</h4><ul>
+<li><b>Mudar a ordem:</b> segure 3 segundos numa aba do menu de baixo e arraste pro lado. Dentro de cada aba, segure 3 segundos no título de uma categoria (ex.: "Ações rápidas") e arraste pra cima ou pra baixo. Ao soltar, a ordem fica salva <b>neste aparelho</b>, e o app abre na primeira aba da sua ordem. Pra desfazer: Sistema → Aparência → <b>Restaurar ordem</b>.</li>
 <li>O PIN fica salvo neste aparelho por 90 dias: você só digita uma vez. Trocar o PIN desconecta os outros aparelhos.</li>
 <li>Esqueceu o PIN? No PC, abra o arquivo <code>rotacontrol_config.json</code> (fica ao lado do .exe), apague a linha <code>pin_hash</code> e abra o app de novo: ele pede pra criar outro.</li>
 <li>O <b>fundo animado</b> é bonito mas pesa mais no PC: se notar lentidão, deixe só no celular.</li></ul>`},
@@ -2884,7 +2985,8 @@ async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+
     +`<button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;
   d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome);
 }else{
-  const th=a.mini?`<span class="thWrap ${a.mini}" onclick="event.stopPropagation();prevArquivo('${encodeURIComponent(a.nome)}')"><img loading="lazy" alt="" src="/api/miniatura?nome=${encodeURIComponent(a.nome)}&path=${encodeURIComponent(CAMINHO_ATUAL)}&v=${a.mt||0}" onerror="this.parentNode.outerHTML='<span class=&quot;icoTipo&quot;>${a.mini==="vid"?"🎬":"🖼"}</span>'"></span>`:'<span class="icoTipo">📄</span>';
+  const qs=`nome=${encodeURIComponent(a.nome)}&path=${encodeURIComponent(CAMINHO_ATUAL)}&v=${a.mt||0}`;
+  const th=a.mini?`<span class="thWrap ${a.mini}" data-src="/api/ver?${qs}" onclick="event.stopPropagation();prevArquivo('${encodeURIComponent(a.nome)}')"><img loading="lazy" alt="" src="/api/miniatura?${qs}" onerror="thErro(this)"></span>`:'<span class="icoTipo">📄</span>';
   d.innerHTML=`<span class="nome">${th}${esc(a.nome)}</span>`
     +`<span class="tam">${fmtTam(a.tam)}</span>`
     +`<button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button>`
@@ -2897,8 +2999,24 @@ function copiarCaminhoAtual(){if(!CAMINHO_ATUAL){toast("Abra uma pasta primeiro"
 async function novaPasta(){const nome=prompt("Nome da pasta:");if(!nome)return;const j=await post("/api/nova_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Pasta criada");carregarArquivos(CAMINHO_ATUAL)}
 async function apagarPasta(nomeEnc){if(!confirm("Apagar pasta (só se estiver vazia)?"))return;const nome=decodeURIComponent(nomeEnc);const j=await post("/api/apagar_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Apagada");carregarArquivos(CAMINHO_ATUAL)}
 function fmtTam(b){if(b<1024)return b+" B";if(b<1024*1024)return (b/1024).toFixed(1)+" KB";if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+" MB";return (b/1024/1024/1024).toFixed(2)+" GB"}
+let THOBS=null;
+function thErro(im){
+  const w=im.parentNode;if(!w)return;
+  if(w.classList.contains("vid")&&w.dataset.src&&"IntersectionObserver" in window){
+    const v=document.createElement("video");v.muted=true;v.playsInline=true;v.preload="metadata";v.dataset.src=w.dataset.src;
+    v.onerror=()=>{if(v.getAttribute("src"))w.outerHTML='<span class="icoTipo">🎬</span>'};
+    w.replaceChild(v,im);
+    if(!THOBS)THOBS=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){const x=e.target;THOBS.unobserve(x);x.src=x.dataset.src+"#t=0.6"}}),{rootMargin:"150px"});
+    THOBS.observe(v);
+  }else w.outerHTML='<span class="icoTipo">'+(w.classList.contains("vid")?"🎬":"🖼")+'</span>';
+}
 function prevArquivo(nomeEnc){
   const nome=decodeURIComponent(nomeEnc);
+  const w=[...$$("#txtArquivos .thWrap")].find(x=>x.dataset.src&&x.dataset.src.indexOf("nome="+nomeEnc+"&")>=0);
+  if(w&&w.classList.contains("vid")){
+    modalAbrir(`<h3 style="word-break:break-all">${esc(nome)}</h3><video class="prevBig" controls playsinline preload="metadata" src="${w.dataset.src}"></video><div class="grid g2"><button class="btn acc" onclick="modalFechar();baixar('${nomeEnc}')">Baixar</button><button class="btn ghost" onclick="modalFechar()">Fechar</button></div>`);
+    return;
+  }
   modalAbrir(`<h3 style="word-break:break-all">${esc(nome)}</h3><img class="prevBig" alt="" src="/api/miniatura?g=1&nome=${nomeEnc}&path=${encodeURIComponent(CAMINHO_ATUAL)}" onerror="this.outerHTML='<div class=&quot;hint&quot;>Sem prévia grande pra este arquivo.</div>'"><div class="grid g2"><button class="btn acc" onclick="modalFechar();baixar('${nomeEnc}')">Baixar</button><button class="btn ghost" onclick="modalFechar()">Fechar</button></div>`);
 }
 async function baixarPasta(){
@@ -3117,6 +3235,7 @@ async function iniciar(){
   initTouchpad();
   fundoInit();
   qualAtualizarUI();
+  ordIniciarTudo();
   carregarModoUI();
   carregarTemas();
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
@@ -4826,6 +4945,19 @@ def api_baixar_pasta():
     cab = {"Content-Disposition": f"attachment; filename=\"{nome_zip}.zip\"; filename*=UTF-8''{_urlquote(nome)}.zip",
            "Cache-Control": "no-store"}
     return Response(stream_with_context(_gerar_zip(itens)), mimetype="application/zip", headers=cab)
+
+
+@app.route("/api/ver")
+def api_ver():
+    """Entrega imagem/vídeo 'inline' (com Range) pra prévia no celular. Só tipos de mídia."""
+    b = exigir_auth()
+    if b: return b
+    nome = _nome_seguro(request.args.get("nome", ""))
+    p = os.path.join(_path_seguro(request.args.get("path") or pasta_arquivos()), nome)
+    if not _tipo_midia(nome) or not os.path.isfile(p): return jsonify(erro="arquivo nao encontrado"), 404
+    r = send_file(p, conditional=True)
+    r.headers["Cache-Control"] = "private, max-age=300"
+    return r
 
 
 @app.route("/api/download")
