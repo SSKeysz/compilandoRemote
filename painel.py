@@ -7,7 +7,8 @@ Compilar:
 import io, os, re, sys, json, time, base64, socket, ctypes, secrets, csv, asyncio
 import logging, tempfile, threading, subprocess, webbrowser, urllib.request
 from collections import deque
-import hashlib, hmac, ipaddress
+import hashlib, hmac, ipaddress, zipfile
+from urllib.parse import quote as _urlquote
 from datetime import timedelta
 from urllib.parse import urlparse
 
@@ -25,6 +26,10 @@ except Exception:
 
 try: from PIL import ImageGrab
 except Exception: ImageGrab = None
+try:
+    from PIL import Image as _PIL, ImageOps as _PILOps
+except Exception:
+    _PIL = None; _PILOps = None
 
 try:
     import comtypes
@@ -1430,6 +1435,10 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 .arq.pasta{cursor:pointer}
 .arq.pasta:hover{background:#14141c}
 .arq .icoTipo{font-size:16px}
+.thWrap{position:relative;flex:none;width:46px;height:46px;border-radius:8px;overflow:hidden;background:#000;cursor:zoom-in;display:inline-block}
+.thWrap img{width:100%;height:100%;object-fit:cover;display:block}
+.thWrap.vid::after{content:"▶";position:absolute;right:3px;bottom:2px;font-size:11px;color:#fff;text-shadow:0 0 4px #000}
+.prevBig{max-width:100%;max-height:70vh;display:block;margin:10px auto;border-radius:8px}
 .breadcrumb{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px;margin-bottom:8px;color:var(--mut)}
 .breadcrumb span{cursor:pointer;padding:3px 6px;border-radius:6px;background:#0d0d14}
 .breadcrumb span:hover{background:#1f1f2a;color:var(--fg)}
@@ -1795,6 +1804,7 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
           <button class="btn ghost mini" onclick="carregarArquivos(CAMINHO_ATUAL)">🔄</button>
           <button class="btn ghost mini" onclick="copiarCaminhoAtual()">📋 Caminho</button>
         </div>
+        <button class="btn ghost block mini" style="margin-bottom:8px" onclick="baixarPasta()">📦 Baixar esta pasta (.zip)</button>
         <div id="txtArquivos"></div>
       </div>
     </div>
@@ -1893,30 +1903,6 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
 
 
 
-  <section id="p-extra" class="page hid">
-    <div class="panel">
-      <h2>Timer</h2>
-      <div class="grid g2">
-        <select id="timerAcao">
-          <option value="desligar">Desligar PC</option>
-          <option value="reiniciar">Reiniciar PC</option>
-          <option value="dormir">Dormir</option>
-          <option value="bloquear">Bloquear</option>
-        </select>
-        <input id="timerMin" type="number" value="30" min="1" max="1440">
-      </div>
-      <div class="grid g4" style="margin-top:8px">
-        <button class="btn ghost" onclick="timerRapido(5)">5min</button>
-        <button class="btn ghost" onclick="timerRapido(15)">15min</button>
-        <button class="btn ghost" onclick="timerRapido(30)">30min</button>
-        <button class="btn ghost" onclick="timerRapido(60)">1h</button>
-      </div>
-      <button class="btn acc block" style="margin-top:8px" onclick="agendarTimer()">Agendar</button>
-      <div class="hint" id="timerInfo">—</div>
-      <button class="btn ghost block" style="margin-top:8px" onclick="cancelarTimers()">Cancelar todos</button>
-    </div>
-  </section>
-
   <section id="p-sistema" class="page hid">
     <div class="panel">
       <h2>Acesso remoto</h2>
@@ -1968,6 +1954,28 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
         <button class="btn red" onclick="sistema('reiniciar')">Reiniciar</button>
       </div>
       <button class="btn ghost block" style="margin-top:8px" onclick="sistema('cancelar')">Cancelar desligamento</button>
+    </div>
+
+    <div class="panel">
+      <h2>Timer de energia</h2>
+      <div class="grid g2">
+        <select id="timerAcao">
+          <option value="desligar">Desligar PC</option>
+          <option value="reiniciar">Reiniciar PC</option>
+          <option value="dormir">Dormir</option>
+          <option value="bloquear">Bloquear</option>
+        </select>
+        <input id="timerMin" type="number" value="30" min="1" max="1440">
+      </div>
+      <div class="grid g4" style="margin-top:8px">
+        <button class="btn ghost" onclick="timerRapido(5)">5min</button>
+        <button class="btn ghost" onclick="timerRapido(15)">15min</button>
+        <button class="btn ghost" onclick="timerRapido(30)">30min</button>
+        <button class="btn ghost" onclick="timerRapido(60)">1h</button>
+      </div>
+      <button class="btn acc block" style="margin-top:8px" onclick="agendarTimer()">Agendar</button>
+      <div class="hint" id="timerInfo">—</div>
+      <button class="btn ghost block" style="margin-top:8px" onclick="cancelarTimers()">Cancelar todos</button>
     </div>
 
     <div class="panel">
@@ -2028,7 +2036,6 @@ body.temFundo nav{background:rgba(16,16,21,.94)}
   <button data-t="tela"><span class="ico">&#128421;</span>Tela</button>
   <button data-t="arquivos"><span class="ico">&#128193;</span>Arquivos</button>
   <button data-t="pc"><span class="ico">&#128202;</span>PC</button>
-  <button data-t="extra"><span class="ico">&#10024;</span>Extras</button>
   <button data-t="sistema"><span class="ico">&#9881;</span>Sistema</button>
 </nav>
 
@@ -2501,9 +2508,8 @@ const TUT=[
 <li><a class="tutLink" onclick="tutIr(5)"><b>🖥 Tela</b></a> — vê a tela do PC ao vivo, com qualidade ajustável, PiP e prints.</li>
 <li><a class="tutLink" onclick="tutIr(6)"><b>📁 Arquivos</b></a> — manda arquivos do celular pro PC<span class="avancado"> e navega nas pastas</span>.</li>
 <li><a class="tutLink" onclick="tutIr(7)"><b>📊 PC</b></a> — CPU, RAM, GPU, rede, discos e processos.</li>
-<li><a class="tutLink" onclick="tutIr(8)"><b>✨ Extras</b></a> — timer pra desligar/dormir/bloquear.</li>
-<li><a class="tutLink" onclick="tutIr(9)"><b>⚙ Sistema</b></a> — links de acesso, PIN, energia, monitores, aparência.</li>
-<li><a class="tutLink" onclick="tutIr(10)"><b>🌍 Fora de casa</b></a> — como usar longe do Wi-Fi com segurança.</li>
+<li><a class="tutLink" onclick="tutIr(8)"><b>⚙ Sistema</b></a> — links de acesso, PIN, energia e timer, monitores, aparência.</li>
+<li><a class="tutLink" onclick="tutIr(9)"><b>🌍 Fora de casa</b></a> — como usar longe do Wi-Fi com segurança.</li>
 </ul>
 <p class="hint">O botão <b>Iniciante / Avançado</b> no topo mostra ou esconde os recursos mais técnicos (marcados aqui como <b>Avançado</b>).</p>`},
 
@@ -2584,10 +2590,12 @@ const TUT=[
 
 {t:"📁 Arquivos",h:`<h4>O que tem</h4><ul>
 <li><b>Enviar celular pro PC</b> — escolha arquivos do celular e eles vão pra pasta padrão do PC (muda em Sistema → Pasta padrão).</li>
-<li class="avancado"><b>Navegador de arquivos</b> (Avançado) — anda pelas pastas do PC, busca e gerencia.</li></ul>
+<li class="avancado"><b>Navegador de arquivos</b> (Avançado) — anda pelas pastas do PC, busca e gerencia. Fotos e vídeos aparecem com <b>miniatura</b>.</li></ul>
 <h4>Como usar</h4><ol>
 <li>Toque em <b>Enviar arquivo(s)</b>, escolha e aguarde a confirmação.</li>
 <li class="avancado"><b>Avançado:</b> toque numa pasta pra abrir; use o caminho no topo pra voltar. <b>🔍 Buscar</b> procura por nome; <b>⬆ Subir</b> volta uma pasta; <b>+ Pasta</b> cria; <b>📋 Caminho</b> copia o endereço atual.</li>
+<li class="avancado"><b>Miniaturas:</b> toque na imagem pequena pra ver maior (e baixar dali). Vídeos mostram um quadro só se o <code>ffmpeg</code> estiver instalado no PC; senão aparece o ícone 🎬.</li>
+<li class="avancado"><b>📦 Baixar esta pasta (.zip)</b> junta tudo da pasta atual (com subpastas) num zip e baixa de uma vez. Limite: 5000 arquivos ou 4 GB.</li>
 <li class="avancado">Em cada arquivo: <b>Baixar</b> (pro celular), <b>↔</b> (copiar ou mover) e <b>x</b> (apagar). Pastas só podem ser apagadas se estiverem vazias.</li></ol>`},
 
 {t:"📊 PC",h:`<h4>O que tem</h4><ul>
@@ -2605,20 +2613,13 @@ const TUT=[
 <li class="avancado"><b>Terminal Rápido:</b> digite um comando (ex.: <code>ipconfig</code>) e toque em ▶. Cada comando roda separado: não guarda pasta atual nem variáveis.</li>
 <li class="avancado"><b>Comandos rápidos:</b> salve comandos de 1 toque. Edite ou remova com <b>✏️ Editar itens</b>.</li></ol>`},
 
-{t:"✨ Extras",h:`<h4>O que tem</h4><ul><li><b>Timer</b> — agenda uma ação no PC pra daqui a alguns minutos.</li></ul>
-<h4>Como usar</h4><ol>
-<li>Escolha a ação: <b>Desligar</b>, <b>Reiniciar</b>, <b>Dormir</b> ou <b>Bloquear</b>.</li>
-<li>Digite os minutos ou toque num atalho (5 min, 15 min, 30 min, 1 h).</li>
-<li>Toque em <b>Agendar</b>. O quadro abaixo mostra os timers ativos.</li>
-<li><b>Cancelar todos</b> desfaz tudo.</li></ol>
-<p class="hint">Ótimo pra dormir vendo vídeo: agende "Desligar" em 30 min.</p>`},
-
 {t:"⚙ Sistema",h:`<h4>O que tem</h4><ul>
 <li><b>Acesso remoto</b> — os links pra abrir o painel: <b>LAN</b> (mesmo Wi-Fi), <b>Tailscale</b> (fora de casa, seguro) e <b>WAN</b> (túnel público). Botões copiam o link; <b>QR Code no PC</b> mostra o QR na tela do PC.</li>
 <li><b>Modo de acesso</b> — Wi-Fi local ou Fora de casa (túnel público).</li>
 <li><b>Inicialização</b> — iniciar com o Windows; rever este tutorial.</li>
 <li><b>Monitores</b> — desligar/ligar a tela do PC (só apaga o monitor).</li>
 <li><b>Energia</b> — bloquear, dormir, desligar, reiniciar, cancelar desligamento.</li>
+<li><b>Timer de energia</b> — agenda desligar, reiniciar, dormir ou bloquear daqui a alguns minutos: escolha a ação, digite os minutos (ou toque em 5 min, 15 min, 30 min, 1 h) e toque em <b>Agendar</b>. <b>Cancelar todos</b> desfaz. Ótimo pra dormir vendo vídeo.</li>
 <li><b>PIN</b> — trocar o PIN (mínimo 6 caracteres).</li>
 <li><b>Pasta padrão</b> — onde caem uploads e prints.</li>
 <li><b>Diagnóstico</b> — testa o PC e mostra alertas.</li>
@@ -2679,9 +2680,8 @@ function show(nome){
   ABA_ATUAL=nome;fluxoSincronizar();
   if(nome==="arquivos"){limparBusca();carregarArquivos(CAMINHO_ATUAL)}
   if(nome==="tela"){carregarMonitores();if(PIP_METHOD==='video')prepararVideoPip()}
-  if(nome==="sistema"){carregarSistema();carregarTemas()}
+  if(nome==="sistema"){carregarSistema();carregarTemas();carregarTimers()}
   if(nome==="acoes"){carregarAcoes();carregarAtalhos()}
-  if(nome==="extra"){carregarTimers()}
   if(nome==="pc"){iniciarPollStatus();carregarProcessos();carregarComandos();iniciarPollTopProcs()}else{pararPollStatus();pararPollTopProcs()}
   if(nome==="mouse")initTouchpad();
   if(nome==="midia"){audioCarregar();carregarMixer();iniciarPollMixer();iniciarPollSmtc();volIniciarPoll()}else{pararPollMixer();pararPollSmtc();volPararPoll()}
@@ -2884,7 +2884,8 @@ async function carregarArquivos(path){const url="/api/arquivos"+(path?("?path="+
     +`<button class="del" onclick="event.stopPropagation();apagarPasta('${encodeURIComponent(a.nome)}')">x</button>`;
   d.onclick=()=>carregarArquivos((CAMINHO_ATUAL.replace(/[\\\/]+$/,""))+"\\"+a.nome);
 }else{
-  d.innerHTML=`<span class="nome"><span class="icoTipo">📄</span>${esc(a.nome)}</span>`
+  const th=a.mini?`<span class="thWrap ${a.mini}" onclick="event.stopPropagation();prevArquivo('${encodeURIComponent(a.nome)}')"><img loading="lazy" alt="" src="/api/miniatura?nome=${encodeURIComponent(a.nome)}&path=${encodeURIComponent(CAMINHO_ATUAL)}&v=${a.mt||0}" onerror="this.parentNode.outerHTML='<span class=&quot;icoTipo&quot;>${a.mini==="vid"?"🎬":"🖼"}</span>'"></span>`:'<span class="icoTipo">📄</span>';
+  d.innerHTML=`<span class="nome">${th}${esc(a.nome)}</span>`
     +`<span class="tam">${fmtTam(a.tam)}</span>`
     +`<button onclick="event.stopPropagation();baixar('${encodeURIComponent(a.nome)}')">Baixar</button>`
     +`<button onclick="event.stopPropagation();copiarMover('${encodeURIComponent(a.nome)}','arquivo')" title="Copiar/Mover">↔</button>`
@@ -2896,6 +2897,19 @@ function copiarCaminhoAtual(){if(!CAMINHO_ATUAL){toast("Abra uma pasta primeiro"
 async function novaPasta(){const nome=prompt("Nome da pasta:");if(!nome)return;const j=await post("/api/nova_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Pasta criada");carregarArquivos(CAMINHO_ATUAL)}
 async function apagarPasta(nomeEnc){if(!confirm("Apagar pasta (só se estiver vazia)?"))return;const nome=decodeURIComponent(nomeEnc);const j=await post("/api/apagar_pasta",{path:CAMINHO_ATUAL,nome});toast(j.erro?("Erro: "+j.erro):"Apagada");carregarArquivos(CAMINHO_ATUAL)}
 function fmtTam(b){if(b<1024)return b+" B";if(b<1024*1024)return (b/1024).toFixed(1)+" KB";if(b<1024*1024*1024)return (b/1024/1024).toFixed(1)+" MB";return (b/1024/1024/1024).toFixed(2)+" GB"}
+function prevArquivo(nomeEnc){
+  const nome=decodeURIComponent(nomeEnc);
+  modalAbrir(`<h3 style="word-break:break-all">${esc(nome)}</h3><img class="prevBig" alt="" src="/api/miniatura?g=1&nome=${nomeEnc}&path=${encodeURIComponent(CAMINHO_ATUAL)}" onerror="this.outerHTML='<div class=&quot;hint&quot;>Sem prévia grande pra este arquivo.</div>'"><div class="grid g2"><button class="btn acc" onclick="modalFechar();baixar('${nomeEnc}')">Baixar</button><button class="btn ghost" onclick="modalFechar()">Fechar</button></div>`);
+}
+async function baixarPasta(){
+  if(!CAMINHO_ATUAL){toast("Abra uma pasta primeiro");return}
+  const j=await get("/api/zip_info?path="+encodeURIComponent(CAMINHO_ATUAL));
+  if(j.erro){toast("Erro: "+j.erro,3500);return}
+  const mb=j.bytes/1048576,tam=mb>=1024?(mb/1024).toFixed(1)+" GB":Math.max(0.1,mb).toFixed(1)+" MB";
+  if(!confirm("Baixar esta pasta em .zip?\n"+j.arquivos+" arquivo(s), "+tam+" (inclui subpastas)."))return;
+  toast("Preparando o zip… o download começa já");
+  window.open("/api/baixar_pasta?path="+encodeURIComponent(CAMINHO_ATUAL),"_blank");
+}
 function baixar(n){window.open("/api/download?nome="+n+"&path="+encodeURIComponent(CAMINHO_ATUAL||""),"_blank")}
 async function apagar(n){if(!confirm("Apagar?"))return;await post("/api/apagar",{nome:decodeURIComponent(n),path:CAMINHO_ATUAL});carregarArquivos(CAMINHO_ATUAL)}
 async function fazerUpload(){const inp=$("#upFile");if(!inp.files.length){toast("Escolha arquivo(s)");return}const fd=new FormData();for(const f of inp.files)fd.append("arquivos",f,f.name);if(CAMINHO_ATUAL)fd.append("path",CAMINHO_ATUAL);toast("Enviando...");const r=await fetch("/api/upload",{method:"POST",body:fd});if(r.status===401){mostrarLock();return}const j=await r.json().catch(()=>({}));toast(j.saida||j.erro||"enviado");inp.value="";carregarArquivos(CAMINHO_ATUAL)}
@@ -4588,7 +4602,10 @@ def api_arquivos():
             full = os.path.join(path, n)
             try:
                 if os.path.isdir(full): itens.append({"nome": n, "tipo": "pasta", "tam": 0})
-                elif os.path.isfile(full): itens.append({"nome": n, "tipo": "arquivo", "tam": os.path.getsize(full)})
+                elif os.path.isfile(full):
+                    stt = os.stat(full)
+                    itens.append({"nome": n, "tipo": "arquivo", "tam": stt.st_size, "mt": int(stt.st_mtime),
+                                  "mini": _tipo_midia(n)})
             except Exception: pass
     except Exception as e: return jsonify(erro=str(e), pasta=path, itens=[], partes=partes)
     return jsonify(pasta=path, itens=itens[:500], partes=partes)
@@ -4663,6 +4680,152 @@ def api_apagar_pasta():
     try:
         os.rmdir(os.path.join(path, nome)); return jsonify(ok=True)
     except Exception as e: return jsonify(erro=str(e))
+
+
+# ============ MINIATURAS E PASTA EM ZIP ============
+_EXT_IMG = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".ico"}
+_EXT_VID = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg"}
+def _tipo_midia(nome):
+    e = os.path.splitext(nome)[1].lower()
+    return "img" if e in _EXT_IMG else ("vid" if e in _EXT_VID else "")
+
+_MINI_CACHE = {}            # (caminho, mtime, tamanho_arquivo, lado) -> jpeg   (poucos KB cada; máx. 250)
+_MINI_SEM = threading.Semaphore(2)   # no máximo 2 miniaturas sendo geradas ao mesmo tempo (poupa CPU)
+_MINI_MAX_ARQ = 80 * 1024 * 1024     # não abre imagens maiores que 80 MB
+
+def _mini_imagem(p, lado):
+    im = _PIL.open(p)
+    try: im.draft("RGB", (lado * 2, lado * 2))        # JPEG: decodifica já reduzido (bem mais rápido)
+    except Exception: pass
+    try: im = _PILOps.exif_transpose(im)
+    except Exception: pass
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA"); fundo = _PIL.new("RGB", im.size, (20, 20, 28)); fundo.paste(im, mask=im.split()[-1]); im = fundo
+    elif im.mode != "RGB": im = im.convert("RGB")
+    im.thumbnail((lado, lado))
+    buf = io.BytesIO(); im.save(buf, "JPEG", quality=70 if lado <= 200 else 80); return buf.getvalue()
+
+def _mini_video(p, lado):
+    ff = shutil.which("ffmpeg")
+    if not ff: return None
+    flags = 0x08000000 if os.name == "nt" else 0
+    for ss in ("1", "0"):
+        try:
+            r = subprocess.run([ff, "-v", "error", "-ss", ss, "-i", p, "-frames:v", "1",
+                                "-vf", f"scale={lado}:{lado}:force_original_aspect_ratio=decrease",
+                                "-f", "mjpeg", "-q:v", "6", "-"], capture_output=True, timeout=10, creationflags=flags)
+            if r.returncode == 0 and r.stdout: return r.stdout
+        except Exception: pass
+    return None
+
+
+@app.route("/api/miniatura")
+def api_miniatura():
+    b = exigir_auth()
+    if b: return b
+    nome = _nome_seguro(request.args.get("nome", ""))
+    p = os.path.join(_path_seguro(request.args.get("path") or pasta_arquivos()), nome)
+    tipo = _tipo_midia(nome)
+    if not tipo or not os.path.isfile(p): return jsonify(erro="sem miniatura"), 404
+    lado = 900 if request.args.get("g") == "1" else 160
+    try: st = os.stat(p)
+    except Exception: return jsonify(erro="arquivo nao encontrado"), 404
+    chave = (p, int(st.st_mtime), st.st_size, lado)
+    jpg = _MINI_CACHE.get(chave)
+    if jpg is None:
+        if tipo == "img" and (_PIL is None or st.st_size > _MINI_MAX_ARQ): return jsonify(erro="sem miniatura"), 404
+        with _MINI_SEM:
+            try: jpg = _mini_imagem(p, lado) if tipo == "img" else _mini_video(p, lado)
+            except Exception: jpg = None
+        if not jpg: return jsonify(erro="sem miniatura"), 404
+        if len(_MINI_CACHE) >= 250: _MINI_CACHE.pop(next(iter(_MINI_CACHE)))
+        _MINI_CACHE[chave] = jpg
+    return Response(jpg, mimetype="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+_ZIP_MAX_ARQ = 5000
+_ZIP_MAX_BYTES = 4 * 1024 ** 3
+_EXT_JA_COMPRIMIDO = _EXT_IMG | _EXT_VID | {".zip", ".rar", ".7z", ".gz", ".mp3", ".aac", ".flac", ".ogg", ".m4a", ".pdf", ".docx", ".xlsx", ".pptx", ".heic"}
+
+def _listar_para_zip(raiz):
+    """[(caminho_completo, nome_no_zip, compressao)] e total de bytes. Ignora links simbólicos e arquivos ilegíveis."""
+    base = os.path.basename(raiz.rstrip("\\/")) or "pasta"
+    itens = []; total = 0
+    for dp, dirs, files in os.walk(raiz):
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(dp, d))]
+        for f in files:
+            full = os.path.join(dp, f)
+            try:
+                if os.path.islink(full) or not os.path.isfile(full): continue
+                sz = os.path.getsize(full)
+            except Exception: continue
+            rel = os.path.relpath(full, raiz).replace(os.sep, "/")
+            ct = zipfile.ZIP_STORED if os.path.splitext(f)[1].lower() in _EXT_JA_COMPRIMIDO else zipfile.ZIP_DEFLATED
+            itens.append((full, base + "/" + rel, ct)); total += sz
+            if len(itens) > _ZIP_MAX_ARQ or total > _ZIP_MAX_BYTES: return itens, total
+    return itens, total
+
+
+class _ZipStream:
+    """Destino 'sem retrocesso' pro zipfile: junta o que foi escrito e entrega aos poucos (nada vai pro disco)."""
+    def __init__(self): self.buf = []; self.pos = 0
+    def write(self, b): self.buf.append(bytes(b)); self.pos += len(b); return len(b)
+    def tell(self): return self.pos
+    def flush(self): pass
+    def take(self): d = b"".join(self.buf); self.buf = []; return d
+
+
+def _gerar_zip(itens):
+    st = _ZipStream(); zf = zipfile.ZipFile(st, "w", allowZip64=True)
+    for full, arc, ct in itens:
+        try:
+            try: zi = zipfile.ZipInfo.from_file(full, arc)
+            except ValueError: zi = zipfile.ZipInfo(arc)           # data fora do intervalo do zip (antes de 1980)
+            zi.compress_type = ct
+            with open(full, "rb") as src, zf.open(zi, "w", force_zip64=True) as dst:
+                while True:
+                    chunk = src.read(256 * 1024)
+                    if not chunk: break
+                    dst.write(chunk); d = st.take()
+                    if d: yield d
+        except Exception: continue
+        d = st.take()
+        if d: yield d
+    zf.close(); d = st.take()
+    if d: yield d
+
+
+def _pasta_zip_alvo():
+    path = _path_seguro(request.args.get("path") or pasta_arquivos())
+    return path if os.path.isdir(path) else None
+
+
+@app.route("/api/zip_info")
+def api_zip_info():
+    b = exigir_auth()
+    if b: return b
+    raiz = _pasta_zip_alvo()
+    if not raiz: return jsonify(erro="pasta invalida")
+    itens, total = _listar_para_zip(raiz)
+    if len(itens) > _ZIP_MAX_ARQ: return jsonify(erro=f"pasta com arquivos demais (limite {_ZIP_MAX_ARQ})")
+    if total > _ZIP_MAX_BYTES: return jsonify(erro="pasta grande demais (limite 4 GB)")
+    if not itens: return jsonify(erro="a pasta nao tem arquivos")
+    return jsonify(arquivos=len(itens), bytes=total)
+
+
+@app.route("/api/baixar_pasta")
+def api_baixar_pasta():
+    b = exigir_auth()
+    if b: return b
+    raiz = _pasta_zip_alvo()
+    if not raiz: return jsonify(erro="pasta invalida"), 400
+    itens, total = _listar_para_zip(raiz)
+    if not itens or len(itens) > _ZIP_MAX_ARQ or total > _ZIP_MAX_BYTES: return jsonify(erro="pasta vazia ou grande demais"), 400
+    nome = (os.path.basename(raiz.rstrip("\\/")) or "pasta")
+    nome_zip = re.sub(r'[^\w.\- ]', "_", nome, flags=re.ASCII).strip() or "pasta"
+    cab = {"Content-Disposition": f"attachment; filename=\"{nome_zip}.zip\"; filename*=UTF-8''{_urlquote(nome)}.zip",
+           "Cache-Control": "no-store"}
+    return Response(stream_with_context(_gerar_zip(itens)), mimetype="application/zip", headers=cab)
 
 
 @app.route("/api/download")
