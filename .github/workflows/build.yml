@@ -8,7 +8,7 @@ on:
 
 env:
   NOME_EXE: RotaControl
-  
+
 jobs:
   build:
     runs-on: windows-latest
@@ -27,13 +27,13 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests pyinstaller
+          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests PyAudioWPatch pyinstaller
 
       - name: Checar se compila
         run: python -m py_compile painel.py
 
       - name: Compilar exe
-        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk painel.py
+        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk --collect-all pyaudiowpatch painel.py
 
       - name: Listar arquivos gerados
         run: dir dist
