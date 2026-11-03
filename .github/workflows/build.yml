@@ -49,26 +49,6 @@ jobs:
           dotnet publish sensores_tmp/sensores.csproj -c Release -o sensores
           dir sensores
 
-      # Opcional: embute a sua chave da IA a partir de um segredo do repositorio (Settings > Secrets > Actions > IA_CHAVE).
-      # Assim a chave nao fica escrita no codigo publico. Se o segredo nao existir, nada muda.
-      - name: Embutir chave da IA
-        env:
-          IA_CHAVE: ${{ secrets.IA_CHAVE }}
-        shell: pwsh
-        run: |
-          @'
-          import os
-          k = os.environ.get("IA_CHAVE", "").strip()
-          s = open("painel.py", encoding="utf-8").read()
-          alvo = 'IA_CHAVE_EMBUTIDA = "AQ.Ab8RN6L1YHj21T97xKObaxmZAvMBPdeuQ-jscLHgD1lZL-kvZg"'
-          assert s.count(alvo) == 1
-          if k:
-              open("painel.py", "w", encoding="utf-8").write(s.replace(alvo, 'IA_CHAVE_EMBUTIDA = "' + k + '"'))
-          print("chave embutida" if k else "sem chave embutida")
-          '@ | Set-Content -Path embutir.py -Encoding UTF8
-          python embutir.py
-          Remove-Item embutir.py
-
       - name: Checar se compila
         run: python -m py_compile painel.py
 
