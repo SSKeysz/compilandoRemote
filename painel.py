@@ -2606,7 +2606,7 @@ function mostrarTemps(t){
     });
     box.innerHTML=h;
   }
-  if(dica)dica.innerHTML=(t&&t.dica)?'<b>CPU:</b> o Windows só entrega a temperatura da CPU com um driver de sensor, que exige administrador e costuma ser barrado por antivírus. Por segurança o RotaControl não instala driver; aqui aparecem GPU, SSD e o que o seu PC informar.':'';
+  if(dica)dica.innerHTML=(t&&t.dica)?'<b>CPU:</b> Aqui aparecem a temperatura do que o seu PC informar.':'';
 }
 const LINK={h:[],busy:false};
 async function medirLink(){
