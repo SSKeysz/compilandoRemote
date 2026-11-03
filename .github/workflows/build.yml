@@ -27,13 +27,63 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests PyAudioWPatch pyinstaller
+          pip install flask pillow mss pycaw comtypes psutil "qrcode[pil]" winsdk requests PyAudioWPatch pythonnet pyinstaller
+
+      # Biblioteca de sensores (temperaturas de GPU/SSD). Se falhar, o exe sai igual, só sem essas temperaturas.
+      - name: Baixar biblioteca de sensores
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path sensores_tmp | Out-Null
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net472</TargetFramework>
+              <OutputType>Library</OutputType>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+            </ItemGroup>
+          </Project>
+          '@ | Set-Content -Path sensores_tmp/sensores.csproj
+          dotnet publish sensores_tmp/sensores.csproj -c Release -o sensores
+          dir sensores
+
+      # Opcional: embute a sua chave da IA a partir de um segredo do repositorio (Settings > Secrets > Actions > IA_CHAVE).
+      # Assim a chave nao fica escrita no codigo publico. Se o segredo nao existir, nada muda.
+      - name: Embutir chave da IA
+        env:
+          IA_CHAVE: ${{ secrets.IA_CHAVE }}
+        shell: pwsh
+        run: |
+          @'
+          import os
+          k = os.environ.get("IA_CHAVE", "").strip()
+          s = open("painel.py", encoding="utf-8").read()
+          alvo = 'IA_CHAVE_EMBUTIDA = "AQ.Ab8RN6L1YHj21T97xKObaxmZAvMBPdeuQ-jscLHgD1lZL-kvZg"'
+          assert s.count(alvo) == 1
+          if k:
+              open("painel.py", "w", encoding="utf-8").write(s.replace(alvo, 'IA_CHAVE_EMBUTIDA = "' + k + '"'))
+          print("chave embutida" if k else "sem chave embutida")
+          '@ | Set-Content -Path embutir.py -Encoding UTF8
+          python embutir.py
+          Remove-Item embutir.py
 
       - name: Checar se compila
         run: python -m py_compile painel.py
 
       - name: Compilar exe
-        run: pyinstaller --onefile --noconsole --clean --name $env:NOME_EXE --icon=NONE --collect-all pycaw --collect-all comtypes --collect-all PIL --collect-all mss --collect-all psutil --collect-all qrcode --collect-all winsdk --collect-all pyaudiowpatch painel.py
+        shell: pwsh
+        run: |
+          $args = @("--onefile","--noconsole","--clean","--name",$env:NOME_EXE,"--icon=NONE",
+                    "--collect-all","pycaw","--collect-all","comtypes","--collect-all","PIL","--collect-all","mss",
+                    "--collect-all","psutil","--collect-all","qrcode","--collect-all","winsdk","--collect-all","pyaudiowpatch")
+          if (Test-Path "sensores/LibreHardwareMonitorLib.dll") {
+            Write-Host "Incluindo biblioteca de sensores"
+            $args += @("--add-data","sensores;sensores","--collect-all","pythonnet","--collect-all","clr_loader")
+          } else { Write-Host "Sem biblioteca de sensores (temperaturas de GPU/SSD ficam indisponiveis)" }
+          $args += "painel.py"
+          pyinstaller @args
 
       - name: Listar arquivos gerados
         run: dir dist
