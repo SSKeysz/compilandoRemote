@@ -2606,7 +2606,7 @@ function mostrarTemps(t){
     });
     box.innerHTML=h;
   }
-  if(dica)dica.innerHTML=(t&&t.dica)?'<b>CPU:</b> Aqui aparecem a temperatura do que o seu PC informar.':'';
+  if(dica)dica.innerHTML=(t&&t.dica)?' Aqui aparecem a temperatura dos drivers o seu PC informar.':'';
 }
 const LINK={h:[],busy:false};
 async function medirLink(){
