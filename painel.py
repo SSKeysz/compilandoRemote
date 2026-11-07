@@ -204,7 +204,7 @@ CONFIG_PADRAO = {
     "tutorial_visto": False,
     "tema_fundo": False,
     "autoclick": None,
-    "jan_esc": {}, "jan_exe": "",
+    "jan_esc": {}, "jan_exe": "", "jan_modo": "invisivel",
 }
 
 
@@ -1555,8 +1555,17 @@ nav button.on{color:var(--acc2);background:rgba(124,0,240,.18)}
 
 .janDrop{border:2px dashed var(--line);border-radius:12px;padding:16px;text-align:center;color:var(--mut);font-size:13px;margin:10px 0;cursor:pointer}
 .janDrop.sobre{border-color:var(--acc);color:var(--fg);background:rgba(124,0,240,.08)}
-#janWrap{margin-top:10px;background:#000;border-radius:10px;overflow:hidden;line-height:0}
+#janWrap{margin-top:10px;background:#000;border-radius:10px;overflow:hidden;line-height:0;position:relative}
 #janImg{width:100%;height:auto;display:block;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#janWrap.janFs{position:fixed;left:0;top:0;right:0;bottom:0;margin:0;border-radius:0;z-index:90;display:flex;align-items:center;justify-content:center}
+#janWrap.janFs #janImg{width:100%;height:100%;object-fit:contain}
+#janBar{display:none}
+#janWrap.janFs #janBar{display:flex;position:absolute;top:calc(8px + env(safe-area-inset-top));right:calc(8px + env(safe-area-inset-right));gap:8px;z-index:3}
+#janBar button{width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(20,20,28,.65);color:#fff;font-size:15px;opacity:.65;padding:0}
+#janBar button.on,#fsBar button.on,.dirBtn.on{background:var(--acc,#7c00f0);color:#fff;opacity:1}
+#janDot{display:none;position:fixed;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid #fff;background:rgba(160,60,255,.35);pointer-events:none;z-index:95}
+#janDot.on{display:block;animation:fsPing .45s ease-out forwards}
+#janDot.seg{animation:none;opacity:.8}
 #janKb{position:fixed;left:-100px;top:0;width:10px;height:10px;opacity:0;font-size:16px}
 .hid{display:none!important}
 .lock{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:30}
@@ -1960,7 +1969,7 @@ html.claro .telaOff{color:var(--mut)}
       <div class="telaWrap" id="telaWrap">
         <img id="tela" alt="" draggable="false">
         <div id="telaOff" class="telaOff">Tela desligada — clique em "Ver ao vivo"</div>
-        <div id="fsBar"><button onclick="somToggle()" id="fsSom" title="Som do PC">🔇</button><button onclick="fsTeclado()" title="Teclado">⌨</button><button onclick="fsZoomReset()" title="Zoom 1x">1×</button><button onclick="fsSair()" title="Sair">✕</button></div>
+        <div id="fsBar"><button onclick="somToggle()" id="fsSom" title="Som do PC">🔇</button><button onclick="fsTeclado()" title="Teclado">⌨</button><button onclick="fsDireito()" class="dirBtn" id="fsDir" title="Clique direito">🖱</button><button onclick="fsZoomReset()" title="Zoom 1x">1×</button><button onclick="fsSair()" title="Sair">✕</button></div>
         <input id="fsKb" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" aria-hidden="true">
         <div id="fsDot"></div>
       </div>
@@ -1988,18 +1997,23 @@ html.claro .telaOff{color:var(--mut)}
       <div class="row"><select id="janProg" style="flex:1" onchange="janEscolher(this.value)"></select><button class="btn mini ghost" onclick="janProgramas()">↻</button></div>
       <label class="hint" style="display:block;margin:10px 0 6px">Programa escolhido</label>
       <input id="janExe" placeholder="programa.exe" autocomplete="off" autocapitalize="off">
+      <label class="hint" style="display:block;margin:10px 0 6px">Como esconder no PC</label>
+      <select id="janModo"><option value="invisivel">Invisível no lugar (recomendado)</option><option value="fora">Fora da tela</option></select>
       <button class="btn block" id="janBtn" style="margin-top:10px" onclick="janAlternar()">📲 Mandar pro celular: DESLIGADO</button>
       <div class="hint" id="janInfo">—</div>
       <div id="janView" class="hid">
         <select id="janJan" onchange="janTrocar()" style="margin-top:6px"></select>
         <div class="modoToggle" id="janQ" style="width:100%;margin-top:8px"><button data-q="eco" style="flex:1">Eco</button><button data-q="normal" style="flex:1" class="on">Normal</button><button data-q="alta" style="flex:1">Alta</button></div>
-        <div id="janWrap"><img id="janImg" alt="" draggable="false"></div>
-        <div class="grid" style="margin-top:8px;grid-template-columns:repeat(3,minmax(0,1fr))"><button class="btn ghost" onclick="janTeclado()">⌨ Teclado</button><button class="btn ghost" onclick="janTecla('enter')">⏎ Enter</button><button class="btn ghost" onclick="janTecla('backspace')">⌫ Apagar</button></div>
+        <div class="warn hid" id="janPreto" style="margin-top:8px">A imagem está preta: esse programa não deixa ser capturado assim. Desligue e tente o outro modo de esconder.</div>
+        <div id="janWrap"><img id="janImg" alt="" draggable="false"><div id="janBar"><button onclick="janDireito()" class="dirBtn" title="Clique direito">🖱</button><button onclick="janTeclado()" title="Teclado">⌨</button><button onclick="janQCiclo()" id="janQb" title="Qualidade">N</button><button onclick="janFsSair()" title="Sair">✕</button></div></div>
+        <div id="janDot"></div>
+        <button class="btn acc block" style="margin-top:8px" onclick="janFsEntrar()">⛶ Tela cheia</button>
+        <div class="grid" style="margin-top:8px;grid-template-columns:repeat(2,minmax(0,1fr))"><button class="btn ghost" onclick="janTeclado()">⌨ Teclado</button><button class="btn ghost dirBtn" onclick="janDireito()">🖱 Clique direito</button><button class="btn ghost" onclick="janTecla('enter')">⏎ Enter</button><button class="btn ghost" onclick="janTecla('backspace')">⌫ Apagar</button></div>
         <input id="janKb" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-        <div class="hint">Toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar • toque duplo = duplo clique</div>
+        <div class="hint">Toque = clique • segurar = segura o clique (aí arraste) • toque duplo = duplo clique • 2 dedos = rolar • botão 🖱 = próximo toque é clique direito</div>
       </div>
       <button class="btn ghost block" style="margin-top:10px" onclick="janVoltar()">↩ Trazer tudo de volta ao PC</button>
-      <div class="warn" style="margin-top:10px">Experimental: funciona melhor com programas comuns do Windows. Jogos em tela cheia, alguns apps com aceleração de vídeo e atalhos com Ctrl podem não funcionar. Se o app fechar com a janela escondida, ela volta sozinha na próxima vez que o RotaControl abrir.</div>
+      <div class="warn" style="margin-top:10px">Experimental: funciona melhor com programas comuns do Windows. Jogos em tela cheia e alguns apps com aceleração de vídeo podem não funcionar. No modo invisível, o cursor do PC pula um instante quando você toca no celular. Se o app fechar com a janela escondida, ela volta sozinha na próxima vez que o RotaControl abrir.</div>
     </div>
   </section>
 
@@ -2718,7 +2732,7 @@ async function audioTrocar(id){const r=await post("/api/audio_saida",{id});if(r.
 function audioAlternar(){audioTrocar("proximo")}
 
 /* ===== TELA CHEIA + TOQUE DIRETO ===== */
-const FS={on:false,z:1,tx:0,ty:0,q:[],busy:false,g:null,lp:null,lastMove:0,lastTap:0,lastTapX:0,lastTapY:0,kb:false,dotT:null};
+const FS={dir:false,on:false,z:1,tx:0,ty:0,q:[],busy:false,g:null,lp:null,lastMove:0,lastTap:0,lastTapX:0,lastTapY:0,kb:false,dotT:null};
 function fsSend(o){const q=FS.q;if(o.acao==="move"&&q.length&&q[q.length-1].acao==="move")q[q.length-1]=o;else q.push(o);if(!FS.busy)fsDrain()}
 async function fsDrain(){FS.busy=true;while(FS.q.length){const o=FS.q.shift();try{const r=await fetch("/api/mouse_abs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(o)});if(r.status===401){FS.q=[];mostrarLock();break}}catch(e){await new Promise(r=>setTimeout(r,200))}}FS.busy=false}
 function fsPonto(cx,cy,prender){
@@ -2730,13 +2744,14 @@ function fsPonto(cx,cy,prender){
 function fsDot(x,y,fixo){const d=$("#fsDot");if(!d)return;d.style.left=x+"px";d.style.top=y+"px";d.classList.remove("on","seg");void d.offsetWidth;d.classList.add(fixo?"seg":"on");if(fixo)d.classList.add("on");clearTimeout(FS.dotT);if(!fixo)FS.dotT=setTimeout(()=>d.classList.remove("on"),500)}
 function fsDotOff(){const d=$("#fsDot");if(d)d.classList.remove("on","seg")}
 function fsAplicar(){const im=$("#tela");if(im)im.style.transform=FS.z<=1.01?"":("translate("+FS.tx+"px,"+FS.ty+"px) scale("+FS.z+")")}
+function fsDireito(){FS.dir=!FS.dir;$$(".dirBtn").forEach(b=>b.classList.toggle("on",FS.dir));toast(FS.dir?"Próximo toque = clique direito":"Clique direito desligado")}
 function fsZoomReset(){FS.z=1;FS.tx=0;FS.ty=0;fsAplicar()}
 async function fsEntrar(){
   if(FS.on)return;if(!telaAtiva)toggleAuto();
   const w=$("#telaWrap");FS.on=true;w.classList.add("fsOn");document.body.classList.add("fsLock");
   try{const f=w.requestFullscreen||w.webkitRequestFullscreen;if(f)await f.call(w)}catch(e){}
   try{await screen.orientation.lock("landscape")}catch(e){}
-  fsZoomReset();toast("1 toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar ou zoom",4500);
+  fsZoomReset();toast("Toque = clique • segurar e arrastar = segura o clique • 🖱 = clique direito • 2 dedos = rolar ou zoom",4500);
 }
 function fsSair(){
   if(!FS.on)return;FS.on=false;clearTimeout(FS.lp);
@@ -2767,7 +2782,7 @@ function fsStart(ev){
   ev.preventDefault();const t=ev.touches,n=t.length;clearTimeout(FS.lp);
   if(n===1){
     const g=FS.g={mode:"um",x0:t[0].clientX,y0:t[0].clientY,t0:Date.now(),ult:null};
-    FS.lp=setTimeout(()=>{if(FS.g===g&&g.mode==="um"){g.mode="feito";const p=fsPonto(g.x0,g.y0);if(p){fsSend({...p,acao:"right"});fsDot(g.x0,g.y0);if(navigator.vibrate)navigator.vibrate(25)}}},550);
+    if(!FS.dir)FS.lp=setTimeout(()=>{if(FS.g===g&&g.mode==="um"){const p=fsPonto(g.x0,g.y0);if(!p){g.mode="feito";return}fsSend({...p,acao:"move"});fsSend({...p,acao:"down"});g.mode="arrasta";g.ult=p;fsDot(g.x0,g.y0,true);if(navigator.vibrate)navigator.vibrate(25)}},350);
   }else if(n>=2){
     if(FS.g&&FS.g.mode==="arrasta"&&FS.g.ult){fsSend({...FS.g.ult,acao:"up"});fsDotOff()}
     const c=fsCentro(t);FS.g={mode:"dois",d:fsDist(t),cx:c.x,cy:c.y,t0:Date.now(),decidido:null,movido:false};
@@ -2780,13 +2795,13 @@ function fsMove(ev){
     const x=t[0].clientX,y=t[0].clientY;
     if(Math.hypot(x-g.x0,y-g.y0)>10){
       clearTimeout(FS.lp);const p0=fsPonto(g.x0,g.y0);
-      if(!p0){g.mode="feito";return}
+      if(!p0||FS.dir){g.mode="feito";return}
       fsSend({...p0,acao:"move"});fsSend({...p0,acao:"down"});g.mode="arrasta";g.ult=p0;
     }
   }
   if(g.mode==="arrasta"&&t.length===1){
     const x=t[0].clientX,y=t[0].clientY;fsDot(x,y,true);
-    const agora=Date.now();if(agora-FS.lastMove<35)return;FS.lastMove=agora;
+    const agora=Date.now();if(agora-FS.lastMove<16)return;FS.lastMove=agora;
     const p=fsPonto(x,y,true);if(p){g.ult=p;fsSend({...p,acao:"move"})}
   }else if(g.mode==="dois"&&t.length>=2){
     const d=fsDist(t),c=fsCentro(t);
@@ -2811,7 +2826,7 @@ function fsEnd(ev){
   if(resta>0){if(g.mode==="dois")g.mode="feito";return}
   if(g.mode==="um"){
     const p=fsPonto(g.x0,g.y0);
-    if(p){const agora=Date.now();fsSend({...p,acao:"click"});fsDot(g.x0,g.y0);if(navigator.vibrate)navigator.vibrate(8);FS.lastTap=agora}
+    if(p){const agora=Date.now();fsSend({...p,acao:FS.dir?"right":"click"});fsDot(g.x0,g.y0);if(navigator.vibrate)navigator.vibrate(8);FS.lastTap=agora;if(FS.dir)fsDireito()}
   }else if(g.mode==="arrasta"){
     if(g.ult)fsSend({...g.ult,acao:"up"});fsDotOff();
   }else if(g.mode==="dois"&&!g.decidido&&Date.now()-g.t0<350){
@@ -3010,18 +3025,18 @@ const TUT=[
 <li><b>Print</b> tira uma foto da tela; <b>Copiar print</b> manda pra área de transferência; <b>Baixar print</b> salva no celular.</li></ol>
 <h4>Tela cheia com toque</h4><ol>
 <li>Toque em <b>⛶ Tela cheia com toque</b>. No Android ela vira tela cheia de verdade; no iPhone o app cobre a tela toda.</li>
-<li><b>Um toque</b> = clique no ponto tocado. <b>Segurar o dedo</b> = clique direito. <b>Dois dedos parados e rápidos</b> = clique direito também.</li>
+<li><b>Um toque</b> = clique no ponto tocado. <b>Segurar o dedo e arrastar</b> = segura o clique, igual segurar o botão do mouse (solte pra soltar). Botão <b>🖱</b> = o próximo toque vira clique direito. <b>Dois dedos parados e rápidos</b> = clique direito também.</li>
 <li><b>Tocar e arrastar</b> = arrasta (janelas, seleção de texto, barras).</li>
 <li><b>Dois dedos pra cima/baixo</b> = rolar. <b>Pinça</b> = zoom na imagem (dois dedos movem a imagem ampliada).</li>
 <li>Botões no canto: <b>⌨</b> abre o teclado do celular (o que você digita vai pro PC), <b>1×</b> volta o zoom, <b>✕</b> sai.</li></ol>
 <p class="hint">Dica: gire o celular pra horizontal. Se o toque cair no lugar errado, confira se o monitor escolhido na lista é o que aparece na imagem.</p>
 <p class="hint">PiP no iPhone: funciona no Safari, mas <b>não</b> no app adicionado à tela de início (limitação da Apple). No PC (Chrome/Edge) abre uma janela flutuante.</p>
 <h4>Janela no celular</h4><ul>
-<li>Esconde <b>um programa</b> da tela do PC e mostra ele aqui no celular, como um segundo monitor. O programa continua rodando no PC (a janela fica fora da área visível).</li>
+<li>Esconde <b>um programa</b> da tela do PC e mostra ele aqui no celular, como um segundo monitor. O programa continua rodando no PC.</li>
 <li>Escolha o programa na lista de abertos (ou digite o nome do .exe; no PC dá pra arrastar o .exe pra caixa) e toque em <b>Mandar pro celular</b>.</li>
-<li>Toque = clique, segurar = botão direito, arrastar = arrastar, 2 dedos = rolar. ⌨ abre o teclado.</li>
-<li>Pra mexer no programa no PC de novo, desligue (ou toque em <b>Trazer tudo de volta ao PC</b>).</li>
-<li>É experimental: jogos em tela cheia e alguns apps com aceleração de vídeo não podem ser capturados escondidos.</li></ul>`},
+<li><b>Invisível no lugar</b> (recomendado): a janela fica transparente no PC mas continua desenhando; seu toque vira mouse de verdade (o cursor do PC pula um instante). <b>Fora da tela</b>: não mexe no seu mouse, mas alguns programas param de atualizar.</li>
+<li>Toque = clique, <b>segurar e arrastar</b> = segura o clique, 2 dedos = rolar, 🖱 = clique direito. ⛶ abre em tela cheia.</li>
+<li>Pra mexer no programa no PC de novo, desligue (ou toque em <b>Trazer tudo de volta ao PC</b>).</li></ul>`},
 
 {t:"📁 Arquivos",h:`<h4>O que tem</h4><ul>
 <li><b>Enviar celular pro PC</b> — escolha arquivos do celular e eles vão pra pasta padrão do PC (muda em Sistema → Pasta padrão).</li>
@@ -3105,68 +3120,108 @@ async function acCapturar(tipo){toast("Aperte a tecla ou botão no PC agora (8 s
 /* ===== FIM AUTOCLICK ===== */
 
 /* ===== JANELA NO CELULAR ===== */
-const JW={t:null,id:0,q:"normal",ligado:false,fila:[],busy:false,iniciada:"",fallback:null};
+const JW={t:null,id:0,q:"normal",ligado:false,fila:[],busy:false,iniciada:"",tok:0,dir:false,fs:false,hold:null,lastMove:0};
+const JIV={eco:250,normal:125,alta:66};
 function janNomeExe(n){n=(n||"").split(/[\\/]/).pop().trim();return n}
 function janArquivo(fl){const f=fl&&fl[0];if(!f)return;if(!/\.exe$/i.test(f.name)){toast("Escolha um arquivo .exe");return}$("#janExe").value=f.name;toast("Programa: "+f.name)}
 function janEscolher(v){if(v)$("#janExe").value=v}
 async function janProgramas(){try{const j=await get("/api/janela/programas");const s=$("#janProg");s.innerHTML='<option value="">— escolher programa aberto —</option>'+(j.programas||[]).map(p=>'<option value="'+esc(p.exe)+'">'+esc(p.exe)+' — '+esc(p.titulo)+'</option>').join("")}catch(e){}}
+function janPreto(p){$("#janPreto").classList.toggle("hid",!p)}
 function janPintar(j){JW.ligado=!!j.ligado;const b=$("#janBtn");b.textContent="📲 Mandar pro celular: "+(j.ligado?"LIGADO":"DESLIGADO");b.classList.toggle("acc",!!j.ligado);
   if(j.exe&&!$("#janExe").value)$("#janExe").value=j.exe;
+  if(j.modo&&!j.ligado&&!JW.modoTocado)$("#janModo").value=j.modo;
   const info=$("#janInfo"),v=$("#janView");
-  if(!j.ligado){info.textContent="Desligado: o programa fica normal na tela do PC.";v.classList.add("hid");janParaStream();return}
-  if(!j.aberto){info.textContent="Ligado. Esperando "+j.exe+" abrir no PC…";v.classList.add("hid");janParaStream();return}
+  if(!j.ligado){info.textContent="Desligado: o programa fica normal na tela do PC.";v.classList.add("hid");janFsSair();janParaStream();return}
+  if(!j.aberto){info.textContent="Ligado. Esperando "+j.exe+" abrir no PC…";v.classList.add("hid");janFsSair();janParaStream();return}
   info.textContent="Ligado: "+j.exe+" está escondido do PC e aparece aqui.";v.classList.remove("hid");
   const sel=$("#janJan"),ant=JW.id;sel.innerHTML=j.janelas.map(w=>'<option value="'+w.id+'">'+esc(w.titulo||w.exe)+'</option>').join("");sel.classList.toggle("hid",j.janelas.length<2);
   const existe=j.janelas.some(w=>w.id===ant);JW.id=existe?ant:j.janelas[0].id;sel.value=JW.id;janStream()}
 async function janEstado(){try{const j=await get("/api/janela/estado");if(j.erro&&!("ligado" in j))return;janPintar(j)}catch(e){}}
 function janIniciar(){if(JW.t)return;if(!$("#janProg").options.length)janProgramas();janEstado();JW.t=setInterval(janEstado,2000)}
-function janParar(){if(JW.t){clearInterval(JW.t);JW.t=null}janParaStream()}
-function janParaStream(){JW.iniciada="";if(JW.fallback){clearInterval(JW.fallback);JW.fallback=null}const i=$("#janImg");if(i&&i.getAttribute("src"))i.removeAttribute("src")}
-function janStream(){const chave=JW.id+"|"+JW.q;if(JW.iniciada===chave)return;janParaStream();JW.iniciada=chave;const i=$("#janImg");
-  i.onerror=()=>{if(JW.fallback)return;JW.fallback=setInterval(()=>{i.src="/api/janela/frame?id="+JW.id+"&q="+JW.q+"&t="+Date.now()},400)};
-  i.src="/api/janela/fluxo?id="+JW.id+"&q="+JW.q+"&t="+Date.now()}
+function janParar(){if(JW.t){clearInterval(JW.t);JW.t=null}janFsSair();janParaStream()}
+function janParaStream(){JW.iniciada="";JW.tok++;const i=$("#janImg");if(i&&i.getAttribute("src"))i.removeAttribute("src")}
+function janStream(){const chave=JW.id+"|"+JW.q;if(JW.iniciada===chave)return;JW.tok++;JW.iniciada=chave;janLoop(JW.tok)}
+async function janLoop(tok){
+  const img=$("#janImg");let h="",ant=null;
+  while(JW.tok===tok){
+    const t0=Date.now(),iv=JIV[JW.q]||125;let espera=iv;
+    try{
+      const r=await fetch("/api/janela/frame?id="+JW.id+"&q="+JW.q+"&h="+h+"&t="+t0,{cache:"no-store"});
+      if(JW.tok!==tok)break;
+      if(r.status===401){mostrarLock();break}
+      if(r.status===200){const b=await r.blob();if(JW.tok!==tok)break;h=r.headers.get("X-H")||"";janPreto(r.headers.get("X-Preto")==="1");const u=URL.createObjectURL(b),prev=ant;ant=u;img.onload=()=>{if(prev)URL.revokeObjectURL(prev)};img.src=u;espera=Math.max(15,iv-(Date.now()-t0))}
+      else if(r.status===204){janPreto(r.headers.get("X-Preto")==="1")}
+      else espera=700;
+    }catch(e){espera=800}
+    await new Promise(z=>setTimeout(z,espera));
+  }
+  if(ant)setTimeout(()=>URL.revokeObjectURL(ant),500);
+}
 function janTrocar(){JW.id=parseInt($("#janJan").value)||0;janStream()}
+function janQAplicar(){$$("#janQ button").forEach(x=>x.classList.toggle("on",x.dataset.q===JW.q));const b=$("#janQb");if(b)b.textContent={eco:"E",normal:"N",alta:"A"}[JW.q]}
+function janQSet(q){JW.q=q;janQAplicar();janStream()}
+function janQCiclo(){janQSet({eco:"normal",normal:"alta",alta:"eco"}[JW.q])}
+function janDireito(){JW.dir=!JW.dir;$$(".dirBtn").forEach(b=>b.classList.toggle("on",JW.dir));toast(JW.dir?"Próximo toque = clique direito":"Clique direito desligado")}
+function janDireitoOff(){if(JW.dir){JW.dir=false;$$(".dirBtn").forEach(b=>b.classList.remove("on"))}}
 async function janAlternar(){if(JW.ligado){await post("/api/janela/config",{ligar:false});toast("Janela de volta no PC");janEstado();return}
   const exe=janNomeExe($("#janExe").value);if(!exe){toast("Escolha o programa primeiro");return}
-  const r=await post("/api/janela/config",{ligar:true,exe});if(r.erro){toast(r.erro,3500);return}toast("Ligado");setTimeout(janEstado,700)}
+  const r=await post("/api/janela/config",{ligar:true,exe,modo:$("#janModo").value});if(r.erro){toast(r.erro,3500);return}toast("Ligado");JW.modoTocado=false;setTimeout(janEstado,700)}
 async function janVoltar(){await post("/api/janela/voltar",{});toast("Tudo de volta no PC");janEstado()}
 async function janPostar(o){o.id=JW.id;return post("/api/janela/mouse",o)}
 function janEnviar(o){const f=JW.fila;if(o.acao==="move"&&f.length&&f[f.length-1].acao==="move")f[f.length-1]=o;else f.push(o);janBomba()}
 async function janBomba(){if(JW.busy)return;JW.busy=true;while(JW.fila.length){const o=JW.fila.shift();try{await janPostar(o)}catch(e){}}JW.busy=false}
 async function janTecla(t){await post("/api/janela/tecla",{id:JW.id,tecla:t})}
 function janTeclado(){const k=$("#janKb");k.value="";k.focus()}
+let janPh=null;
+async function janFsEntrar(){if(JW.fs)return;const w=$("#janWrap");janPh=document.createComment("jan");w.parentNode.insertBefore(janPh,w);document.body.appendChild(w);w.classList.add("janFs");JW.fs=true;document.body.classList.add("fsLock");
+  try{const f=w.requestFullscreen||w.webkitRequestFullscreen;if(f)await f.call(w)}catch(e){}
+  try{await screen.orientation.lock("landscape")}catch(e){}
+  toast("Toque = clique • segurar e arrastar = segura o clique • 🖱 = clique direito • 2 dedos = rolar",4500)}
+function janFsSair(){if(!JW.fs)return;JW.fs=false;const w=$("#janWrap");w.classList.remove("janFs");document.body.classList.remove("fsLock");
+  if(janPh&&janPh.parentNode){janPh.parentNode.insertBefore(w,janPh);janPh.remove()}janPh=null;
+  try{if(document.fullscreenElement||document.webkitFullscreenElement)(document.exitFullscreen||document.webkitExitFullscreen).call(document)}catch(e){}
+  try{screen.orientation.unlock()}catch(e){}}
+["fullscreenchange","webkitfullscreenchange"].forEach(ev=>document.addEventListener(ev,()=>{if(JW.fs&&!document.fullscreenElement&&!document.webkitFullscreenElement)janFsSair()}));
+function janPos(e){const img=$("#janImg"),r=img.getBoundingClientRect();let L=r.left,T=r.top,W=r.width,Hh=r.height;const nw=img.naturalWidth,nh=img.naturalHeight;
+  if(nw&&nh&&W&&Hh){const a=nw/nh;if(W/Hh>a){const w2=Hh*a;L+=(W-w2)/2;W=w2}else{const h2=W/a;T+=(Hh-h2)/2;Hh=h2}}
+  return{fx:Math.min(1,Math.max(0,(e.clientX-L)/(W||1))),fy:Math.min(1,Math.max(0,(e.clientY-T)/(Hh||1)))}}
+function janDot(x,y,fixo){const d=$("#janDot");if(!d)return;d.style.left=x+"px";d.style.top=y+"px";d.classList.remove("on","seg");void d.offsetWidth;d.classList.add("on");if(fixo)d.classList.add("seg");else{clearTimeout(JW.dotT);JW.dotT=setTimeout(()=>d.classList.remove("on"),500)}}
+function janDotOff(){const d=$("#janDot");if(d)d.classList.remove("on","seg")}
 (function(){
-  const kb=()=>$("#janKb");
   document.addEventListener("DOMContentLoaded",()=>{
-    const k=kb(),img=$("#janImg"),drop=$("#janDrop");if(!k||!img)return;
+    const k=$("#janKb"),img=$("#janImg"),drop=$("#janDrop");if(!k||!img)return;
     k.addEventListener("beforeinput",e=>{if(e.inputType==="insertText"&&e.data){post("/api/janela/texto",{id:JW.id,texto:e.data})}else if(e.inputType==="insertLineBreak"||e.inputType==="insertParagraph"){janTecla("enter")}else if(e.inputType==="deleteContentBackward"){janTecla("backspace")}e.preventDefault()});
     k.addEventListener("keydown",e=>{if(e.key==="Backspace"){janTecla("backspace");e.preventDefault()}else if(e.key==="Enter"){janTecla("enter");e.preventDefault()}});
-    $$("#janQ button").forEach(b=>b.onclick=()=>{JW.q=b.dataset.q;$$("#janQ button").forEach(x=>x.classList.toggle("on",x===b));janStream()});
+    $$("#janQ button").forEach(b=>b.onclick=()=>janQSet(b.dataset.q));
+    $("#janModo").addEventListener("change",()=>{JW.modoTocado=true});
     ["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("sobre")}));
     ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("sobre")}));
     drop.addEventListener("drop",e=>janArquivo(e.dataTransfer.files));
-    const P=new Map();let ini=null,drag=false,seg=null,ultMove=0,tapAnt=0,wy=null;
-    const pos=e=>{const r=img.getBoundingClientRect();return{fx:Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)),fy:Math.min(1,Math.max(0,(e.clientY-r.top)/r.height))}};
-    img.addEventListener("pointerdown",e=>{e.preventDefault();img.setPointerCapture(e.pointerId);P.set(e.pointerId,e);
-      if(P.size===2){clearTimeout(seg);seg=null;wy=(([...P.values()][0].clientY+[...P.values()][1].clientY)/2);return}
-      ini={x:e.clientX,y:e.clientY,t:Date.now(),p:pos(e)};drag=false;
-      seg=setTimeout(()=>{seg=null;if(!drag&&P.size===1){janEnviar({acao:"right",...ini.p});ini=null}},550)});
-    img.addEventListener("pointermove",e=>{if(!P.has(e.pointerId))return;P.set(e.pointerId,e);
-      if(P.size===2&&wy!==null){const m=([...P.values()][0].clientY+[...P.values()][1].clientY)/2,d=wy-m;if(Math.abs(d)>25){janEnviar({acao:"wheel",...pos(e),dy:d>0?-1:1});wy=m}return}
-      if(!ini)return;
-      if(!drag&&Math.hypot(e.clientX-ini.x,e.clientY-ini.y)>10){drag=true;clearTimeout(seg);seg=null;janEnviar({acao:"down",...ini.p})}
-      if(drag&&Date.now()-ultMove>40){ultMove=Date.now();janEnviar({acao:"move",...pos(e)})}});
-    const fim=e=>{if(!P.has(e.pointerId))return;P.delete(e.pointerId);if(P.size>0){return}wy=null;clearTimeout(seg);
-      if(!ini)return;const p=pos(e);
-      if(drag)janEnviar({acao:"up",...p});
-      else if(seg!==null||Date.now()-ini.t<550){const agora=Date.now();if(agora-tapAnt<320){janEnviar({acao:"dbl",...p});tapAnt=0}else{janEnviar({acao:"click",...p});tapAnt=agora}}
-      seg=null;ini=null;drag=false};
+    // toque: toque=clique | segurar=segura o clique (e arrasta) | 2 dedos=rolar
+    const P=new Map();let g=null,tapAnt=0,wy=null;
+    const solta=()=>{clearTimeout(JW.hold);JW.hold=null;if(g&&(g.m==="seg"||g.m==="arr")&&g.ult)janEnviar({acao:"up",...g.ult});janDotOff();g=null};
+    img.addEventListener("pointerdown",e=>{e.preventDefault();try{img.setPointerCapture(e.pointerId)}catch(_){}P.set(e.pointerId,e);
+      if(P.size>=2){solta();const v=[...P.values()];wy=(v[0].clientY+v[1].clientY)/2;g={m:"dois",t:Date.now(),mv:false};return}
+      const p=janPos(e);g={m:"um",x:e.clientX,y:e.clientY,t:Date.now(),p,ult:null};
+      if(!JW.dir)JW.hold=setTimeout(()=>{JW.hold=null;if(g&&g.m==="um"){g.m="seg";g.ult=g.p;janEnviar({acao:"move",...g.p});janEnviar({acao:"down",...g.p});janDot(g.x,g.y,true);if(navigator.vibrate)navigator.vibrate(25)}},350)});
+    img.addEventListener("pointermove",e=>{if(!P.has(e.pointerId))return;P.set(e.pointerId,e);if(!g)return;
+      if(g.m==="dois"&&P.size>=2&&wy!==null){const v=[...P.values()],m=(v[0].clientY+v[1].clientY)/2,d=wy-m;if(Math.abs(d)>20){g.mv=true;janEnviar({acao:"wheel",...janPos(e),dy:d>0?-1:1});wy=m}return}
+      if(g.m==="um"&&Math.hypot(e.clientX-g.x,e.clientY-g.y)>10){clearTimeout(JW.hold);JW.hold=null;if(JW.dir){g.m="nada";return}g.m="arr";g.ult=g.p;janEnviar({acao:"move",...g.p});janEnviar({acao:"down",...g.p})}
+      if(g.m==="seg"||g.m==="arr"){janDot(e.clientX,e.clientY,true);const n=Date.now();if(n-JW.lastMove<16)return;JW.lastMove=n;const p=janPos(e);g.ult=p;janEnviar({acao:"move",...p})}});
+    const fim=e=>{if(!P.has(e.pointerId))return;P.delete(e.pointerId);if(P.size>0)return;wy=null;clearTimeout(JW.hold);JW.hold=null;
+      if(!g)return;const gg=g;
+      if(gg.m==="seg"||gg.m==="arr"){const p=janPos(e);janEnviar({acao:"move",...p});janEnviar({acao:"up",...p});janDotOff()}
+      else if(gg.m==="um"){const p=gg.p,agora=Date.now();
+        if(JW.dir){janEnviar({acao:"right",...p});janDot(gg.x,gg.y);janDireitoOff()}
+        else if(agora-tapAnt<320){janEnviar({acao:"dbl",...p});tapAnt=0;janDot(gg.x,gg.y)}
+        else{janEnviar({acao:"click",...p});tapAnt=agora;janDot(gg.x,gg.y);if(navigator.vibrate)navigator.vibrate(8)}}
+      g=null};
     img.addEventListener("pointerup",fim);img.addEventListener("pointercancel",fim);
     img.addEventListener("contextmenu",e=>e.preventDefault())})})();
 /* ===== FIM JANELA NO CELULAR ===== */
 /* ===== I18N ===== */
 const EN_ON=(()=>{try{return localStorage.getItem("rotacontrol_lang")==="en"}catch(e){return false}})();
-const EN={"Iniciante": "Beginner", "Avançado": "Advanced", "Ações rápidas": "Quick actions", "+ Adicionar ação": "+ Add action", "Navegação": "Navigation", "⬅ Voltar": "⬅ Back", "↻ Atualizar": "↻ Refresh", "Avançar ➡": "Forward ➡", "Atalhos salvos": "Saved shortcuts", "+ Adicionar atalho": "+ Add shortcut", "Jogos": "Games", "🔄 Atualizar lista de jogos": "🔄 Refresh game list", "✏️ Editar itens (ações e atalhos)": "✏️ Edit items (actions and shortcuts)", "Digitar ao vivo": "Live typing", "Ativar digitação ao vivo": "Enable live typing", "Copiar no PC": "Copy on PC", "Limpar campo": "Clear field", "Teclas persistentes": "Sticky keys", "Trave uma tecla modificadora e use as teclas soltas. Destrava sozinho em 60s.": "Lock a modifier key and use the loose keys. It unlocks by itself after 60s.", "🔓 SOLTAR TODAS AS TECLAS": "🔓 RELEASE ALL KEYS", "Teclas soltas": "Loose keys", "Espaço": "Space", "Perfis de teclado salvos": "Saved keyboard profiles", "Combos prontos pra 1 clique. Ex: Alt+Tab, Ctrl+Shift+Esc.": "One-click ready-made combos. E.g. Alt+Tab, Ctrl+Shift+Esc.", "+ Criar perfil": "+ Create profile", "Pegar do PC": "Get from PC", "Ler área de transferência": "Read clipboard", "Segure o botão por 3 segundos pra ligar/desligar a leitura automática.": "Hold the button for 3 seconds to turn automatic reading on/off.", "⬇ Baixar": "⬇ Download", "Copiar de novo no PC": "Copy again on PC", "Copiar (celular)": "Copy (phone)", "Limpar": "Clear", "Histórico de clipboard": "Clipboard history", "Limpar histórico": "Clear history", "Tocando agora": "Now playing", "(nada tocando)": "(nothing playing)", "Controles": "Controls", "Saída de áudio": "Audio output", "🔁 Alternar saída (caixa ⇄ fone)": "🔁 Switch output (speakers ⇄ headphones)", "Volume do sistema": "System volume", "Volume por app": "Volume per app", "Atualizar lista": "Refresh list", "Esquerdo": "Left", "Direito": "Right", "Meio": "Middle", "Duplo clique": "Double click", "Arrastar": "Drag", "Tela do PC": "PC screen", "Monitor:": "Monitor:", "Qualidade da imagem:": "Image quality:", "Eco": "Eco", "Alta": "High", "Máx.": "Max", "Atualizar agora": "Refresh now", "Ver ao vivo": "Watch live", "Tela desligada — clique em \"Ver ao vivo\"": "Screen off — tap \"Watch live\"", "⛶ Tela cheia com toque": "⛶ Fullscreen with touch", "🔇 Som do PC no celular: DESLIGADO": "🔇 PC sound on phone: OFF", "🔊 Som do PC no celular: LIGADO": "🔊 PC sound on phone: ON", "📸 Print": "📸 Screenshot", "📋 Copiar print": "📋 Copy screenshot", "📱 Baixar print": "📱 Download screenshot", "Os arquivos vão pra pasta padrão (configurável em Sistema).": "Files go to the default folder (configurable in System).", "Navegador de arquivos": "File browser", "Buscar": "Search", "⬆ Subir": "⬆ Up", "+ Pasta": "+ Folder", "📋 Caminho": "📋 Path", "📦 Baixar esta pasta (.zip)": "📦 Download this folder (.zip)", "Status do PC": "PC status", "Processos": "Processes", "Tráfego do PC agora": "PC traffic now", "Internet do PC": "PC internet", "medindo…": "measuring…", "Celular ↔ PC": "Phone ↔ PC", "Ligado há": "Uptime", "Temperaturas": "Temperatures", "= a conexão do computador com a internet.": "= the computer's connection to the internet.", "= a ligação entre este aparelho e o PC": "= the link between this device and the PC", "(é ela que decide se o controle fica fluido).": "(it decides whether control feels smooth).", "= tempo de resposta (menor é melhor),": "= response time (lower is better),", "oscilação": "jitter", "= quanto o ping varia,": "= how much the ping varies,", "perda": "loss", "= pedidos que não voltaram. Escala:": "= requests that never came back. Scale:", "Excelente": "Excellent", "Boa": "Good", "Média": "Fair", "Ruim": "Poor", "Péssima": "Terrible", "Discos": "Disks", "Top 5 (RAM)": "Top 5 (RAM)", "Reparos rápidos": "Quick fixes", "🔄 Reiniciar Explorer": "🔄 Restart Explorer", "🔊 Reiniciar Áudio": "🔊 Restart Audio", "Terminal Rápido": "Quick Terminal", "• sem salvar estado": "• stateless", "Cada comando roda num processo novo.": "Each command runs in a new process.", "Não guarda": "It does not keep", "histórico, diretório nem variáveis entre comandos.": "history, directory or variables between commands.", "Comandos rápidos": "Quick commands", "+ Adicionar": "+ Add", "✏️ Editar itens": "✏️ Edit items", "Acesso remoto": "Remote access", "carregando…": "loading…", "Tailscale (fora de casa, recomendado):": "Tailscale (away from home, recommended):", "não detectado": "not detected", "WAN (Cloudflare, link público):": "WAN (Cloudflare, public link):", "desativado": "disabled", "📱 QR Code no PC": "📱 QR Code on PC", "Modo de acesso": "Access mode", "Wi-Fi local": "Local Wi-Fi", "Fora de casa": "Away from home", "⚠ \"Fora de casa\" cria um link público: qualquer pessoa com o link chega na tela de PIN.": "⚠ \"Away from home\" creates a public link: anyone with the link reaches the PIN screen.", "Pra acesso remoto mais seguro, use o": "For safer remote access, use", "(veja o tutorial, página \"Fora de casa\").": "(see the tutorial, \"Away from home\" page).", "Inicialização": "Startup", "Iniciar com Windows": "Start with Windows", "📖 Ver tutorial novamente": "📖 View tutorial again", "Monitores": "Monitors", "Desligar": "Turn off", "Ligar": "Turn on", "Energia": "Power", "Bloquear": "Lock", "Dormir": "Sleep", "Reiniciar": "Restart", "Cancelar desligamento": "Cancel shutdown", "Timer de energia": "Power timer", "Desligar PC": "Shut down PC", "Reiniciar PC": "Restart PC", "Agendar": "Schedule", "Cancelar todos": "Cancel all", "PIN de 4 dígitos: o app bloqueia logins de fora depois de poucas tentativas erradas. Se usar \"Fora de casa\" (link público), prefira o PIN de 6 dígitos ou o Tailscale.": "4-digit PIN: the app blocks outside logins after a few wrong attempts. If you use \"Away from home\" (public link), prefer the 6-digit PIN or Tailscale.", "Sem PIN: qualquer aparelho na rede controla este PC.": "No PIN: any device on the network controls this PC.", "PIN de 4 dígitos": "4-digit PIN", "PIN de 6 dígitos": "6-digit PIN", "Trocar PIN": "Change PIN", "Pasta padrão": "Default folder", "Usada pra receber uploads e salvar prints.": "Used to receive uploads and save screenshots.", "— Escolher pasta pronta —": "— Pick a preset folder —", "Área de Trabalho": "Desktop", "Documentos": "Documents", "Imagens": "Pictures", "Vídeos": "Videos", "Músicas": "Music", "Home do usuário": "User home", "Salvar pasta": "Save folder", "Diagnóstico do sistema": "System diagnostics", "Roda uma bateria de testes no PC e mostra alertas.": "Runs a battery of tests on the PC and shows alerts.", "🩺 Abrir diagnóstico": "🩺 Open diagnostics", "Encerrar": "Exit", "Fechar programa": "Close program", "BYPASS (apaga .exe)": "BYPASS (deletes .exe)", "Aparência": "Appearance", "Tema de cores (só neste aparelho)": "Color theme (this device only)", "🌙 Escuro": "🌙 Dark", "☀️ Claro": "☀️ Light", "🌗 Auto": "🌗 Auto", "Tema visual complementar.": "Complementary visual theme.", "🎨 Ativar fundo animado": "🎨 Enable animated background", "🎨 Desativar fundo animado": "🎨 Disable animated background", "🪟 Ativar efeito vidro": "🪟 Enable glass effect", "🪟 Desativar efeito vidro": "🪟 Disable glass effect", "💡 Manter tela ligada": "💡 Keep screen on", "Com \"SIM\", a tela deste aparelho não apaga enquanto o painel estiver aberto e visível (gasta mais bateria). Vale só pra este aparelho.": "With \"YES\", this device's screen stays on while the panel is open and visible (uses more battery). This device only.", "↩ Restaurar ordem das abas e categorias": "↩ Restore tab and category order", "Vidro só nas barras e botões. Dá pra combinar com o fundo animado. Vale só pra este aparelho; se ficar pesado no PC, desligue.": "Glass only on bars and buttons. Can be combined with the animated background. This device only; if it gets heavy, turn it off.", "Ações": "Actions", "Texto": "Text", "Mídia": "Media", "Tela": "Screen", "Arquivos": "Files", "Sistema": "System", "Digite o PIN": "Enter PIN", "Entrar": "Sign in", "🔍 Buscar jogo...": "🔍 Search game...", "Toque em ATIVAR e depois digite (ou fale 🎤)": "Tap ENABLE, then type (or speak 🎤)", "Ditar por voz": "Dictate by voice", "(vazio)": "(empty)", "Volume do PC": "PC volume", "Toque pra digitar": "Tap to type", "Mede sua conexão e escolhe sozinho": "Measures your connection and picks automatically", "Econômico: pouca internet": "Economy: low data", "Equilibrado": "Balanced", "Nítido e fluido (Wi-Fi bom)": "Sharp and smooth (good Wi-Fi)", "O máximo (rede local rápida)": "The maximum (fast local network)", "Som do PC": "PC sound", "Sair": "Exit", "🔍 Buscar arquivo ou pasta...": "🔍 Search file or folder...", "Novo PIN (4 números)": "New PIN (4 digits)", "Novo PIN (6 números)": "New PIN (6 digits)", "Fundo animado ativo — triângulos 3D girando.": "Animated background on — spinning 3D triangles.", "Este navegador não toca o som ao vivo": "This browser can't play live sound", "Som ligado — use o volume do celular": "Sound on — use your phone's volume", "Som indisponível:": "Sound unavailable:", "Voltar as abas e categorias pra ordem original?": "Restore tabs and categories to the original order?", "Ordem salva": "Order saved", "Stream indisponível — usando o modo simples": "Stream unavailable — using simple mode", "Ao vivo •": "Live •", "Sem captura agora": "No capture right now", "Foto •": "Photo •", "Erro ao capturar a tela": "Error capturing the screen", "Indisponível": "Unavailable", "Tocando em:": "Playing on:", "Erro:": "Error:", "Saída:": "Output:", "1 toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar ou zoom": "1 tap = click • hold = right click • drag = drag • 2 fingers = scroll or zoom", "Arraste pra cima ou pra baixo e solte": "Drag up or down and release", "Econômico: 800 px • 8 fps — gasta pouco": "Economy: 800 px • 8 fps — uses little data", "Alta: 1600 px • 24 fps — bem mais nítido e fluido": "High: 1600 px • 24 fps — much sharper and smoother", "Máxima: até 2560 px • 30 fps — só em rede rápida": "Max: up to 2560 px • 30 fps — fast network only", "Automático: usando": "Auto: using", "— mede a conexão e ajusta sozinho": "— measures the connection and adjusts itself", "Econômico": "Economy", "Máxima": "Max", "Sem conexão": "No connection", "ms • oscilação": "ms • jitter", "Nenhuma temperatura disponível neste PC.": "No temperature available on this PC.", "o Windows só entrega a temperatura da CPU com um driver de sensor, que exige administrador e costuma ser barrado por antivírus. Por segurança o RotaControl não instala driver; aqui aparecem GPU, SSD e o que o seu PC informar.": "Windows only provides CPU temperature through a sensor driver, which needs administrator rights and is often blocked by antivirus. For safety RotaControl does not install drivers; here you see GPU, SSD and whatever your PC reports.", "Precisa do pycaw instalado no PC.": "Needs pycaw installed on the PC.", "A barra precisa do pycaw instalado. Use os botões abaixo.": "The slider needs pycaw installed. Use the buttons below.", "Digite um número": "Enter a number", "Exemplo:": "Example:", "Dê um nome": "Give it a name", "Preencha o campo": "Fill in the field", "Remover \"": "Remove \"", "Bom uso": "Enjoy", "Nada pra copiar": "Nothing to copy", "Copiado:": "Copied:", "Novo nome para \"": "New name for \"", "Nome:": "Name:", "Tipo: abrir/pasta/url/comando": "Type: open/folder/url/command", "Inválido": "Invalid", "Valor:": "Value:", "Teclas (ex: ctrl+s):": "Keys (e.g. ctrl+s):", "Digite algo": "Type something", "Enviando...": "Sending...", "Limpo": "Cleared", "Precisa HTTPS": "Needs HTTPS", "Navegador não suporta voz.": "Browser doesn't support voice.", "Ouvindo...": "Listening...", "Erro ao iniciar voz": "Error starting voice", "Travado:": "Locked:", "Solto:": "Released:", "Todas soltas": "All released", "Novo copiado no PC": "New one copied on PC", "Baixar": "Download", "Usar": "Use", "Copiado de novo": "Copied again", "Limpar histórico?": "Clear history?", "(winsdk não instalado)": "(winsdk not installed)", "Todas as telas juntas": "All screens together", "(principal)": "(primary)", "Monitor trocado": "Monitor changed", "Tirando print...": "Taking screenshot...", "Salvo:": "Saved:", "Copiando print...": "Copying screenshot...", "Preparando...": "Preparing...", "Copiar/Mover": "Copy/Move", "Abra uma pasta primeiro": "Open a folder first", "Nome da pasta:": "Folder name:", "Apagar pasta (só se estiver vazia)?": "Delete folder (only if empty)?", "Procurando jogos…": "Looking for games…", "Erro ao listar": "Error listing", "Abrindo": "Opening", "Baixar esta pasta em .zip?": "Download this folder as .zip?", "Preparando o zip… o download começa já": "Preparing the zip… download starts now", "Apagar?": "Delete?", "Escolha arquivo(s)": "Choose file(s)", "enviado": "sent", "Executando...": "Running...", "Sair do PiP": "Exit PiP", "Erro PiP:": "PiP error:", "O iPhone não deixa o PiP funcionar no app da tela de início (limitação da Apple). Abra o link pelo Safari pra usar o PiP.": "iPhone doesn't allow PiP in the home-screen app (Apple limitation). Open the link in Safari to use PiP.", "Pronto! Toque em PiP mais uma vez.": "Ready! Tap PiP once more.", "Preparando o PiP...": "Preparing PiP...", "Não consegui preparar o vídeo. Toque em PiP de novo.": "Couldn't prepare the video. Tap PiP again.", "PiP não suportado": "PiP not supported", "Parar": "Stop", "Matar \"": "Kill \"", "Comando CMD:": "CMD command:", "Nenhum timer ativo.": "No active timer.", "Cancelados": "Cancelled", "Confirma": "Confirm", "Tailscale não detectado neste PC": "Tailscale not detected on this PC", "Túnel inativo": "Tunnel inactive", "Escolha uma pasta no menu": "Pick a folder from the menu", "Salvo": "Saved", "Novo PIN (": "New PIN (", "Digite exatamente": "Enter exactly", "PIN alterado": "PIN changed", "Fechar o programa no PC?": "Close the program on the PC?", "Fechando...": "Closing...", "BYPASS: apaga o .exe. Continuar?": "BYPASS: deletes the .exe. Continue?", "Aplicando...": "Applying...", "Túnel ativo": "Tunnel active", "Iniciando túnel...": "Starting tunnel...", "Já está em": "Already in", "Ativando": "Enabling", "Modo WAN ativo": "WAN mode on", "Modo LAN": "LAN mode", "App instalado": "App installed", "PIN incorreto": "Wrong PIN", "Sem conexão com o PC": "No connection to the PC", "Primeiro acesso: no próprio PC, abra http://127.0.0.1:5000 e crie o PIN. Depois volte aqui.": "First access: on the PC itself, open http://127.0.0.1:5000 and create the PIN. Then come back here.", "Nenhuma pasta disponível": "No folder available", "Escolha a pasta de destino:": "Choose the destination folder:", "Opção inválida": "Invalid option", "Digite 'copiar' ou 'mover':": "Type 'copy' or 'move':", "Modo inválido": "Invalid mode", "Executar": "Run", "Nome do perfil (ex: Alt+Tab):": "Profile name (e.g. Alt+Tab):", "Teclas separadas por + (ex: alt+tab, ctrl+shift+esc):": "Keys separated by + (e.g. alt+tab, ctrl+shift+esc):", "Perfil criado": "Profile created", "origem bloqueada": "origin blocked", "nao autenticado": "not signed in", "modo invalido": "invalid mode", "Defina o PIN primeiro, no próprio PC.": "Set the PIN first, on the PC itself.", "Muitas tentativas. Aguarde": "Too many attempts. Wait", "O PIN já foi definido.": "The PIN is already set.", "Faça isso no próprio PC.": "Do this on the PC itself.", "acao invalida": "invalid action", "OK:": "OK:", "índice inválido": "invalid index", "nome vazio": "empty name", "renomeada para": "renamed to", "O nome não pode ficar vazio.": "The name can't be empty.", "Tipo inválido.": "Invalid type.", "O caminho/endereço não pode ficar vazio.": "The path/address can't be empty.", "atualizada.": "updated.", "atualizado.": "updated.", "acao desconhecida": "unknown action", "dx/dy invalidos": "invalid dx/dy", "tipo invalido": "invalid type", "dy invalido": "invalid dy", "parametros invalidos": "invalid parameters", "Monitores desligando...": "Turning monitors off...", "Monitores acordando...": "Waking monitors...", "tecla invalida": "invalid key", "psutil nao instalado": "psutil not installed", "Print copiado pra área de transferência do PC.": "Screenshot copied to the PC clipboard.", "Explorer reiniciando...": "Restarting Explorer...", "Áudio reiniciando...": "Restarting audio...", "QR aberto no PC.": "QR opened on the PC.", "erro captura:": "capture error:", "mss nao instalado": "mss not installed", "perfil invalido": "invalid profile", "pasta invalida": "invalid folder", "jogo nao encontrado (atualize a lista)": "game not found (refresh the list)", "sem miniatura": "no thumbnail", "arquivo nao encontrado": "file not found", "pasta com arquivos demais": "folder has too many files", "pasta grande demais (limite 4 GB)": "folder too large (4 GB limit)", "a pasta nao tem arquivos": "the folder has no files", "pasta vazia ou grande demais": "folder empty or too large", "nenhum arquivo": "no file", "arquivo(s) salvos em": "file(s) saved in", "pid invalido": "invalid pid", "comando vazio": "empty command", "O comando não pode ficar vazio.": "The command can't be empty.", "comando invalido": "invalid command", "sem comando": "no command", "agendado para daqui a": "scheduled in", "PC bloqueado.": "PC locked.", "Dormindo...": "Sleeping...", "Cancelado.": "Cancelled.", "texto vazio": "empty text", "Digitando": "Typing", "caractere(s)...": "character(s)...", "tecla vazia": "empty key", "id invalido": "invalid id", "imagem nao esta mais no historico": "image is no longer in history", "nenhuma saida de audio ativa": "no active audio output", "saida nao encontrada": "output not found", "pycaw nao instalado": "pycaw not installed", "combo invalido": "invalid combo", "Digite as teclas, ex: ctrl+shift+esc": "Type the keys, e.g. ctrl+shift+esc", "atalho invalido": "invalid shortcut", "item de origem não existe": "source item doesn't exist", "pasta de destino inválida": "invalid destination folder", "origem e destino são iguais": "source and destination are the same", "já existe um item com esse nome no destino": "an item with that name already exists at the destination", "não é possível colocar dentro dela mesma": "can't put it inside itself", "Pasta copiada:": "Folder copied:", "Arquivo copiado:": "File copied:", "movido:": "moved:", "nome e combo obrigatórios": "name and combo required", "combo inválido": "invalid combo", "Encerrando...": "Exiting...", "BYPASS aplicado.": "BYPASS applied.", "Ação '": "Action '", "Atalho '": "Shortcut '", "Comando '": "Command '", "Pasta": "Folder", "Arquivo": "File", "min.": "min.", "Nenhum jogo da Steam, Epic ou GOG encontrado neste PC.": "No Steam, Epic or GOG games found on this PC.", "Iniciar com Windows: ATIVADO": "Start with Windows: ON", "Iniciar com Windows: DESATIVADO": "Start with Windows: OFF", "Próxima ▶": "Next ▶", "◀ Voltar": "◀ Back", "✕ Fechar": "✕ Close", "Entendi!": "Got it!", "não detectado — instale o Tailscale (veja o tutorial)": "not detected — install Tailscale (see the tutorial)", "Idioma / Language (só neste aparelho)": "Language (this device only)", "= a ligação entre este aparelho e o PC (é ela que decide se o controle fica fluido).": "= the link between this device and the PC (it decides whether control feels smooth).", "Fechar": "Close", "Voltar": "Back", "Pronto": "Done", "Segure o botão por 3 segundos pra ligar a leitura automática.": "Hold the button for 3 seconds to turn on automatic reading.", "⚠ \"Fora de casa\" cria um link público: qualquer pessoa com o link chega na tela de PIN. Pra acesso remoto mais seguro, use o": "⚠ \"Away from home\" creates a public link: anyone with the link reaches the PIN screen. For safer remote access, use", "Enviar": "Send", "Cancelar": "Cancel", "AIza... ou sk-ant-...": "AIza... or sk-ant-...", "Enviar bloco": "Send block", "Enviar celular para PC": "Send phone to PC", "Enviar arquivo(s)": "Send file(s)", "chave vazia": "empty key", "Copiar LAN": "Copy LAN", "Copiar WAN": "Copy WAN", "Copiar Tailscale": "Copy Tailscale", "Teclado": "Keyboard", "Copiar": "Copy", "Autoclick": "Autoclick", "Parado": "Stopped", "⚪ Parado": "⚪ Stopped", "▶ Iniciar autoclick": "▶ Start autoclick", "⏹ Parar autoclick": "⏹ Stop autoclick", "Tecla ou botão do clique": "Key or button to click", "🎯 Capturar no PC": "🎯 Capture on PC", "🎯 Capturar": "🎯 Capture", "Mouse: mouse_left, mouse_right, mouse_middle, mouse_x1, mouse_x2. Teclado: qualquer tecla (a, 5, f6, space, enter, num1, shift…). \"Capturar\" espera você apertar a tecla ou botão no PC (8 s).": "Mouse: mouse_left, mouse_right, mouse_middle, mouse_x1, mouse_x2. Keyboard: any key (a, 5, f6, space, enter, num1, shift…). \"Capture\" waits for you to press the key or button on the PC (8 s).", "Modo": "Mode", "Clicar repetidamente": "Click repeatedly", "Segurar sem soltar": "Hold without releasing", "Intervalo entre cliques (s)": "Interval between clicks (s)", "Segurar cada clique por (s)": "Hold each click for (s)", "Variação aleatória (%)": "Random variation (%)", "Parar após (cliques, 0 = nunca)": "Stop after (clicks, 0 = never)", "O intervalo conta do início de um clique ao início do próximo. Ex.: intervalo 3 e segurar 1 = aperta, segura 1 s, solta, e 2 s depois aperta de novo.": "The interval counts from the start of one click to the start of the next. E.g. interval 3 and hold 1 = press, hold 1 s, release, and press again 2 s later.", "Atraso antes de começar (s)": "Delay before starting (s)", "Modo jogos (para jogos que ignoram o clique comum)": "Game mode (for games that ignore normal clicks)", "Atalho no PC pra ligar/desligar (opcional)": "PC hotkey to toggle (optional)", "ex: f6 ou ctrl+f6 (vazio = só pelo app)": "e.g. f6 or ctrl+f6 (empty = app only)", "Sem atalho, o autoclick só liga e desliga por aqui, sem atrapalhar nenhuma tecla do PC.": "Without a hotkey, autoclick is only toggled here, without interfering with any PC key.", "💾 Salvar configuração": "💾 Save settings", "Cuidado: o autoclick age no PC todo (inclusive em janelas que você não está olhando). Pra parar: botão acima, atalho (se configurou) ou fechar o app.": "Careful: autoclick acts on the whole PC (including windows you're not looking at). To stop: button above, hotkey (if set) or close the app.", "mouse_left, e, space, f5…": "mouse_left, e, space, f5…", "Autoclick parado": "Autoclick stopped", "Autoclick ligado": "Autoclick on", "Aperte a tecla ou botão no PC agora (8 s)…": "Press the key or button on the PC now (8 s)…", "Capturado: ": "Captured: ", "Tecla ou botão inválido. Exemplos: mouse_left, e, space, f5, num1.": "Invalid key or button. Examples: mouse_left, e, space, f5, num1.", "Atalho inválido: só ctrl, alt, shift ou win antes da tecla.": "Invalid hotkey: only ctrl, alt, shift or win before the key.", "Tecla do atalho inválida.": "Invalid hotkey key.", "O atalho não pode ser o botão esquerdo/direito do mouse.": "The hotkey can't be the left/right mouse button.", "O atalho não pode ser a mesma tecla do clique.": "The hotkey can't be the same key as the click.", "O autoclick já está ligado.": "Autoclick is already on.", "Já tem uma captura em andamento.": "A capture is already in progress.", "Nenhuma tecla detectada. Tente de novo.": "No key detected. Try again.", "Janela no celular": "Window on phone", "Esconde um programa da tela do PC e mostra ele aqui, como se o celular fosse outro monitor. O programa continua rodando no PC; é só desligar pra ele voltar.": "Hides a program from the PC screen and shows it here, as if your phone were another monitor. The program keeps running on the PC; just turn it off to bring it back.", "Solte aqui o arquivo .exe do programa": "Drop the program's .exe file here", "(ou toque pra escolher, ou use a lista abaixo)": "(or tap to choose, or use the list below)", "Programas abertos agora": "Programs open now", "— escolher programa aberto —": "— pick an open program —", "Programa escolhido": "Chosen program", "programa.exe": "program.exe", "📲 Mandar pro celular: DESLIGADO": "📲 Send to phone: OFF", "📲 Mandar pro celular: LIGADO": "📲 Send to phone: ON", "Desligado: o programa fica normal na tela do PC.": "Off: the program stays normal on the PC screen.", "⌨ Teclado": "⌨ Keyboard", "⏎ Enter": "⏎ Enter", "⌫ Apagar": "⌫ Delete", "Toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar • toque duplo = duplo clique": "Tap = click • hold = right click • drag = drag • 2 fingers = scroll • double tap = double click", "↩ Trazer tudo de volta ao PC": "↩ Bring everything back to the PC", "Experimental: funciona melhor com programas comuns do Windows. Jogos em tela cheia, alguns apps com aceleração de vídeo e atalhos com Ctrl podem não funcionar. Se o app fechar com a janela escondida, ela volta sozinha na próxima vez que o RotaControl abrir.": "Experimental: works best with regular Windows programs. Fullscreen games, some video-accelerated apps and Ctrl shortcuts may not work. If the app closes while the window is hidden, it comes back by itself the next time RotaControl opens.", "Escolha um arquivo .exe": "Choose an .exe file", "Programa: ": "Program: ", "Escolha o programa primeiro": "Pick the program first", "Janela de volta no PC": "Window back on the PC", "Tudo de volta no PC": "Everything back on the PC", "Nome inválido. Use algo como programa.exe": "Invalid name. Use something like program.exe", "janela indisponível": "window unavailable", "posição inválida": "invalid position", "tecla inválida": "invalid key"};
+const EN={"Iniciante": "Beginner", "Avançado": "Advanced", "Ações rápidas": "Quick actions", "+ Adicionar ação": "+ Add action", "Navegação": "Navigation", "⬅ Voltar": "⬅ Back", "↻ Atualizar": "↻ Refresh", "Avançar ➡": "Forward ➡", "Atalhos salvos": "Saved shortcuts", "+ Adicionar atalho": "+ Add shortcut", "Jogos": "Games", "🔄 Atualizar lista de jogos": "🔄 Refresh game list", "✏️ Editar itens (ações e atalhos)": "✏️ Edit items (actions and shortcuts)", "Digitar ao vivo": "Live typing", "Ativar digitação ao vivo": "Enable live typing", "Copiar no PC": "Copy on PC", "Limpar campo": "Clear field", "Teclas persistentes": "Sticky keys", "Trave uma tecla modificadora e use as teclas soltas. Destrava sozinho em 60s.": "Lock a modifier key and use the loose keys. It unlocks by itself after 60s.", "🔓 SOLTAR TODAS AS TECLAS": "🔓 RELEASE ALL KEYS", "Teclas soltas": "Loose keys", "Espaço": "Space", "Perfis de teclado salvos": "Saved keyboard profiles", "Combos prontos pra 1 clique. Ex: Alt+Tab, Ctrl+Shift+Esc.": "One-click ready-made combos. E.g. Alt+Tab, Ctrl+Shift+Esc.", "+ Criar perfil": "+ Create profile", "Pegar do PC": "Get from PC", "Ler área de transferência": "Read clipboard", "Segure o botão por 3 segundos pra ligar/desligar a leitura automática.": "Hold the button for 3 seconds to turn automatic reading on/off.", "⬇ Baixar": "⬇ Download", "Copiar de novo no PC": "Copy again on PC", "Copiar (celular)": "Copy (phone)", "Limpar": "Clear", "Histórico de clipboard": "Clipboard history", "Limpar histórico": "Clear history", "Tocando agora": "Now playing", "(nada tocando)": "(nothing playing)", "Controles": "Controls", "Saída de áudio": "Audio output", "🔁 Alternar saída (caixa ⇄ fone)": "🔁 Switch output (speakers ⇄ headphones)", "Volume do sistema": "System volume", "Volume por app": "Volume per app", "Atualizar lista": "Refresh list", "Esquerdo": "Left", "Direito": "Right", "Meio": "Middle", "Duplo clique": "Double click", "Arrastar": "Drag", "Tela do PC": "PC screen", "Monitor:": "Monitor:", "Qualidade da imagem:": "Image quality:", "Eco": "Eco", "Alta": "High", "Máx.": "Max", "Atualizar agora": "Refresh now", "Ver ao vivo": "Watch live", "Tela desligada — clique em \"Ver ao vivo\"": "Screen off — tap \"Watch live\"", "⛶ Tela cheia com toque": "⛶ Fullscreen with touch", "🔇 Som do PC no celular: DESLIGADO": "🔇 PC sound on phone: OFF", "🔊 Som do PC no celular: LIGADO": "🔊 PC sound on phone: ON", "📸 Print": "📸 Screenshot", "📋 Copiar print": "📋 Copy screenshot", "📱 Baixar print": "📱 Download screenshot", "Os arquivos vão pra pasta padrão (configurável em Sistema).": "Files go to the default folder (configurable in System).", "Navegador de arquivos": "File browser", "Buscar": "Search", "⬆ Subir": "⬆ Up", "+ Pasta": "+ Folder", "📋 Caminho": "📋 Path", "📦 Baixar esta pasta (.zip)": "📦 Download this folder (.zip)", "Status do PC": "PC status", "Processos": "Processes", "Tráfego do PC agora": "PC traffic now", "Internet do PC": "PC internet", "medindo…": "measuring…", "Celular ↔ PC": "Phone ↔ PC", "Ligado há": "Uptime", "Temperaturas": "Temperatures", "= a conexão do computador com a internet.": "= the computer's connection to the internet.", "= a ligação entre este aparelho e o PC": "= the link between this device and the PC", "(é ela que decide se o controle fica fluido).": "(it decides whether control feels smooth).", "= tempo de resposta (menor é melhor),": "= response time (lower is better),", "oscilação": "jitter", "= quanto o ping varia,": "= how much the ping varies,", "perda": "loss", "= pedidos que não voltaram. Escala:": "= requests that never came back. Scale:", "Excelente": "Excellent", "Boa": "Good", "Média": "Fair", "Ruim": "Poor", "Péssima": "Terrible", "Discos": "Disks", "Top 5 (RAM)": "Top 5 (RAM)", "Reparos rápidos": "Quick fixes", "🔄 Reiniciar Explorer": "🔄 Restart Explorer", "🔊 Reiniciar Áudio": "🔊 Restart Audio", "Terminal Rápido": "Quick Terminal", "• sem salvar estado": "• stateless", "Cada comando roda num processo novo.": "Each command runs in a new process.", "Não guarda": "It does not keep", "histórico, diretório nem variáveis entre comandos.": "history, directory or variables between commands.", "Comandos rápidos": "Quick commands", "+ Adicionar": "+ Add", "✏️ Editar itens": "✏️ Edit items", "Acesso remoto": "Remote access", "carregando…": "loading…", "Tailscale (fora de casa, recomendado):": "Tailscale (away from home, recommended):", "não detectado": "not detected", "WAN (Cloudflare, link público):": "WAN (Cloudflare, public link):", "desativado": "disabled", "📱 QR Code no PC": "📱 QR Code on PC", "Modo de acesso": "Access mode", "Wi-Fi local": "Local Wi-Fi", "Fora de casa": "Away from home", "⚠ \"Fora de casa\" cria um link público: qualquer pessoa com o link chega na tela de PIN.": "⚠ \"Away from home\" creates a public link: anyone with the link reaches the PIN screen.", "Pra acesso remoto mais seguro, use o": "For safer remote access, use", "(veja o tutorial, página \"Fora de casa\").": "(see the tutorial, \"Away from home\" page).", "Inicialização": "Startup", "Iniciar com Windows": "Start with Windows", "📖 Ver tutorial novamente": "📖 View tutorial again", "Monitores": "Monitors", "Desligar": "Turn off", "Ligar": "Turn on", "Energia": "Power", "Bloquear": "Lock", "Dormir": "Sleep", "Reiniciar": "Restart", "Cancelar desligamento": "Cancel shutdown", "Timer de energia": "Power timer", "Desligar PC": "Shut down PC", "Reiniciar PC": "Restart PC", "Agendar": "Schedule", "Cancelar todos": "Cancel all", "PIN de 4 dígitos: o app bloqueia logins de fora depois de poucas tentativas erradas. Se usar \"Fora de casa\" (link público), prefira o PIN de 6 dígitos ou o Tailscale.": "4-digit PIN: the app blocks outside logins after a few wrong attempts. If you use \"Away from home\" (public link), prefer the 6-digit PIN or Tailscale.", "Sem PIN: qualquer aparelho na rede controla este PC.": "No PIN: any device on the network controls this PC.", "PIN de 4 dígitos": "4-digit PIN", "PIN de 6 dígitos": "6-digit PIN", "Trocar PIN": "Change PIN", "Pasta padrão": "Default folder", "Usada pra receber uploads e salvar prints.": "Used to receive uploads and save screenshots.", "— Escolher pasta pronta —": "— Pick a preset folder —", "Área de Trabalho": "Desktop", "Documentos": "Documents", "Imagens": "Pictures", "Vídeos": "Videos", "Músicas": "Music", "Home do usuário": "User home", "Salvar pasta": "Save folder", "Diagnóstico do sistema": "System diagnostics", "Roda uma bateria de testes no PC e mostra alertas.": "Runs a battery of tests on the PC and shows alerts.", "🩺 Abrir diagnóstico": "🩺 Open diagnostics", "Encerrar": "Exit", "Fechar programa": "Close program", "BYPASS (apaga .exe)": "BYPASS (deletes .exe)", "Aparência": "Appearance", "Tema de cores (só neste aparelho)": "Color theme (this device only)", "🌙 Escuro": "🌙 Dark", "☀️ Claro": "☀️ Light", "🌗 Auto": "🌗 Auto", "Tema visual complementar.": "Complementary visual theme.", "🎨 Ativar fundo animado": "🎨 Enable animated background", "🎨 Desativar fundo animado": "🎨 Disable animated background", "🪟 Ativar efeito vidro": "🪟 Enable glass effect", "🪟 Desativar efeito vidro": "🪟 Disable glass effect", "💡 Manter tela ligada": "💡 Keep screen on", "Com \"SIM\", a tela deste aparelho não apaga enquanto o painel estiver aberto e visível (gasta mais bateria). Vale só pra este aparelho.": "With \"YES\", this device's screen stays on while the panel is open and visible (uses more battery). This device only.", "↩ Restaurar ordem das abas e categorias": "↩ Restore tab and category order", "Vidro só nas barras e botões. Dá pra combinar com o fundo animado. Vale só pra este aparelho; se ficar pesado no PC, desligue.": "Glass only on bars and buttons. Can be combined with the animated background. This device only; if it gets heavy, turn it off.", "Ações": "Actions", "Texto": "Text", "Mídia": "Media", "Tela": "Screen", "Arquivos": "Files", "Sistema": "System", "Digite o PIN": "Enter PIN", "Entrar": "Sign in", "🔍 Buscar jogo...": "🔍 Search game...", "Toque em ATIVAR e depois digite (ou fale 🎤)": "Tap ENABLE, then type (or speak 🎤)", "Ditar por voz": "Dictate by voice", "(vazio)": "(empty)", "Volume do PC": "PC volume", "Toque pra digitar": "Tap to type", "Mede sua conexão e escolhe sozinho": "Measures your connection and picks automatically", "Econômico: pouca internet": "Economy: low data", "Equilibrado": "Balanced", "Nítido e fluido (Wi-Fi bom)": "Sharp and smooth (good Wi-Fi)", "O máximo (rede local rápida)": "The maximum (fast local network)", "Som do PC": "PC sound", "Sair": "Exit", "🔍 Buscar arquivo ou pasta...": "🔍 Search file or folder...", "Novo PIN (4 números)": "New PIN (4 digits)", "Novo PIN (6 números)": "New PIN (6 digits)", "Fundo animado ativo — triângulos 3D girando.": "Animated background on — spinning 3D triangles.", "Este navegador não toca o som ao vivo": "This browser can't play live sound", "Som ligado — use o volume do celular": "Sound on — use your phone's volume", "Som indisponível:": "Sound unavailable:", "Voltar as abas e categorias pra ordem original?": "Restore tabs and categories to the original order?", "Ordem salva": "Order saved", "Stream indisponível — usando o modo simples": "Stream unavailable — using simple mode", "Ao vivo •": "Live •", "Sem captura agora": "No capture right now", "Foto •": "Photo •", "Erro ao capturar a tela": "Error capturing the screen", "Indisponível": "Unavailable", "Tocando em:": "Playing on:", "Erro:": "Error:", "Saída:": "Output:", "1 toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar ou zoom": "1 tap = click • hold = right click • drag = drag • 2 fingers = scroll or zoom", "Arraste pra cima ou pra baixo e solte": "Drag up or down and release", "Econômico: 800 px • 8 fps — gasta pouco": "Economy: 800 px • 8 fps — uses little data", "Alta: 1600 px • 24 fps — bem mais nítido e fluido": "High: 1600 px • 24 fps — much sharper and smoother", "Máxima: até 2560 px • 30 fps — só em rede rápida": "Max: up to 2560 px • 30 fps — fast network only", "Automático: usando": "Auto: using", "— mede a conexão e ajusta sozinho": "— measures the connection and adjusts itself", "Econômico": "Economy", "Máxima": "Max", "Sem conexão": "No connection", "ms • oscilação": "ms • jitter", "Nenhuma temperatura disponível neste PC.": "No temperature available on this PC.", "o Windows só entrega a temperatura da CPU com um driver de sensor, que exige administrador e costuma ser barrado por antivírus. Por segurança o RotaControl não instala driver; aqui aparecem GPU, SSD e o que o seu PC informar.": "Windows only provides CPU temperature through a sensor driver, which needs administrator rights and is often blocked by antivirus. For safety RotaControl does not install drivers; here you see GPU, SSD and whatever your PC reports.", "Precisa do pycaw instalado no PC.": "Needs pycaw installed on the PC.", "A barra precisa do pycaw instalado. Use os botões abaixo.": "The slider needs pycaw installed. Use the buttons below.", "Digite um número": "Enter a number", "Exemplo:": "Example:", "Dê um nome": "Give it a name", "Preencha o campo": "Fill in the field", "Remover \"": "Remove \"", "Bom uso": "Enjoy", "Nada pra copiar": "Nothing to copy", "Copiado:": "Copied:", "Novo nome para \"": "New name for \"", "Nome:": "Name:", "Tipo: abrir/pasta/url/comando": "Type: open/folder/url/command", "Inválido": "Invalid", "Valor:": "Value:", "Teclas (ex: ctrl+s):": "Keys (e.g. ctrl+s):", "Digite algo": "Type something", "Enviando...": "Sending...", "Limpo": "Cleared", "Precisa HTTPS": "Needs HTTPS", "Navegador não suporta voz.": "Browser doesn't support voice.", "Ouvindo...": "Listening...", "Erro ao iniciar voz": "Error starting voice", "Travado:": "Locked:", "Solto:": "Released:", "Todas soltas": "All released", "Novo copiado no PC": "New one copied on PC", "Baixar": "Download", "Usar": "Use", "Copiado de novo": "Copied again", "Limpar histórico?": "Clear history?", "(winsdk não instalado)": "(winsdk not installed)", "Todas as telas juntas": "All screens together", "(principal)": "(primary)", "Monitor trocado": "Monitor changed", "Tirando print...": "Taking screenshot...", "Salvo:": "Saved:", "Copiando print...": "Copying screenshot...", "Preparando...": "Preparing...", "Copiar/Mover": "Copy/Move", "Abra uma pasta primeiro": "Open a folder first", "Nome da pasta:": "Folder name:", "Apagar pasta (só se estiver vazia)?": "Delete folder (only if empty)?", "Procurando jogos…": "Looking for games…", "Erro ao listar": "Error listing", "Abrindo": "Opening", "Baixar esta pasta em .zip?": "Download this folder as .zip?", "Preparando o zip… o download começa já": "Preparing the zip… download starts now", "Apagar?": "Delete?", "Escolha arquivo(s)": "Choose file(s)", "enviado": "sent", "Executando...": "Running...", "Sair do PiP": "Exit PiP", "Erro PiP:": "PiP error:", "O iPhone não deixa o PiP funcionar no app da tela de início (limitação da Apple). Abra o link pelo Safari pra usar o PiP.": "iPhone doesn't allow PiP in the home-screen app (Apple limitation). Open the link in Safari to use PiP.", "Pronto! Toque em PiP mais uma vez.": "Ready! Tap PiP once more.", "Preparando o PiP...": "Preparing PiP...", "Não consegui preparar o vídeo. Toque em PiP de novo.": "Couldn't prepare the video. Tap PiP again.", "PiP não suportado": "PiP not supported", "Parar": "Stop", "Matar \"": "Kill \"", "Comando CMD:": "CMD command:", "Nenhum timer ativo.": "No active timer.", "Cancelados": "Cancelled", "Confirma": "Confirm", "Tailscale não detectado neste PC": "Tailscale not detected on this PC", "Túnel inativo": "Tunnel inactive", "Escolha uma pasta no menu": "Pick a folder from the menu", "Salvo": "Saved", "Novo PIN (": "New PIN (", "Digite exatamente": "Enter exactly", "PIN alterado": "PIN changed", "Fechar o programa no PC?": "Close the program on the PC?", "Fechando...": "Closing...", "BYPASS: apaga o .exe. Continuar?": "BYPASS: deletes the .exe. Continue?", "Aplicando...": "Applying...", "Túnel ativo": "Tunnel active", "Iniciando túnel...": "Starting tunnel...", "Já está em": "Already in", "Ativando": "Enabling", "Modo WAN ativo": "WAN mode on", "Modo LAN": "LAN mode", "App instalado": "App installed", "PIN incorreto": "Wrong PIN", "Sem conexão com o PC": "No connection to the PC", "Primeiro acesso: no próprio PC, abra http://127.0.0.1:5000 e crie o PIN. Depois volte aqui.": "First access: on the PC itself, open http://127.0.0.1:5000 and create the PIN. Then come back here.", "Nenhuma pasta disponível": "No folder available", "Escolha a pasta de destino:": "Choose the destination folder:", "Opção inválida": "Invalid option", "Digite 'copiar' ou 'mover':": "Type 'copy' or 'move':", "Modo inválido": "Invalid mode", "Executar": "Run", "Nome do perfil (ex: Alt+Tab):": "Profile name (e.g. Alt+Tab):", "Teclas separadas por + (ex: alt+tab, ctrl+shift+esc):": "Keys separated by + (e.g. alt+tab, ctrl+shift+esc):", "Perfil criado": "Profile created", "origem bloqueada": "origin blocked", "nao autenticado": "not signed in", "modo invalido": "invalid mode", "Defina o PIN primeiro, no próprio PC.": "Set the PIN first, on the PC itself.", "Muitas tentativas. Aguarde": "Too many attempts. Wait", "O PIN já foi definido.": "The PIN is already set.", "Faça isso no próprio PC.": "Do this on the PC itself.", "acao invalida": "invalid action", "OK:": "OK:", "índice inválido": "invalid index", "nome vazio": "empty name", "renomeada para": "renamed to", "O nome não pode ficar vazio.": "The name can't be empty.", "Tipo inválido.": "Invalid type.", "O caminho/endereço não pode ficar vazio.": "The path/address can't be empty.", "atualizada.": "updated.", "atualizado.": "updated.", "acao desconhecida": "unknown action", "dx/dy invalidos": "invalid dx/dy", "tipo invalido": "invalid type", "dy invalido": "invalid dy", "parametros invalidos": "invalid parameters", "Monitores desligando...": "Turning monitors off...", "Monitores acordando...": "Waking monitors...", "tecla invalida": "invalid key", "psutil nao instalado": "psutil not installed", "Print copiado pra área de transferência do PC.": "Screenshot copied to the PC clipboard.", "Explorer reiniciando...": "Restarting Explorer...", "Áudio reiniciando...": "Restarting audio...", "QR aberto no PC.": "QR opened on the PC.", "erro captura:": "capture error:", "mss nao instalado": "mss not installed", "perfil invalido": "invalid profile", "pasta invalida": "invalid folder", "jogo nao encontrado (atualize a lista)": "game not found (refresh the list)", "sem miniatura": "no thumbnail", "arquivo nao encontrado": "file not found", "pasta com arquivos demais": "folder has too many files", "pasta grande demais (limite 4 GB)": "folder too large (4 GB limit)", "a pasta nao tem arquivos": "the folder has no files", "pasta vazia ou grande demais": "folder empty or too large", "nenhum arquivo": "no file", "arquivo(s) salvos em": "file(s) saved in", "pid invalido": "invalid pid", "comando vazio": "empty command", "O comando não pode ficar vazio.": "The command can't be empty.", "comando invalido": "invalid command", "sem comando": "no command", "agendado para daqui a": "scheduled in", "PC bloqueado.": "PC locked.", "Dormindo...": "Sleeping...", "Cancelado.": "Cancelled.", "texto vazio": "empty text", "Digitando": "Typing", "caractere(s)...": "character(s)...", "tecla vazia": "empty key", "id invalido": "invalid id", "imagem nao esta mais no historico": "image is no longer in history", "nenhuma saida de audio ativa": "no active audio output", "saida nao encontrada": "output not found", "pycaw nao instalado": "pycaw not installed", "combo invalido": "invalid combo", "Digite as teclas, ex: ctrl+shift+esc": "Type the keys, e.g. ctrl+shift+esc", "atalho invalido": "invalid shortcut", "item de origem não existe": "source item doesn't exist", "pasta de destino inválida": "invalid destination folder", "origem e destino são iguais": "source and destination are the same", "já existe um item com esse nome no destino": "an item with that name already exists at the destination", "não é possível colocar dentro dela mesma": "can't put it inside itself", "Pasta copiada:": "Folder copied:", "Arquivo copiado:": "File copied:", "movido:": "moved:", "nome e combo obrigatórios": "name and combo required", "combo inválido": "invalid combo", "Encerrando...": "Exiting...", "BYPASS aplicado.": "BYPASS applied.", "Ação '": "Action '", "Atalho '": "Shortcut '", "Comando '": "Command '", "Pasta": "Folder", "Arquivo": "File", "min.": "min.", "Nenhum jogo da Steam, Epic ou GOG encontrado neste PC.": "No Steam, Epic or GOG games found on this PC.", "Iniciar com Windows: ATIVADO": "Start with Windows: ON", "Iniciar com Windows: DESATIVADO": "Start with Windows: OFF", "Próxima ▶": "Next ▶", "◀ Voltar": "◀ Back", "✕ Fechar": "✕ Close", "Entendi!": "Got it!", "não detectado — instale o Tailscale (veja o tutorial)": "not detected — install Tailscale (see the tutorial)", "Idioma / Language (só neste aparelho)": "Language (this device only)", "= a ligação entre este aparelho e o PC (é ela que decide se o controle fica fluido).": "= the link between this device and the PC (it decides whether control feels smooth).", "Fechar": "Close", "Voltar": "Back", "Pronto": "Done", "Segure o botão por 3 segundos pra ligar a leitura automática.": "Hold the button for 3 seconds to turn on automatic reading.", "⚠ \"Fora de casa\" cria um link público: qualquer pessoa com o link chega na tela de PIN. Pra acesso remoto mais seguro, use o": "⚠ \"Away from home\" creates a public link: anyone with the link reaches the PIN screen. For safer remote access, use", "Enviar": "Send", "Cancelar": "Cancel", "AIza... ou sk-ant-...": "AIza... or sk-ant-...", "Enviar bloco": "Send block", "Enviar celular para PC": "Send phone to PC", "Enviar arquivo(s)": "Send file(s)", "chave vazia": "empty key", "Copiar LAN": "Copy LAN", "Copiar WAN": "Copy WAN", "Copiar Tailscale": "Copy Tailscale", "Teclado": "Keyboard", "Copiar": "Copy", "Autoclick": "Autoclick", "Parado": "Stopped", "⚪ Parado": "⚪ Stopped", "▶ Iniciar autoclick": "▶ Start autoclick", "⏹ Parar autoclick": "⏹ Stop autoclick", "Tecla ou botão do clique": "Key or button to click", "🎯 Capturar no PC": "🎯 Capture on PC", "🎯 Capturar": "🎯 Capture", "Mouse: mouse_left, mouse_right, mouse_middle, mouse_x1, mouse_x2. Teclado: qualquer tecla (a, 5, f6, space, enter, num1, shift…). \"Capturar\" espera você apertar a tecla ou botão no PC (8 s).": "Mouse: mouse_left, mouse_right, mouse_middle, mouse_x1, mouse_x2. Keyboard: any key (a, 5, f6, space, enter, num1, shift…). \"Capture\" waits for you to press the key or button on the PC (8 s).", "Modo": "Mode", "Clicar repetidamente": "Click repeatedly", "Segurar sem soltar": "Hold without releasing", "Intervalo entre cliques (s)": "Interval between clicks (s)", "Segurar cada clique por (s)": "Hold each click for (s)", "Variação aleatória (%)": "Random variation (%)", "Parar após (cliques, 0 = nunca)": "Stop after (clicks, 0 = never)", "O intervalo conta do início de um clique ao início do próximo. Ex.: intervalo 3 e segurar 1 = aperta, segura 1 s, solta, e 2 s depois aperta de novo.": "The interval counts from the start of one click to the start of the next. E.g. interval 3 and hold 1 = press, hold 1 s, release, and press again 2 s later.", "Atraso antes de começar (s)": "Delay before starting (s)", "Modo jogos (para jogos que ignoram o clique comum)": "Game mode (for games that ignore normal clicks)", "Atalho no PC pra ligar/desligar (opcional)": "PC hotkey to toggle (optional)", "ex: f6 ou ctrl+f6 (vazio = só pelo app)": "e.g. f6 or ctrl+f6 (empty = app only)", "Sem atalho, o autoclick só liga e desliga por aqui, sem atrapalhar nenhuma tecla do PC.": "Without a hotkey, autoclick is only toggled here, without interfering with any PC key.", "💾 Salvar configuração": "💾 Save settings", "Cuidado: o autoclick age no PC todo (inclusive em janelas que você não está olhando). Pra parar: botão acima, atalho (se configurou) ou fechar o app.": "Careful: autoclick acts on the whole PC (including windows you're not looking at). To stop: button above, hotkey (if set) or close the app.", "mouse_left, e, space, f5…": "mouse_left, e, space, f5…", "Autoclick parado": "Autoclick stopped", "Autoclick ligado": "Autoclick on", "Aperte a tecla ou botão no PC agora (8 s)…": "Press the key or button on the PC now (8 s)…", "Capturado: ": "Captured: ", "Tecla ou botão inválido. Exemplos: mouse_left, e, space, f5, num1.": "Invalid key or button. Examples: mouse_left, e, space, f5, num1.", "Atalho inválido: só ctrl, alt, shift ou win antes da tecla.": "Invalid hotkey: only ctrl, alt, shift or win before the key.", "Tecla do atalho inválida.": "Invalid hotkey key.", "O atalho não pode ser o botão esquerdo/direito do mouse.": "The hotkey can't be the left/right mouse button.", "O atalho não pode ser a mesma tecla do clique.": "The hotkey can't be the same key as the click.", "O autoclick já está ligado.": "Autoclick is already on.", "Já tem uma captura em andamento.": "A capture is already in progress.", "Nenhuma tecla detectada. Tente de novo.": "No key detected. Try again.", "Janela no celular": "Window on phone", "Esconde um programa da tela do PC e mostra ele aqui, como se o celular fosse outro monitor. O programa continua rodando no PC; é só desligar pra ele voltar.": "Hides a program from the PC screen and shows it here, as if your phone were another monitor. The program keeps running on the PC; just turn it off to bring it back.", "Solte aqui o arquivo .exe do programa": "Drop the program's .exe file here", "(ou toque pra escolher, ou use a lista abaixo)": "(or tap to choose, or use the list below)", "Programas abertos agora": "Programs open now", "— escolher programa aberto —": "— pick an open program —", "Programa escolhido": "Chosen program", "programa.exe": "program.exe", "Como esconder no PC": "How to hide on the PC", "Invisível no lugar (recomendado)": "Invisible in place (recommended)", "Fora da tela": "Off-screen", "📲 Mandar pro celular: DESLIGADO": "📲 Send to phone: OFF", "📲 Mandar pro celular: LIGADO": "📲 Send to phone: ON", "Desligado: o programa fica normal na tela do PC.": "Off: the program stays normal on the PC screen.", "A imagem está preta: esse programa não deixa ser capturado assim. Desligue e tente o outro modo de esconder.": "The image is black: this program can't be captured like this. Turn it off and try the other hiding mode.", "⛶ Tela cheia": "⛶ Fullscreen", "⌨ Teclado": "⌨ Keyboard", "🖱 Clique direito": "🖱 Right click", "⏎ Enter": "⏎ Enter", "⌫ Apagar": "⌫ Delete", "Toque = clique • segurar = segura o clique (aí arraste) • toque duplo = duplo clique • 2 dedos = rolar • botão 🖱 = próximo toque é clique direito": "Tap = click • hold = holds the click (then drag) • double tap = double click • 2 fingers = scroll • 🖱 button = next tap is a right click", "↩ Trazer tudo de volta ao PC": "↩ Bring everything back to the PC", "Experimental: funciona melhor com programas comuns do Windows. Jogos em tela cheia e alguns apps com aceleração de vídeo podem não funcionar. No modo invisível, o cursor do PC pula um instante quando você toca no celular. Se o app fechar com a janela escondida, ela volta sozinha na próxima vez que o RotaControl abrir.": "Experimental: works best with regular Windows programs. Fullscreen games and some video-accelerated apps may not work. In invisible mode the PC cursor jumps for a moment when you touch the phone. If the app closes while the window is hidden, it comes back by itself the next time RotaControl opens.", "Escolha um arquivo .exe": "Choose an .exe file", "Programa: ": "Program: ", "Escolha o programa primeiro": "Pick the program first", "Janela de volta no PC": "Window back on the PC", "Tudo de volta no PC": "Everything back on the PC", "Ligado": "On", "Próximo toque = clique direito": "Next tap = right click", "Clique direito desligado": "Right click off", "Toque = clique • segurar e arrastar = segura o clique • 🖱 = clique direito • 2 dedos = rolar": "Tap = click • hold and drag = holds the click • 🖱 = right click • 2 fingers = scroll", "Toque = clique • segurar e arrastar = segura o clique • 🖱 = clique direito • 2 dedos = rolar ou zoom": "Tap = click • hold and drag = holds the click • 🖱 = right click • 2 fingers = scroll or zoom", "Nome inválido. Use algo como programa.exe": "Invalid name. Use something like program.exe", "janela indisponível": "window unavailable", "posição inválida": "invalid position", "tecla inválida": "invalid key"};
 const ENR=[[/^Página (\d+) de (\d+)$/,"Page $1 of $2"],[/^(\d+) de (\d+) jogo\(s\)$/,"$1 of $2 game(s)"]];
 const ENP=[["Ligado: ","On: "],[" está escondido do PC e aparece aqui."," is hidden from the PC and shown here."],["Ligado. Esperando ","On. Waiting for "],[" abrir no PC…"," to open on the PC…"],["Ligado • cliques: ","On • clicks: "],[" Aqui aparecem a temperatura dos drivers o seu PC informar."," Here you see the temperatures from the drivers your PC reports."],[" o Windows só entrega a temperatura da CPU com um driver de sensor, que exige administrador e costuma ser barrado por antivírus. Por segurança o RotaControl não instala driver; aqui aparecem GPU, SSD e o que o seu PC informar.", " Windows only provides CPU temperature through a sensor driver, which needs administrator rights and is often blocked by antivirus. For safety RotaControl does not install drivers; here you see GPU, SSD and whatever your PC reports."], ["O iPhone não deixa o PiP funcionar no app da tela de início (limitação da Apple). Abra o link pelo Safari pra usar o PiP.", "iPhone doesn't allow PiP in the home-screen app (Apple limitation). Open the link in Safari to use PiP."], ["Primeiro acesso: no próprio PC, abra http://127.0.0.1:5000 e crie o PIN. Depois volte aqui.", "First access: on the PC itself, open http://127.0.0.1:5000 and create the PIN. Then come back here."], ["1 toque = clique • segurar = botão direito • arrastar = arrastar • 2 dedos = rolar ou zoom", "1 tap = click • hold = right click • drag = drag • 2 fingers = scroll or zoom"], ["A barra precisa do pycaw instalado. Use os botões abaixo.", "The slider needs pycaw installed. Use the buttons below."], ["Teclas separadas por + (ex: alt+tab, ctrl+shift+esc):", "Keys separated by + (e.g. alt+tab, ctrl+shift+esc):"], ["Não consegui preparar o vídeo. Toque em PiP de novo.", "Couldn't prepare the video. Tap PiP again."], ["Alta: 1600 px • 24 fps — bem mais nítido e fluido", "High: 1600 px • 24 fps — much sharper and smoother"], ["Máxima: até 2560 px • 30 fps — só em rede rápida", "Max: up to 2560 px • 30 fps — fast network only"], ["Voltar as abas e categorias pra ordem original?", "Restore tabs and categories to the original order?"], ["Print copiado pra área de transferência do PC.", "Screenshot copied to the PC clipboard."], ["Fundo animado ativo — triângulos 3D girando.", "Animated background on — spinning 3D triangles."], ["Stream indisponível — usando o modo simples", "Stream unavailable — using simple mode"], ["já existe um item com esse nome no destino", "an item with that name already exists at the destination"], ["Nenhuma temperatura disponível neste PC.", "No temperature available on this PC."], ["O caminho/endereço não pode ficar vazio.", "The path/address can't be empty."], ["não é possível colocar dentro dela mesma", "can't put it inside itself"], ["Econômico: 800 px • 8 fps — gasta pouco", "Economy: 800 px • 8 fps — uses little data"], ["Preparando o zip… o download começa já", "Preparing the zip… download starts now"], ["jogo nao encontrado (atualize a lista)", "game not found (refresh the list)"], ["Este navegador não toca o som ao vivo", "This browser can't play live sound"], ["Arraste pra cima ou pra baixo e solte", "Drag up or down and release"], ["Defina o PIN primeiro, no próprio PC.", "Set the PIN first, on the PC itself."], ["Som ligado — use o volume do celular", "Sound on — use your phone's volume"], ["Digite as teclas, ex: ctrl+shift+esc", "Type the keys, e.g. ctrl+shift+esc"], ["Apagar pasta (só se estiver vazia)?", "Delete folder (only if empty)?"], [" — mede a conexão e ajusta sozinho", " — measures the connection and adjusts itself"], ["Pronto! Toque em PiP mais uma vez.", "Ready! Tap PiP once more."], ["Precisa do pycaw instalado no PC.", "Needs pycaw installed on the PC."], ["pasta grande demais (limite 4 GB)", "folder too large (4 GB limit)"], ["imagem nao esta mais no historico", "image is no longer in history"], ["Tailscale não detectado neste PC", "Tailscale not detected on this PC"], ["BYPASS: apaga o .exe. Continuar?", "BYPASS: deletes the .exe. Continue?"], ["O comando não pode ficar vazio.", "The command can't be empty."], ["Tipo: abrir/pasta/url/comando", "Type: open/folder/url/command"], ["Nome do perfil (ex: Alt+Tab):", "Profile name (e.g. Alt+Tab):"], ["O nome não pode ficar vazio.", "The name can't be empty."], ["pasta vazia ou grande demais", "folder empty or too large"], ["nenhuma saida de audio ativa", "no active audio output"], ["Escolha a pasta de destino:", "Choose the destination folder:"], ["Digite 'copiar' ou 'mover':", "Type 'copy' or 'move':"], ["Muitas tentativas. Aguarde ", "Too many attempts. Wait "], ["origem e destino são iguais", "source and destination are the same"], ["Navegador não suporta voz.", "Browser doesn't support voice."], ["Baixar esta pasta em .zip?", "Download this folder as .zip?"], ["Escolha uma pasta no menu", "Pick a folder from the menu"], ["pasta com arquivos demais", "folder has too many files"], ["item de origem não existe", "source item doesn't exist"], ["pasta de destino inválida", "invalid destination folder"], ["nome e combo obrigatórios", "name and combo required"], ["Fechar o programa no PC?", "Close the program on the PC?"], ["Nenhuma pasta disponível", "No folder available"], ["Faça isso no próprio PC.", "Do this on the PC itself."], ["a pasta nao tem arquivos", "the folder has no files"], ["Erro ao capturar a tela", "Error capturing the screen"], ["Abra uma pasta primeiro", "Open a folder first"], ["Monitores desligando...", "Turning monitors off..."], ["Explorer reiniciando...", "Restarting Explorer..."], ["(winsdk não instalado)", "(winsdk not installed)"], ["O PIN já foi definido.", "The PIN is already set."], ["Monitores acordando...", "Waking monitors..."], ["arquivo nao encontrado", "file not found"], ["Todas as telas juntas", "All screens together"], ["agendado para daqui a", "scheduled in"], ["Teclas (ex: ctrl+s):", "Keys (e.g. ctrl+s):"], ["Sem conexão com o PC", "No connection to the PC"], ["parametros invalidos", "invalid parameters"], ["psutil nao instalado", "psutil not installed"], ["Áudio reiniciando...", "Restarting audio..."], ["arquivo(s) salvos em", "file(s) saved in"], ["saida nao encontrada", "output not found"], ["Automático: usando ", "Auto: using "], ["Erro ao iniciar voz", "Error starting voice"], ["Preparando o PiP...", "Preparing PiP..."], ["Nenhum timer ativo.", "No active timer."], ["pycaw nao instalado", "pycaw not installed"], ["Som indisponível: ", "Sound unavailable: "], ["Novo copiado no PC", "New one copied on PC"], ["Escolha arquivo(s)", "Choose file(s)"], ["Digite exatamente ", "Enter exactly "], ["Iniciando túnel...", "Starting tunnel..."], ["Sem captura agora", "No capture right now"], ["Limpar histórico?", "Clear history?"], ["Copiando print...", "Copying screenshot..."], ["Procurando jogos…", "Looking for games…"], ["PiP não suportado", "PiP not supported"], ["acao desconhecida", "unknown action"], ["mss nao instalado", "mss not installed"], ["Arquivo copiado: ", "File copied: "], [" ms • oscilação ", " ms • jitter "], ["Digite um número", "Enter a number"], ["Preencha o campo", "Fill in the field"], ["Novo nome para \"", "New name for \""], ["Tirando print...", "Taking screenshot..."], ["origem bloqueada", "origin blocked"], ["QR aberto no PC.", "QR opened on the PC."], ["comando invalido", "invalid command"], ["BYPASS aplicado.", "BYPASS applied."], ["Nada pra copiar", "Nothing to copy"], ["Copiado de novo", "Copied again"], ["Monitor trocado", "Monitor changed"], ["nao autenticado", "not signed in"], ["índice inválido", "invalid index"], ["dx/dy invalidos", "invalid dx/dy"], ["perfil invalido", "invalid profile"], ["caractere(s)...", "character(s)..."], ["atalho invalido", "invalid shortcut"], ["Pasta copiada: ", "Folder copied: "], ["Nome da pasta:", "Folder name:"], ["Erro ao listar", "Error listing"], ["Modo WAN ativo", "WAN mode on"], ["Opção inválida", "Invalid option"], ["renomeada para", "renamed to"], ["Tipo inválido.", "Invalid type."], ["tecla invalida", "invalid key"], ["erro captura: ", "capture error: "], ["pasta invalida", "invalid folder"], ["nenhum arquivo", "no file"], ["combo invalido", "invalid combo"], ["combo inválido", "invalid combo"], ["Precisa HTTPS", "Needs HTTPS"], ["Preparando...", "Preparing..."], ["Executando...", "Running..."], ["Túnel inativo", "Tunnel inactive"], ["App instalado", "App installed"], ["PIN incorreto", "Wrong PIN"], ["Modo inválido", "Invalid mode"], ["Perfil criado", "Profile created"], ["modo invalido", "invalid mode"], ["acao invalida", "invalid action"], ["tipo invalido", "invalid type"], ["sem miniatura", "no thumbnail"], ["comando vazio", "empty command"], ["PC bloqueado.", "PC locked."], ["Encerrando...", "Exiting..."], ["Indisponível", "Unavailable"], ["Tocando em: ", "Playing on: "], ["Todas soltas", "All released"], ["Copiar/Mover", "Copy/Move"], ["Comando CMD:", "CMD command:"], ["PIN alterado", "PIN changed"], ["Aplicando...", "Applying..."], ["pid invalido", "invalid pid"], ["Ordem salva", "Order saved"], ["Sem conexão", "No connection"], ["Digite algo", "Type something"], ["Enviando...", "Sending..."], ["(principal)", "(primary)"], ["Sair do PiP", "Exit PiP"], ["Fechando...", "Closing..."], ["Túnel ativo", "Tunnel active"], ["Já está em ", "Already in "], ["atualizada.", "updated."], ["atualizado.", "updated."], ["dy invalido", "invalid dy"], ["sem comando", "no command"], ["Dormindo...", "Sleeping..."], ["texto vazio", "empty text"], ["tecla vazia", "empty key"], ["id invalido", "invalid id"], ["chave vazia", "empty key"], ["Ao vivo • ", "Live • "], ["Dê um nome", "Give it a name"], ["Ouvindo...", "Listening..."], ["Erro PiP: ", "PiP error: "], ["Cancelados", "Cancelled"], ["Novo PIN (", "New PIN ("], ["nome vazio", "empty name"], ["Cancelado.", "Cancelled."], ["Remover \"", "Remove \""], ["Comando '", "Command '"], ["Modo LAN", "LAN mode"], ["Atalho '", "Shortcut '"], ["Foto • ", "Photo • "], ["Bom uso", "Enjoy"], ["Matar \"", "Kill \""], ["Ação '", "Action '"]];
 const TUT_EN=[
@@ -3259,18 +3314,18 @@ const TUT_EN=[
 <li><b>Screenshot</b> takes a picture of the screen; <b>Copy screenshot</b> sends it to the clipboard; <b>Download screenshot</b> saves it to the phone.</li></ol>
 <h4>Fullscreen with touch</h4><ol>
 <li>Tap <b>⛶ Fullscreen with touch</b>. On Android it becomes real fullscreen; on iPhone the app covers the whole screen.</li>
-<li><b>One tap</b> = click at the touched point. <b>Holding your finger</b> = right click. <b>Two still, quick fingers</b> = right click too.</li>
+<li><b>One tap</b> = click at the touched point. <b>Hold and drag</b> = holds the click, like holding the mouse button (lift to release). The <b>🖱</b> button = the next tap becomes a right click. <b>Two still, quick fingers</b> = right click too.</li>
 <li><b>Touch and drag</b> = drag (windows, text selection, bars).</li>
 <li><b>Two fingers up/down</b> = scroll. <b>Pinch</b> = zoom the image (two fingers move the zoomed image).</li>
 <li>Corner buttons: <b>⌨</b> opens the phone keyboard (what you type goes to the PC), <b>1×</b> resets zoom, <b>✕</b> exits.</li></ol>
 <p class="hint">Tip: rotate your phone to landscape. If the touch lands in the wrong place, check that the monitor chosen in the list is the one shown in the image.</p>
 <p class="hint">PiP on iPhone: works in Safari, but <b>not</b> in the app added to the home screen (Apple limitation). On PC (Chrome/Edge) it opens a floating window.</p>
 <h4>Window on phone</h4><ul>
-<li>Hides <b>one program</b> from the PC screen and shows it here on your phone, like a second monitor. The program keeps running on the PC (its window is moved out of the visible area).</li>
+<li>Hides <b>one program</b> from the PC screen and shows it here on your phone, like a second monitor. The program keeps running on the PC.</li>
 <li>Pick the program from the open list (or type the .exe name; on the PC you can drag the .exe into the box) and tap <b>Send to phone</b>.</li>
-<li>Tap = click, hold = right click, drag = drag, 2 fingers = scroll. ⌨ opens the keyboard.</li>
-<li>To use the program on the PC again, turn it off (or tap <b>Bring everything back to the PC</b>).</li>
-<li>It is experimental: fullscreen games and some video-accelerated apps can't be captured while hidden.</li></ul>`},
+<li><b>Invisible in place</b> (recommended): the window is transparent on the PC but keeps drawing; your touch becomes a real mouse (the PC cursor jumps for a moment). <b>Off-screen</b>: doesn't touch your mouse, but some programs stop updating.</li>
+<li>Tap = click, <b>hold and drag</b> = holds the click, 2 fingers = scroll, 🖱 = right click. ⛶ opens fullscreen.</li>
+<li>To use the program on the PC again, turn it off (or tap <b>Bring everything back to the PC</b>).</li></ul>`},
 
 {t:"📁 Files",h:`<h4>What's here</h4><ul>
 <li><b>Send phone to PC</b> — choose files from your phone and they go to the PC's default folder (change in System → Default folder).</li>
@@ -6423,14 +6478,20 @@ _ac_hot_armar()
 
 
 # ============ JANELA NO CELULAR ============
-# Esconde as janelas de um programa (fora da área visível, a janela segue rodando e desenhando),
-# transmite a janela pro celular (PrintWindow) e repassa toque/teclado por mensagens do Windows.
-JAN = {"exe": "", "ligado": False, "esc": {}, "gen": 0, "fluxos": 0}     # esc: hwnd -> posição original
+# Esconde as janelas de um programa e transmite a janela pro celular (PrintWindow).
+#  - modo "invisivel": a janela fica no lugar, 100% transparente e "atravessável" (continua desenhando, captura confiável).
+#    O toque do celular vira mouse/teclado REAIS (o cursor do PC pula um instante e volta).
+#  - modo "fora": a janela é movida pra fora da área visível; o toque vira mensagens do Windows (não mexe no mouse).
+try: ctypes.windll.user32.SetProcessDPIAware()
+except Exception: pass
+import hashlib as _hashlib
+JAN = {"exe": "", "ligado": False, "esc": {}, "gen": 0, "modo": "invisivel", "botao": 0, "cur0": None, "fecha": None}
 _JAN_LOCK = threading.RLock()
 _JAN_OFF = -20000
 _JAN_EXE_RX = re.compile(r"^[\w .()+\-]{1,80}\.exe$", re.I)
 _JAN_CLASSES_IGNORAR = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Windows.UI.Core.CoreWindow", "ApplicationFrameWindow"}
-_JAN_Q = {"eco": (5, 0.5, 55), "normal": (10, 0.75, 65), "alta": (20, 1.0, 78)}      # fps, escala, qualidade JPEG
+_JAN_Q = {"eco": (4, 0.5, 55), "normal": (8, 0.75, 65), "alta": (15, 1.0, 78)}      # fps (só dica), escala, qualidade JPEG
+_JAN_LAY, _JAN_TRANS = 0x80000, 0x20
 
 try:
     from ctypes import wintypes as _wt2
@@ -6495,15 +6556,41 @@ def _jan_set_wp(h, v):
     ctypes.windll.user32.SetWindowPlacement(h, ctypes.byref(wp))
 
 
-def _jan_esquerda(h):
-    r = _wt2.RECT(); ctypes.windll.user32.GetWindowRect(h, ctypes.byref(r)); return r.left
+def _jan_rect(h):
+    r = _wt2.RECT(); ctypes.windll.user32.GetWindowRect(h, ctypes.byref(r)); return r.left, r.top, r.right - r.left, r.bottom - r.top
 
 
 def _jan_iconico(h): return bool(ctypes.windll.user32.IsIconic(h))
 
 
-def _jan_mover_x(h, x, y):
+def _jan_pos(h, x, y):
+    """Move a janela (sem mudar tamanho) — funciona também pra fora da tela, ao contrário do SetWindowPlacement."""
     ctypes.windll.user32.SetWindowPos(h, 0, int(x), int(y), 0, 0, 0x0001 | 0x0004 | 0x0010)     # NOSIZE|NOZORDER|NOACTIVATE
+
+
+def _jan_topo(h): ctypes.windll.user32.SetWindowPos(h, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)    # HWND_TOP sem mover/ativar
+
+
+def _jan_ex_get(h): return ctypes.windll.user32.GetWindowLongW(h, -20) & 0xFFFFFFFF
+
+
+def _jan_ex_set(h, ex):
+    ex &= 0xFFFFFFFF
+    ctypes.windll.user32.SetWindowLongW(h, -20, ex - 0x100000000 if ex >= 0x80000000 else ex)
+
+
+def _jan_layer_get(h):
+    """(chave, alpha, flags) se a janela já é 'layered'; senão None."""
+    if not (_jan_ex_get(h) & _JAN_LAY): return None
+    k, a, f = ctypes.c_ulong(0), ctypes.c_ubyte(255), ctypes.c_ulong(0)
+    if not ctypes.windll.user32.GetLayeredWindowAttributes(h, ctypes.byref(k), ctypes.byref(a), ctypes.byref(f)): return None
+    return k.value, a.value, f.value
+
+
+def _jan_layer_set(h, k, a, f): return bool(ctypes.windll.user32.SetLayeredWindowAttributes(h, k, a, f))
+
+
+def _jan_redesenhar(h): ctypes.windll.user32.RedrawWindow(h, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0400)
 
 
 def _jan_geom(h):
@@ -6514,7 +6601,7 @@ def _jan_geom(h):
 
 
 def _jan_capturar(h):
-    """Imagem PIL da janela (mesmo escondida), via PrintWindow(PW_RENDERFULLCONTENT). None se não deu."""
+    """Imagem PIL da janela via PrintWindow(PW_RENDERFULLCONTENT). None se não deu."""
     if _PIL is None: return None
     u, g = ctypes.windll.user32, ctypes.windll.gdi32
     w, hh = _jan_geom(h)[:2]
@@ -6531,7 +6618,6 @@ def _jan_capturar(h):
 
 
 def _jan_alvo(h, x, y):
-    """Desce até a janela-filha que está no ponto (x,y) do cliente. Retorna (hwnd_alvo, x, y) nas coordenadas dele."""
     u = ctypes.windll.user32; t = h
     for _ in range(8):
         p = _wt2.POINT(int(x), int(y)); f = u.ChildWindowFromPointEx(t, p, 0x1 | 0x2)
@@ -6544,7 +6630,6 @@ def _jan_post(h, msg, w, l): ctypes.windll.user32.PostMessageW(h, msg, w, l)
 
 
 def _jan_foco(h):
-    """Janela que tem o foco de teclado dentro do programa (ou a própria janela)."""
     u = ctypes.windll.user32
     try:
         tid = u.GetWindowThreadProcessId(h, None); gi = _JAN_GTI(); gi.cbSize = ctypes.sizeof(gi)
@@ -6557,46 +6642,95 @@ def _jan_tela_de(h, x, y):
     p = _wt2.POINT(int(x), int(y)); ctypes.windll.user32.ClientToScreen(h, ctypes.byref(p)); return p.x, p.y
 
 
+def _jan_cur_get():
+    p = _wt2.POINT(); ctypes.windll.user32.GetCursorPos(ctypes.byref(p)); return p.x, p.y
+
+
+def _jan_cur_set(x, y): ctypes.windll.user32.SetCursorPos(int(x), int(y))
+
+
+def _jan_mev(flags, dados=0): ctypes.windll.user32.mouse_event(flags, 0, 0, dados, 0)
+
+
+def _jan_primeiro_plano(h):
+    u = ctypes.windll.user32
+    try:
+        u.keybd_event(0x12, 0, 0, 0); u.SetForegroundWindow(h); u.keybd_event(0x12, 0, 2, 0)     # o Alt libera o SetForegroundWindow
+    except Exception: pass
+
+
+def _jan_unicode(unidade):
+    if _AC_INPUT is None: return
+    u = ctypes.windll.user32
+    for flag in (0x0004, 0x0004 | 0x0002):
+        i = _AC_INPUT(); i.type = 1; i.u.ki = _AC_KI(0, unidade, flag, 0, 0)
+        u.SendInput(1, ctypes.byref(i), ctypes.sizeof(i))
+
+
 # ---- lógica ----
 def _jan_persistir():
-    ESTADO["jan_esc"] = {str(h): {"p": v, "exe": JAN["exe"]} for h, v in JAN["esc"].items()}
-    ESTADO["jan_exe"] = JAN["exe"]
+    ESTADO["jan_esc"] = {str(h): {**v, "exe": JAN["exe"]} for h, v in JAN["esc"].items()}
+    ESTADO["jan_exe"] = JAN["exe"]; ESTADO["jan_modo"] = JAN["modo"]
     try: salvar_config()
     except Exception: pass
+
+
+def _jan_inv_aplicar(h):
+    """Deixa a janela invisível e atravessável. False se o Windows não deixou (aí cai pro modo 'fora')."""
+    _jan_ex_set(h, _jan_ex_get(h) | _JAN_LAY | _JAN_TRANS)
+    return _jan_layer_set(h, 0, 0, 0x2)
+
+
+def _jan_inv_restaurar(h, v):
+    _jan_ex_set(h, v["ex"])
+    if v.get("lay"): _jan_layer_set(h, v["lay"][0], v["lay"][1], v["lay"][2])
+    _jan_redesenhar(h)
 
 
 def _jan_esconder(h):
     with _JAN_LOCK:
         if h not in JAN["esc"]:
-            JAN["esc"][h] = _jan_get_wp(h); _jan_persistir()
-        v = list(JAN["esc"][h]); larg = v[8] - v[6]
-        v[1] = 4; v[6] = _JAN_OFF; v[8] = _JAN_OFF + larg           # SW_SHOWNOACTIVATE, fora da área visível
-        _jan_set_wp(h, v)
+            v = {"wp": _jan_get_wp(h), "modo": JAN["modo"], "ex": _jan_ex_get(h), "lay": _jan_layer_get(h)}
+            JAN["esc"][h] = v; _jan_persistir()
+        v = JAN["esc"][h]
+        if _jan_iconico(h) or v["wp"][1] == 3: _jan_set_wp(h, [v["wp"][0], 4] + list(v["wp"][2:]))      # tira de minimizada/maximizada sem ativar
+        if v["modo"] == "invisivel":
+            if _jan_inv_aplicar(h): return
+            v["modo"] = "fora"
+        _jan_pos(h, _JAN_OFF, v["wp"][7])
 
 
 def _jan_mostrar(h):
     with _JAN_LOCK:
         v = JAN["esc"].pop(h, None)
         if v is not None and _jan_existe(h):
-            try: _jan_set_wp(h, v)
+            try:
+                if v["modo"] == "invisivel": _jan_inv_restaurar(h, v)
+                _jan_set_wp(h, v["wp"])
             except Exception: pass
         _jan_persistir()
 
 
 def _jan_voltar_tudo():
-    """Devolve TODAS as janelas escondidas pra posição original e desliga o modo."""
+    """Devolve TODAS as janelas escondidas pra posição/aparência original e desliga o modo."""
     with _JAN_LOCK:
         JAN["ligado"] = False; JAN["gen"] += 1
+        if JAN.get("fecha"):
+            try: JAN["fecha"].cancel()
+            except Exception: pass
         for h in list(JAN["esc"]): _jan_mostrar(h)
 
 
 def _jan_manter(h):
-    """Se o programa se moveu/minimizou sozinho, esconde de novo."""
+    """O programa pode se mostrar/mover sozinho: esconde de novo."""
     try:
-        if _jan_iconico(h):
-            v = list(_jan_get_wp(h)); larg = v[8] - v[6]; v[1] = 4; v[6] = _JAN_OFF; v[8] = _JAN_OFF + larg; _jan_set_wp(h, v)
-        elif _jan_esquerda(h) > _JAN_OFF + 5000:
-            v = list(_jan_get_wp(h)); larg = v[8] - v[6]; v[1] = 4; v[6] = _JAN_OFF; v[8] = _JAN_OFF + larg; _jan_set_wp(h, v)
+        v = JAN["esc"][h]
+        if _jan_iconico(h): _jan_set_wp(h, [0, 4] + list(_jan_get_wp(h)[2:]))
+        if v["modo"] == "invisivel":
+            ex = _jan_ex_get(h); lay = _jan_layer_get(h)
+            if not (ex & _JAN_LAY) or lay is None or lay[1] != 0 or (not (ex & _JAN_TRANS) and not JAN.get("fecha")): _jan_inv_aplicar(h)
+        elif _jan_rect(h)[0] > _JAN_OFF + 5000:
+            _jan_pos(h, _JAN_OFF, _jan_rect(h)[1])
     except Exception: pass
 
 
@@ -6605,8 +6739,7 @@ def _jan_do_exe(exe): return [w for w in _jan_enum() if w["exe"] == (exe or "").
 
 def _jan_passo():
     if not JAN["ligado"]: return
-    ws = _jan_do_exe(JAN["exe"])
-    for w in ws:
+    for w in _jan_do_exe(JAN["exe"]):
         if w["hwnd"] not in JAN["esc"]: _jan_esconder(w["hwnd"])
         else: _jan_manter(w["hwnd"])
     with _JAN_LOCK:
@@ -6620,23 +6753,25 @@ def _jan_loop(gen):
         time.sleep(1.0)
 
 
-def _jan_ligar(exe):
+def _jan_ligar(exe, modo="invisivel"):
     with _JAN_LOCK:
-        if JAN["ligado"] and JAN["exe"] != exe.lower(): _jan_voltar_tudo()
-        JAN["exe"] = exe.lower(); JAN["ligado"] = True; JAN["gen"] += 1
+        modo = modo if modo in ("invisivel", "fora") else "invisivel"
+        if JAN["ligado"] and (JAN["exe"] != exe.lower() or JAN["modo"] != modo): _jan_voltar_tudo()
+        JAN["exe"] = exe.lower(); JAN["modo"] = modo; JAN["ligado"] = True; JAN["gen"] += 1
         _jan_persistir()
         threading.Thread(target=_jan_loop, args=(JAN["gen"],), daemon=True).start()
 
 
 def _jan_restaurar_persistidas():
-    """Na abertura: se o app anterior fechou com janelas escondidas, devolve elas (só se ainda forem do mesmo programa)."""
+    """Na abertura: devolve janelas que ficaram escondidas se o app anterior fechou (só se ainda forem do mesmo programa)."""
     try:
         for hs, d in list((ESTADO.get("jan_esc") or {}).items()):
             h = int(hs)
-            if not _jan_existe(h) or _jan_esquerda(h) > _JAN_OFF + 5000: continue
+            if not _jan_existe(h): continue
             pid = ctypes.c_ulong(0); ctypes.windll.user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
             if PSUTIL_OK and psutil.Process(pid.value).name().lower() != (d.get("exe") or "").lower(): continue
-            _jan_set_wp(h, d["p"])
+            if d.get("modo") == "invisivel" and "ex" in d: _jan_inv_restaurar(h, d)
+            if d.get("wp"): _jan_set_wp(h, d["wp"])
     except Exception: pass
     ESTADO["jan_esc"] = {}
 
@@ -6648,27 +6783,54 @@ def _jan_valida(h):
 
 
 def _jan_jpeg(h, q):
-    fps, esc, qual = _JAN_Q.get(q, _JAN_Q["normal"])
+    """(jpeg, preto) — preto=True se a captura veio toda preta (o app não deixa ser capturado assim)."""
+    esc, qual = _JAN_Q.get(q, _JAN_Q["normal"])[1:]
     img = _jan_capturar(h)
-    if img is None: return None
+    if img is None: return None, False
+    preto = all(mx <= 6 for _, mx in img.resize((12, 12)).getextrema())
     if esc < 1: img = img.resize((max(1, int(img.width * esc)), max(1, int(img.height * esc))))
-    b = io.BytesIO(); img.save(b, "JPEG", quality=qual); return b.getvalue()
+    b = io.BytesIO(); img.save(b, "JPEG", quality=qual); return b.getvalue(), preto
 
 
-def _jan_gerar(h, q):
-    fps = _JAN_Q.get(q, _JAN_Q["normal"])[0]
-    JAN["fluxos"] += 1
+# ---- entrada: mouse/teclado REAIS (modo invisível) ----
+def _jan_fechar_clique(h):
+    """Volta a janela a ser 'atravessável' (o clique do PC passa por ela de novo)."""
+    JAN["fecha"] = None
     try:
-        while h in JAN["esc"] and _jan_existe(h):
-            t0 = time.time(); jpeg = _jan_jpeg(h, q)
-            if jpeg:
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n")
-            time.sleep(max(0.02, 1.0 / fps - (time.time() - t0)))
-    except GeneratorExit: return
-    finally: JAN["fluxos"] -= 1
+        if h in JAN["esc"] and JAN["esc"][h]["modo"] == "invisivel": _jan_ex_set(h, _jan_ex_get(h) | _JAN_TRANS)
+    except Exception: pass
 
 
-def _jan_mouse(h, acao, fx, fy, dy=0):
+def _jan_abrir_clique(h):
+    """Enquanto você toca, a janela invisível recebe cliques de verdade; depois de 0,8 s parada, volta a ser atravessável."""
+    if JAN.get("fecha"):
+        try: JAN["fecha"].cancel()
+        except Exception: pass
+    _jan_ex_set(h, _jan_ex_get(h) & ~_JAN_TRANS); _jan_topo(h)
+    t = threading.Timer(0.8, _jan_fechar_clique, args=(h,)); t.daemon = True; JAN["fecha"] = t; t.start()
+
+
+def _jan_real(h, acao, fx, fy, dy=0):
+    x0, y0, w, hh = _jan_rect(h); sx, sy = int(x0 + fx * (w - 1)), int(y0 + fy * (hh - 1))
+    LD, LU, RD, RU, WH = 0x0002, 0x0004, 0x0008, 0x0010, 0x0800
+    if acao in ("down", "click", "right", "dbl", "wheel") and JAN["cur0"] is None: JAN["cur0"] = _jan_cur_get()
+    _jan_abrir_clique(h)
+    if acao == "move": _jan_cur_set(sx, sy); return "ok"
+    _jan_cur_set(sx, sy)
+    if acao == "down": JAN["botao"] = 1; _jan_mev(LD); return "ok"
+    if acao == "up":
+        _jan_mev(LU); JAN["botao"] = 0
+    elif acao in ("click", "dbl"): _jan_mev(LD); time.sleep(0.02); _jan_mev(LU)
+    elif acao == "right": _jan_mev(RD); time.sleep(0.02); _jan_mev(RU)
+    elif acao == "wheel": _jan_mev(WH, max(-10, min(10, int(dy))) * 120)
+    else: return "ação inválida"
+    c = JAN["cur0"]; JAN["cur0"] = None
+    if c: time.sleep(0.03); _jan_cur_set(*c)         # devolve o cursor do PC onde estava
+    return "ok"
+
+
+# ---- entrada: mensagens do Windows (modo 'fora da tela') ----
+def _jan_msg_mouse(h, acao, fx, fy, dy=0):
     w, hh, ox, oy, cw, ch = _jan_geom(h)
     cx, cy = fx * w - ox, fy * hh - oy
     if not (0 <= cx < cw and 0 <= cy < ch): return "fora da área da janela"
@@ -6677,13 +6839,41 @@ def _jan_mouse(h, acao, fx, fy, dy=0):
     elif acao == "down": JAN["botao"] = 1; _jan_post(t, 0x0200, 0, l); _jan_post(t, 0x0201, 1, l)
     elif acao == "up": JAN["botao"] = 0; _jan_post(t, 0x0202, 0, l)
     elif acao == "click": _jan_post(t, 0x0200, 0, l); _jan_post(t, 0x0201, 1, l); time.sleep(0.03); _jan_post(t, 0x0202, 0, l)
-    elif acao == "dbl": _jan_post(t, 0x0200, 0, l); _jan_post(t, 0x0203, 1, l); time.sleep(0.02); _jan_post(t, 0x0202, 0, l)      # o 1º clique já foi enviado: o 2º vira DBLCLK
+    elif acao == "dbl": _jan_post(t, 0x0200, 0, l); _jan_post(t, 0x0203, 1, l); time.sleep(0.02); _jan_post(t, 0x0202, 0, l)      # o 1º clique já foi: o 2º vira DBLCLK
     elif acao == "right": _jan_post(t, 0x0200, 0, l); _jan_post(t, 0x0204, 2, l); time.sleep(0.03); _jan_post(t, 0x0205, 0, l)
     elif acao == "wheel":
         n = max(-10, min(10, int(dy))) * 120; sx, sy = _jan_tela_de(t, x, y)
         _jan_post(t, 0x020A, (n & 0xFFFF) << 16, ((sy & 0xFFFF) << 16) | (sx & 0xFFFF))
     else: return "ação inválida"
     return "ok"
+
+
+def _jan_mouse(h, acao, fx, fy, dy=0):
+    if JAN["esc"][h]["modo"] == "invisivel": return _jan_real(h, acao, fx, fy, dy)
+    return _jan_msg_mouse(h, acao, fx, fy, dy)
+
+
+def _jan_texto(h, texto):
+    unidades = []
+    for ch in texto:
+        cp = ord(ch)
+        if cp < 0x10000: unidades.append(cp)
+        else: v = cp - 0x10000; unidades += [0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF)]
+    if JAN["esc"][h]["modo"] == "invisivel":
+        _jan_primeiro_plano(h)
+        for u in unidades: _jan_unicode(u)
+    else:
+        t = _jan_foco(h)
+        for u in unidades: _jan_post(t, 0x0102, u, 1)
+
+
+def _jan_tecla(h, nome, vk):
+    if JAN["esc"][h]["modo"] == "invisivel":
+        _jan_primeiro_plano(h); _ac_enviar(nome, True); time.sleep(0.02); _ac_enviar(nome, False)
+    else:
+        t = _jan_foco(h); scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0); ext = (1 << 24) if vk in _AC_EXT else 0
+        _jan_post(t, 0x0100, vk, 1 | (scan << 16) | ext)
+        _jan_post(t, 0x0101, vk, 1 | (scan << 16) | ext | (1 << 30) | (1 << 31))
 
 
 @app.route("/api/janela/programas")
@@ -6706,8 +6896,8 @@ def api_jan_estado():
             if w["hwnd"] in JAN["esc"]:
                 g = _jan_geom(w["hwnd"]); js.append({"id": w["hwnd"], "titulo": w["titulo"][:70], "w": g[0], "h": g[1]})
         js.sort(key=lambda j: -(j["w"] * j["h"]))
-    return jsonify(ligado=JAN["ligado"], exe=JAN["exe"] or ESTADO.get("jan_exe", ""), janelas=js,
-                   aberto=bool(js), escondidas=len(JAN["esc"]))
+    return jsonify(ligado=JAN["ligado"], exe=JAN["exe"] or ESTADO.get("jan_exe", ""), modo=JAN["modo"] if JAN["ligado"] else ESTADO.get("jan_modo", "invisivel"),
+                   janelas=js, aberto=bool(js), escondidas=len(JAN["esc"]))
 
 
 @app.route("/api/janela/config", methods=["POST"])
@@ -6719,7 +6909,7 @@ def api_jan_config():
     if d.get("ligar"):
         if not _JAN_EXE_RX.match(exe): return jsonify(erro="Nome inválido. Use algo como programa.exe")
         if not PSUTIL_OK: return jsonify(erro="psutil não instalado")
-        _jan_ligar(exe)
+        _jan_ligar(exe, d.get("modo", "invisivel"))
         return jsonify(ok=True)
     _jan_voltar_tudo()
     return jsonify(ok=True)
@@ -6735,25 +6925,17 @@ def api_jan_voltar():
 
 @app.route("/api/janela/frame")
 def api_jan_frame():
+    """Um quadro JPEG. Se ?h= for o hash do quadro anterior e nada mudou, responde 204 (não gasta banda)."""
     b = exigir_auth()
     if b: return b
     h = _jan_valida(request.args.get("id"))
     if not h: return jsonify(erro="janela indisponível"), 404
-    jpeg = _jan_jpeg(h, request.args.get("q", "normal"))
+    jpeg, preto = _jan_jpeg(h, request.args.get("q", "normal"))
     if not jpeg: return jsonify(erro="sem captura"), 503
-    return Response(jpeg, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
-
-
-@app.route("/api/janela/fluxo")
-def api_jan_fluxo():
-    b = exigir_auth()
-    if b: return b
-    h = _jan_valida(request.args.get("id"))
-    if not h: return jsonify(erro="janela indisponível"), 404
-    if JAN["fluxos"] >= 2: return jsonify(erro="muitas transmissões abertas"), 429
-    resp = Response(stream_with_context(_jan_gerar(h, request.args.get("q", "normal"))), mimetype="multipart/x-mixed-replace; boundary=frame")
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"; resp.headers["X-Accel-Buffering"] = "no"
-    return resp
+    dg = _hashlib.md5(jpeg).hexdigest()[:12]
+    cab = {"Cache-Control": "no-store", "X-H": dg, "X-Preto": "1" if preto else "0", "Access-Control-Expose-Headers": "X-H, X-Preto"}
+    if request.args.get("h") == dg: return Response(status=204, headers=cab)
+    return Response(jpeg, mimetype="image/jpeg", headers=cab)
 
 
 @app.route("/api/janela/mouse", methods=["POST"])
@@ -6778,12 +6960,8 @@ def api_jan_texto():
     d = request.get_json(force=True, silent=True) or {}
     h = _jan_valida(d.get("id"))
     if not h: return jsonify(erro="janela indisponível")
-    t = _jan_foco(h)
-    for ch in str(d.get("texto", ""))[:300]:
-        cp = ord(ch)
-        if cp < 0x10000: _jan_post(t, 0x0102, cp, 1)
-        else:
-            v = cp - 0x10000; _jan_post(t, 0x0102, 0xD800 + (v >> 10), 1); _jan_post(t, 0x0102, 0xDC00 + (v & 0x3FF), 1)
+    try: _jan_texto(h, str(d.get("texto", ""))[:300])
+    except Exception as e: return jsonify(erro=str(e)[:80])
     return jsonify(ok=True)
 
 
@@ -6797,14 +6975,14 @@ def api_jan_tecla():
     nome = str(d.get("tecla", "")).strip().lower()
     vk = _ac_vk(nome)
     if vk is None or nome in _AC_VKMOUSE: return jsonify(erro="tecla inválida")
-    t = _jan_foco(h); scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0); ext = (1 << 24) if vk in _AC_EXT else 0
-    _jan_post(t, 0x0100, vk, 1 | (scan << 16) | ext)
-    _jan_post(t, 0x0101, vk, 1 | (scan << 16) | ext | (1 << 30) | (1 << 31))
+    try: _jan_tecla(h, nome, vk)
+    except Exception as e: return jsonify(erro=str(e)[:80])
     return jsonify(ok=True)
 
 
 import atexit as _atexit
 _atexit.register(lambda: _jan_voltar_tudo())
+JAN["modo"] = ESTADO.get("jan_modo") if ESTADO.get("jan_modo") in ("invisivel", "fora") else "invisivel"
 _jan_restaurar_persistidas()
 
 
