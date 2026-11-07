@@ -6522,7 +6522,7 @@ def _jan_enum():
             n = u.GetWindowTextLengthW(h)
             if n <= 0: return True
             ex = u.GetWindowLongW(h, -20)
-            if (ex & 0x80) and not (ex & 0x40000): return True
+            if (ex & 0x80) and not (ex & 0x40000) and int(h) not in JAN["esc"]: return True      # janelas-ferramenta não contam, exceto as que NÓS escondemos (viram "ferramenta" pra sumir da barra)
             cloaked = ctypes.c_int(0)
             try: ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)
             except Exception: pass
