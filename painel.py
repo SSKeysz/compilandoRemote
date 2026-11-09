@@ -1904,9 +1904,9 @@ nav button.on .ic,nav button.on .ico{transform:translateY(-1px) scale(1.08)}
 @media(max-width:480px){nav{padding:5px 4px}nav button{flex:1 1 0;min-width:0;padding:8px 1px;font-size:9.5px;border-radius:16px}}
 @media(min-width:700px){html.claro body:not(.temFundo) header{background:#e4e4ec}body:not(.temFundo) header{background:inherit}html.claro body:not(.temFundo){background:#e4e4ec}}
 
-html.midnight{--bg:#000;--panel:#0a0a0e;--in:#14141a;--in2:#101015;--btn:#16161c;--btn2:#22222b;--card2:#0f0f14;--line:rgba(255,255,255,.08);--mut2:#4a4a55}
+html.midnight{--bg:#000;--panel:#050507;--in:#0d0d11;--in2:#09090c;--btn:#101015;--btn2:#1a1a21;--card2:#08080b;--line:rgba(255,255,255,.055);--mut2:#44444e}
 html.midnight body:not(.temFundo){background:#000}
-html.midnight nav{background:#0a0a0e}
+html.midnight nav{background:#050507}
 .statBarIn.warn{border:0;padding:0;margin:0;color:inherit;font-size:inherit;line-height:normal;border-radius:99px;background:linear-gradient(90deg,#ffb340,#ff9500)}
 .statBarIn.crit{border-radius:99px;background:linear-gradient(90deg,#ff6961,#ff3b30)}
 input[type=checkbox]{-webkit-appearance:none;appearance:none;width:20px!important;height:20px;min-width:20px;flex:none;padding:0!important;margin:0;border-radius:5px;border:1.5px solid var(--mut2);background:transparent;display:inline-grid;place-content:center;cursor:pointer;transition:background .15s,border-color .15s,transform .12s}
@@ -1914,10 +1914,12 @@ input[type=checkbox]:active{transform:scale(.9)}
 input[type=checkbox]:checked{background:var(--acc);border-color:var(--acc)}
 input[type=checkbox]:checked::after{content:"";width:10px;height:5px;border:2px solid #fff;border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
 input[type=checkbox]:focus-visible{box-shadow:0 0 0 3px rgba(124,0,240,.3)}
-.segurando{position:relative;animation:ordHold var(--hold,3s) linear forwards}
-.segurando::after{content:"";position:absolute;inset:0;border-radius:inherit;background:rgba(160,60,255,.28);transform-origin:left;transform:scaleX(0);animation:ordFill var(--hold,3s) linear forwards;pointer-events:none}
+.segurando{position:relative;animation:ordHold calc(var(--hold,3s) - 300ms) linear 300ms forwards}
+.segurando::after{content:"";position:absolute;inset:0;border-radius:inherit;background:rgba(160,60,255,.28);transform-origin:left;transform:scaleX(0);animation:ordFill calc(var(--hold,3s) - 300ms) linear 300ms forwards;pointer-events:none}
 @keyframes ordFill{to{transform:scaleX(1)}}
 @keyframes ordHold{from{box-shadow:0 0 0 0 rgba(160,60,255,0)}to{box-shadow:0 0 0 3px rgba(160,60,255,.95)}}
+nav{transition:transform .35s var(--ease),opacity .3s}
+@media (orientation:landscape) and (max-height:520px){body.navZzz nav{transform:translate(-50%,150%);opacity:0;pointer-events:none}}
 @keyframes rcIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .page:not(.hid)>.panel{animation:rcIn .42s var(--ease) backwards}
 .page>.panel:nth-child(2){animation-delay:.04s}.page>.panel:nth-child(3){animation-delay:.08s}.page>.panel:nth-child(4){animation-delay:.12s}.page>.panel:nth-child(n+5){animation-delay:.16s}
@@ -3369,7 +3371,7 @@ function janPintar(j){JW.ligado=!!j.ligado;const b=$("#janBtn");b.textContent="�
   const sel=$("#janJan"),ant=JW.id;sel.innerHTML=j.janelas.map(w=>'<option value="'+w.id+'">'+esc(w.titulo||w.exe)+'</option>').join("");sel.classList.toggle("hid",j.janelas.length<2);
   const existe=j.janelas.some(w=>w.id===ant);JW.id=existe?ant:j.janelas[0].id;sel.value=JW.id;janStream()}
 async function janEstado(){try{const j=await get("/api/janela/estado");if(j.erro&&!("ligado" in j))return;janPintar(j)}catch(e){}}
-function janIniciar(){if(JW.t)return;if(!$("#janProg").options.length)janProgramas();janEstado();JW.t=setInterval(janEstado,2000);JW.tp=setInterval(janProgramas,3000)}
+function janIniciar(){if(JW.t)return;if(!$("#janProg").options.length)janProgramas();janEstado();JW.t=setInterval(()=>{if(!document.hidden)janEstado()},2000);JW.tp=setInterval(()=>{if(!document.hidden)janProgramas()},3000)}
 function janParar(){if(JW.t){clearInterval(JW.t);JW.t=null}if(JW.tp){clearInterval(JW.tp);JW.tp=null}janFsSair();janParaStream()}
 function janParaStream(){JW.iniciada="";JW.tok++;const i=$("#janImg");if(i&&i.getAttribute("src"))i.removeAttribute("src")}
 function janStream(){const chave=JW.id+"|"+JW.q;if(JW.iniciada===chave)return;JW.tok++;JW.iniciada=chave;janLoop(JW.tok)}
@@ -3477,7 +3479,7 @@ async function bloqAdd(){const exe=($("#bloqExe").value||"").trim().split(/[\\/]
   const r=await post("/api/bloq/add",{exe});if(r.erro){toast(r.erro,3500);return}$("#bloqExe").value="";toast("Bloqueado: "+exe);bloqCarregar()}
 async function bloqRem(exe){await post("/api/bloq/remover",{exe});toast("Liberado: "+exe);bloqCarregar()}
 async function bloqPausar(){await post("/api/bloq/pausar",{ligado:!BQ.ligado});toast(BQ.ligado?"Bloqueios pausados":"Bloqueios retomados");bloqCarregar()}
-function bloqIniciar(){bloqProgramas();bloqCarregar();if(!BQ.t)BQ.t=setInterval(()=>{bloqCarregar();bloqProgramas()},4000)}
+function bloqIniciar(){bloqProgramas();bloqCarregar();if(!BQ.t)BQ.t=setInterval(()=>{if(!document.hidden){bloqCarregar();bloqProgramas()}},4000)}
 function bloqParar(){if(BQ.t){clearInterval(BQ.t);BQ.t=null}}
 function tempFmt(b){return b<1048576?(b/1024).toFixed(0)+" KB":b<1073741824?(b/1048576).toFixed(1)+" MB":(b/1073741824).toFixed(2)+" GB"}
 async function tempLimpar(){if(!confirm("Apagar os arquivos temporários do PC (%temp% e Windows\\Temp)? Isso não pode ser desfeito."))return;
@@ -4357,7 +4359,7 @@ async function iniciar(){
   carregarAcoes();carregarAtalhos();carregarSistema();carregarModo();carregarAutostart();
   carregarComandos();
   try{await post("/api/teclas/soltar_todas",{})}catch(e){}
-  setInterval(atualizarTunel,4000);
+  setInterval(()=>{if(!document.hidden)atualizarTunel()},4000);
   segurarBotao($("#btnVolUp"),()=>midia('vol_up'),250);
   segurarBotao($("#btnVolDown"),()=>midia('vol_down'),250);
   try{const jm=await get("/api/monitores");ESTADO_MONITOR_ATUAL=jm.atual||0}catch(e){}
@@ -4577,6 +4579,12 @@ iniciar();
 
 i18nIniciar();
 icoIniciar();
+
+/* celular deitado: a barra de abas some depois de 3 s sem mexer e volta ao tocar/rolar */
+(function(){const mq=matchMedia("(orientation:landscape) and (max-height:520px)");let t=null;
+function acordar(){document.body.classList.remove("navZzz");clearTimeout(t);if(mq.matches)t=setTimeout(()=>{if(mq.matches)document.body.classList.add("navZzz")},3000)}
+["touchstart","touchmove","pointerdown","pointermove","scroll","wheel","keydown"].forEach(e=>addEventListener(e,acordar,{passive:true,capture:true}));
+try{mq.addEventListener("change",acordar)}catch(e){}acordar()})();
 </script>
 </body>
 </html>
@@ -7729,7 +7737,10 @@ def _av_loop():
     while True:
         try: _av_passo(st)
         except Exception: pass
-        time.sleep(3)
+        try:
+            c = _av_cfg(); trab = c["on"] and (c["download"] or (c["fechou"] and c["programas"]) or c["ram"] or c["temp"])
+        except Exception: trab = True
+        time.sleep(3 if trab else 10)           # nada ligado: acorda bem menos
 
 
 @app.route("/api/avisos")
