@@ -6043,6 +6043,14 @@ def _lista_jogos(forcar=False):
     for fn in (_jogos_steam, _jogos_epic, _jogos_gog):
         try: v += fn()
         except Exception: pass
+    vistos = {}; unico = []
+    for x in v:                                 # mesmo jogo listado 2x na mesma loja (2 bibliotecas Steam, 2 manifestos Epic...) vira 1
+        k = (x["plat"], re.sub(r"\W+", "", x["nome"].lower()))
+        if k in vistos:
+            if not vistos[k].get("_dir") and x.get("_dir") and os.path.isdir(x["_dir"]): vistos[k].update(x)   # fica o que está instalado de verdade
+            continue
+        vistos[k] = x; unico.append(x)
+    v = unico
     v.sort(key=lambda x: x["nome"].lower())
     _JOGOS["t"] = now; _JOGOS["v"] = v
     return v
