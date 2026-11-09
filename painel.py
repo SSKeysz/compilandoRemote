@@ -1829,6 +1829,59 @@ html.claro body.temFundo header{background:rgba(242,242,247,.9)}
 html.claro body.temFundo nav{background:rgba(255,255,255,.98)}
 html.claro body.vidro.temFundo header,html.claro body.vidro.temFundo nav{background:rgba(255,255,255,.6)}
 html.claro .telaOff{color:var(--mut)}
+
+/* ===== REMASTER VISUAL: estilo iOS minimalista, roxo de destaque (só aparência; nada de função mudou) ===== */
+:root{--r-s:10px;--r-m:14px;--r-l:20px;--bg:#09090d;--panel:#141419;--in:#1c1c23;--in2:#18181f;--btn:#21212a;--btn2:#2b2b36;--card2:#1a1a22;--line:rgba(255,255,255,.07);--mut:#8e8e9c;--mut2:#55555f;--acc2:#a45cff;--ease:cubic-bezier(.2,.7,.2,1)}
+html.claro{--bg:#f2f2f7;--panel:#ffffff;--in:#f2f2f7;--in2:#ececf2;--btn:#eeeef4;--btn2:#e2e2ea;--card2:#f2f2f7;--line:rgba(0,0,0,.07);--mut:#6b6b78;--mut2:#a0a0ad;--acc2:#7a22e0}
+html,body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;accent-color:var(--acc);letter-spacing:-.006em}
+*{scrollbar-width:thin;scrollbar-color:var(--btn2) transparent}
+::selection{background:rgba(124,0,240,.3)}
+body{padding-bottom:calc(92px + env(safe-area-inset-bottom))}
+main{gap:12px}
+.page{display:grid;gap:12px;align-content:start}
+.panel{border-radius:var(--r-l);border:1px solid var(--line)}
+html.claro .panel{border-color:transparent;box-shadow:0 1px 2px rgba(20,10,50,.04),0 8px 24px -12px rgba(60,30,130,.14)}
+h2{font-size:12px;letter-spacing:.07em;font-weight:600;margin:0 0 12px;color:var(--mut)}
+button,.btn{border-radius:12px;font-weight:600;letter-spacing:-.01em;transition:transform .14s var(--ease),opacity .15s,background .2s,box-shadow .2s}
+button:active,.btn:active{transform:scale(.975);opacity:.82}
+.btn.acc:not(.on){background:linear-gradient(180deg,#8d2bff,#7c00f0);box-shadow:0 6px 16px -6px rgba(124,0,240,.6),inset 0 1px 0 rgba(255,255,255,.18)}
+.btn.red{background:linear-gradient(180deg,#d83a3a,#c82020);box-shadow:0 6px 16px -8px rgba(200,32,32,.6)}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--fg)}
+html.claro .btn.ghost{border-color:rgba(0,0,0,.12)}
+.btn.on{box-shadow:0 0 0 2px rgba(35,209,96,.3),0 6px 16px -6px rgba(35,209,96,.5)}
+input,textarea,select{border-radius:12px;border:1px solid transparent;transition:border-color .15s,box-shadow .15s}
+input:focus,textarea:focus,select:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(124,0,240,.22)}
+::placeholder{color:var(--mut2)}
+.hint{line-height:1.5}
+.warn{border-radius:12px}
+.modoToggle{border:0;border-radius:11px;padding:3px;background:var(--in)}
+.modoToggle button{border-radius:8px;transition:background .2s,color .2s,box-shadow .2s}
+.modoToggle button.on{background:var(--acc);box-shadow:0 2px 8px -2px rgba(124,0,240,.6)}
+header .logoFb{letter-spacing:.02em}
+header .dotOn{box-shadow:0 0 8px var(--acc2)}
+nav{bottom:calc(10px + env(safe-area-inset-bottom));width:calc(100% - 20px);max-width:660px;padding:6px;border:1px solid var(--line);border-radius:24px;background:var(--panel);box-shadow:0 14px 34px -14px rgba(0,0,0,.55)}
+html.claro nav{border-color:rgba(0,0,0,.06);box-shadow:0 10px 30px -12px rgba(60,30,130,.28)}
+nav button{border-radius:18px;transition:background .25s var(--ease),color .2s;font-weight:600}
+nav button .ic,nav button .ico{transition:transform .25s var(--ease)}
+nav button.on{background:rgba(124,0,240,.16);color:var(--acc2)}
+nav button.on .ic,nav button.on .ico{transform:translateY(-1px) scale(1.08)}
+.toast{bottom:calc(92px + env(safe-area-inset-bottom));background:rgba(32,32,42,.94);border-radius:999px;box-shadow:0 8px 24px -8px rgba(0,0,0,.5)}
+.statBox{border-radius:var(--r-m);padding:14px}
+.statLbl{font-weight:600;letter-spacing:.06em;font-size:10.5px}
+.statVal{font-size:20px;font-weight:700;letter-spacing:-.025em}
+.statVal.peq{font-size:12px;letter-spacing:0}
+.statBar{height:5px;border-radius:99px;background:var(--btn2)}
+.statBarIn{border-radius:99px;transition:width .5s var(--ease)}
+.tpProc,.arq{border-radius:12px}
+.janDrop{border-radius:var(--r-m)}
+.telaWrap{border-radius:14px}
+.lockbox input{border-radius:14px}
+@media(max-width:480px){nav{padding:5px 4px}nav button{flex:1 1 0;min-width:0;padding:8px 1px;font-size:9.5px;border-radius:16px}}
+@media(min-width:700px){html.claro body:not(.temFundo) header{background:#e4e4ec}body:not(.temFundo) header{background:inherit}html.claro body:not(.temFundo){background:#e4e4ec}}
+@keyframes rcIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.page:not(.hid)>.panel{animation:rcIn .42s var(--ease) backwards}
+.page>.panel:nth-child(2){animation-delay:.04s}.page>.panel:nth-child(3){animation-delay:.08s}.page>.panel:nth-child(4){animation-delay:.12s}.page>.panel:nth-child(n+5){animation-delay:.16s}
+@media (prefers-reduced-motion:reduce){.page:not(.hid)>.panel{animation:none}}
 </style>
 </head>
 <body data-modo="iniciante">
