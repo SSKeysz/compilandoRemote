@@ -8030,9 +8030,16 @@ def api_uso_icone():
     if b: return b
     n = request.args.get("n", "")
     ex = _USO_EXE.get(n)
-    if not ex: return "", 404
-    if n not in _USO_ICO: _USO_ICO[n] = (_icone_exe_png(ex) if os.path.isfile(ex) else None) or b""
-    if not _USO_ICO[n]: return "", 404
+    if not ex and PSUTIL_OK:                        # programa de antes desta versão: procura nos processos abertos agora
+        try:
+            for pr in psutil.process_iter(["name", "exe"]):
+                nm = (pr.info.get("name") or "")
+                nm = nm[:-4] if nm.lower().endswith(".exe") else nm
+                if nm.lower() == n.lower() and pr.info.get("exe"): ex = pr.info["exe"]; _USO_EXE[n] = ex; _USO["sujo"] = True; break
+        except Exception: pass
+    if not ex: return "sem caminho do .exe (abra o programa uma vez)", 404
+    if n not in _USO_ICO or not _USO_ICO[n]: _USO_ICO[n] = (_icone_exe_png(ex) if os.path.isfile(ex) else None) or b""
+    if not _USO_ICO[n]: return "nao consegui extrair o icone de: " + ex, 404
     return send_file(io.BytesIO(_USO_ICO[n]), mimetype="image/png", max_age=3600)
 
 @app.route("/api/uso/config", methods=["POST"])
