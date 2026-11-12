@@ -867,12 +867,44 @@ REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_NOME = "RotaControl"
 
 
+REG_APROV = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+
+
+def _auto_cmd():
+    """Comando que o Windows deve rodar no login (sempre o exe/arquivo que está rodando agora)."""
+    if getattr(sys, "frozen", False): return f'"{sys.executable}"'
+    pyw = sys.executable.replace("python.exe", "pythonw.exe")
+    return (f'"{pyw}" "{os.path.abspath(__file__)}"' if os.path.exists(pyw)
+            else f'"{sys.executable}" "{os.path.abspath(__file__)}"')
+
+
+def _auto_bloqueado():
+    """True se o Windows (Gerenciador de Tarefas > Inicializar) marcou o item como desativado."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_APROV, 0, winreg.KEY_READ) as k:
+            v, _t = winreg.QueryValueEx(k, REG_NOME)
+        return bool(v) and (v[0] & 1) == 1
+    except Exception: return False
+
+
 def autostart_ativo():
+    """Ligado de verdade: entrada existe, aponta pro programa que está rodando e o Windows não bloqueou."""
     if winreg is None: return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ) as k:
-            winreg.QueryValueEx(k, REG_NOME); return True
+            winreg.QueryValueEx(k, REG_NOME)
     except Exception: return False
+    return not _auto_bloqueado()
+
+
+def autostart_consertar():
+    """Na abertura: se estava ligado mas o caminho ficou velho (exe atualizado/renomeado/movido), aponta pro atual."""
+    if winreg is None: return
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+            atual, _t = winreg.QueryValueEx(k, REG_NOME)
+            if str(atual).strip().lower() != _auto_cmd().lower(): winreg.SetValueEx(k, REG_NOME, 0, winreg.REG_SZ, _auto_cmd())
+    except Exception: pass
 
 
 def set_autostart(ativo):
@@ -880,15 +912,15 @@ def set_autostart(ativo):
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_SET_VALUE) as k:
             if ativo:
-                if getattr(sys, "frozen", False): cmd = f'"{sys.executable}"'
-                else:
-                    pyw = sys.executable.replace("python.exe", "pythonw.exe")
-                    cmd = (f'"{pyw}" "{os.path.abspath(__file__)}"' if os.path.exists(pyw)
-                           else f'"{sys.executable}" "{os.path.abspath(__file__)}"')
-                winreg.SetValueEx(k, REG_NOME, 0, winreg.REG_SZ, cmd)
+                winreg.SetValueEx(k, REG_NOME, 0, winreg.REG_SZ, _auto_cmd())
             else:
                 try: winreg.DeleteValue(k, REG_NOME)
                 except FileNotFoundError: pass
+        if ativo:                                   # se o Windows tinha desativado esse item, reativa (foi você que ligou aqui)
+            try:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_APROV) as k2:
+                    winreg.SetValueEx(k2, REG_NOME, 0, winreg.REG_BINARY, b"\x02" + b"\x00" * 11)
+            except Exception: pass
         return True
     except Exception as e:
         log_seguro("erro autostart:", e); return False
@@ -9002,6 +9034,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     esconder_console()
+    autostart_consertar()
     iniciar_loop_clipboard()
     CAPTURA["monitor_idx"] = int(ESTADO.get("monitor_escolhido", 0))
     if PSUTIL_OK:
